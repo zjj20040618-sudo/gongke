@@ -4,6 +4,8 @@
 
 目的：双方只在这一份文件更新待办、问题和验收结果。协议字段细节见 [VISION_INTEGRATION.md](VISION_INTEGRATION.md)，协作及框架审核边界见 [COLLABORATION.md](COLLABORATION.md)，不再另开一份平行清单。
 
+队友接手单纯电控调参/机械行程时，使用 [CONTROL_TUNING_TODO.md](CONTROL_TUNING_TODO.md) 的 CT 编号；本文件只维护视觉/双端接口的 VC 编号。双方直接读取和更新仓库文件，不依赖用户转发聊天。
+
 **电控框架不是这份待办授予视觉侧的修改范围。** 视觉侧提出方案/补视觉代码，电控侧 Codex 审核接口并补电控代码；实测参数提供原始记录后填入。影响任务顺序、调用链或协议的修改按协作说明审核。
 
 ## 已有能力，不重复要求重做
