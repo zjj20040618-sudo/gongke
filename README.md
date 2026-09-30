@@ -4,6 +4,7 @@
 
 - 打开 Keil 工程：[MDK-ARM/jiejie.uvprojx](MDK-ARM/jiejie.uvprojx)
 - 看代码结构、每个文件职责、调参入口：[PROJECT_GUIDE.md](PROJECT_GUIDE.md)
+- 两人拉取/提交/推送、提交编号与标签怎么辨认：[COLLABORATION.md](COLLABORATION.md)
 - 2026-10-01 视觉接收改为队友现有二进制，蓝牙保持 ASCII；接口、测试和未完成项见 [VISION_INTEGRATION.md](VISION_INTEGRATION.md)。这是接收侧对接，自动切模式、桶/两种人质映射和夹爪站位仍待联调。
 - 自写业务代码在 `App/`；CubeMX 生成的启动、外设与任务入口在 `Src/`、`Inc/` 和根目录 `jiejie.ioc`。
 
