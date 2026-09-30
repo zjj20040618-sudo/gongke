@@ -17,7 +17,7 @@ static uint8_t s_rx2, s_rx3, s_rx4;   /* 2=视觉(USART2 PD5/6) 3=蓝牙(USART3 
 
 /* BT 输入环形缓冲(huart3,ISR 写 / robot_bt_service 读) */
 #define BT_RX_N 64u
-#define FW_BUILD_ID "20260930-TURN180-CONTINUOUS"
+#define FW_BUILD_ID "20261001-VISION-BINARY-RX"
 static volatile uint8_t s_bt[BT_RX_N];
 static volatile uint8_t s_bt_wr, s_bt_rd;
 static volatile uint32_t s_bt_drop;
@@ -70,6 +70,7 @@ void robot_init(void)
     imu_init();
 
     proto_init();
+    proto_set_binary_mode(1); /* camera AA55/CRC16; Bluetooth remains ASCII */
     proto_set_tx(uart2_tx);
     proto_set_on_frame(steps_feed_frame);   /* MaixCam 帧 → steps 暂存,wait_* 消费 */
     mission_init();
@@ -192,6 +193,11 @@ void robot_diag_report(void)
              (unsigned long)ps.qr, (unsigned long)ps.obj,
              (unsigned long)ps.rejected, (unsigned long)ps.overflow,
              mission_qr_ready(), (unsigned long)mission_qr_invalid_count());
+    bp_debug_send(b);
+    snprintf(b, sizeof b, "VISION wire=BINARY crc_bad=%lu bad=%lu gap=%lu unmapped=%lu duplicate=%lu\r\n",
+             (unsigned long)ps.crc_bad, (unsigned long)ps.binary_bad,
+             (unsigned long)ps.binary_gap, (unsigned long)ps.binary_unmapped,
+             (unsigned long)ps.duplicate);
     bp_debug_send(b);
     snprintf(b, sizeof b, "STACK word D=%lu C=%lu M=%lu I=%lu L=%lu\r\n",
              (unsigned long)sw[0], (unsigned long)sw[1], (unsigned long)sw[2],

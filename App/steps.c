@@ -15,6 +15,16 @@
 static volatile int s_qr_pending, s_obj_pending;
 static ProtoFrame  s_qr_frame, s_obj_frame;
 static volatile int s_abort;
+static volatile int s_obj_want_cls = -1, s_obj_want_label = -1;
+
+/* Drop old frames at a new OBJ phase; filter before overwriting the latest slot. */
+static void select_object(int cls, int label)
+{
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    s_obj_want_cls = cls; s_obj_want_label = label; s_obj_pending = 0;
+    __set_PRIMASK(pm);
+}
 
 /* 视觉帧写入口(RxCplt 回调里被调):把整帧压进单槽并置 pending(关中断防与 take_frame 竞争) */
 void steps_feed_frame(const ProtoFrame *f)
@@ -26,6 +36,11 @@ void steps_feed_frame(const ProtoFrame *f)
         s_qr_frame = *f;
         s_qr_pending = 1;
     } else {
+        if ((s_obj_want_cls >= 0 && f->cls != s_obj_want_cls)
+            || (s_obj_want_label >= 0 && f->label != s_obj_want_label)) {
+            __set_PRIMASK(pm);
+            return;
+        }
         s_obj_frame = *f;
         s_obj_pending = 1;
     }
@@ -50,7 +65,11 @@ static int take_frame(ProtoType type, ProtoFrame *out)
 /* 整场中止标三连:run_abort() 置位 / run_aborted() 阻塞步每 ~5ms 轮询、见标即退 /
  * run_reset() 只能在初始化或接受启动请求前清中止标与暂存帧；g 后立即 a 的中止
  * 不得被 MissionTask 醒来时重置。当前整场中止命令为 BT 'a'。 */
-void run_reset(void) { s_abort = 0; s_qr_pending = 0; s_obj_pending = 0; }
+void run_reset(void)
+{
+    s_abort = 0; s_qr_pending = 0;
+    select_object(-1, -1);
+}
 int  run_aborted(void) { return s_abort; }
 void run_abort(void)   { s_abort = 1; }
 
@@ -141,6 +160,8 @@ int step_align(int cls, int label, uint32_t to)
 
     if (!step_prepare_leg()) return 0;
 
+    select_object(cls, label);
+
     /* ===== 阶段1:纵向粗调（开环算距离，一次走到位；最多 X_DEPTH_N 次防万一）=====
      * 针孔模型：距离 d ∝ 1/目标像素高 → d_now = d_站 × (h_站 / h_现在)。
      * 只要标定两个值：本任务的站距 d_站、站位正确时目标像素高 h_站。
@@ -181,6 +202,7 @@ int step_align(int cls, int label, uint32_t to)
 
     /* 纵向粗调若动过车，横向锁定前重新停稳并重设本段航向零点。 */
     if (!step_prepare_leg()) return 0;
+    select_object(cls, label);
     orth0 = motion_odo_mm();
 
     /* ===== 阶段2:横向闭环（把 cx 拉到该类别标定的 cx_stand_px）===== */
@@ -263,6 +285,7 @@ int step_sweep(int want, int cls, int label, int32_t d[3], uint32_t to)
     if (SWEEP_STR_MMS <= 0.0f || delta == 0.0f) return 0;
     if (!step_prepare_leg()) return 0;
     x0 = motion_lateral_odo_mm();
+    select_object(cls, label);
     orth0 = motion_odo_mm();
     x1 = x0 + delta;
     target = x1;

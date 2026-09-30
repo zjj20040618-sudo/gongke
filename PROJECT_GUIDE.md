@@ -1,6 +1,8 @@
 # 反恐电控工程导览与调参索引
 
-更新：2026-09-30。适用于**当前英文路径工作工程** `C:/Users/15119/Desktop/word/anti_terror_eod_2026-09-22/jiejie`；不要把桌面交接包中的旧副本与它混编。Keil 从 [MDK-ARM/jiejie.uvprojx](MDK-ARM/jiejie.uvprojx) 打开。
+更新：2026-10-01。当前共用工作工程为 `C:/Users/15119/gongkesai/gongke`（GitHub `zjj20040618-sudo/gongke`）；不要与桌面交接包或旧 `jiejie` 仓库混编。Keil 从 [MDK-ARM/jiejie.uvprojx](MDK-ARM/jiejie.uvprojx) 打开，工程名不代表仍使用旧仓库。
+
+视觉接收侧新增二进制适配；完整接口与未完成项见 [VISION_INTEGRATION.md](VISION_INTEGRATION.md)。下面的 2026-09-30 编译/ASCII 检查条目是历史记录，不是新协议的整机验收。
 
 这是一张**找代码的地图**，不是“全部参数已经调好”的证明。`TODO`、`0` 和标注为“种子”的值都要按实车测试填写。当前正式整场有配置闸门，不能因工程能编译就直接上车跑。
 
@@ -41,7 +43,7 @@ App/robot.c               初始化、三路串口分流、蓝牙服务
 | [board_pins.c](App/board_pins.c) / [board_pins.h](App/board_pins.h) | 电机/编码器索引和极性、PWM/方向脚、STBY、激光、蓝牙 TX | `s_motor_inv`、`s_encoder_inv` 和 pin/TIM 数组；仅在单轮正向及编码器符号复核后改 |
 | [arm.c](App/arm.c) / [arm.h](App/arm.h) | 两路步进 STEP/DIR 脉冲、爪舵机 PWM | `CLAW_OPEN_US`、`CLAW_CLOSE_US`、STEP/DIR pin 数组；当前机械挡块**没有**回零电信号 |
 | [imu.c](App/imu.c) / [imu.h](App/imu.h) | IMU 串口帧解析、连续 yaw/pitch/roll、链路有效性、分段航向软件零点 | `IMU_LINK_TIMEOUT_MS`、协议字段；方向/零点须结合实车数据查，不靠改常数猜 |
-| [proto.c](App/proto.c) / [proto.h](App/proto.h) | 视觉 ASCII 帧解析、场景切换、QR/OBJ 类别与标签定义；畸形数值帧拒收并计数 | `CLS_*`、`LAB_*`、`ProtoFrame`；视觉队友给帧，电控核对协议/目标匹配 |
+| [proto.c](App/proto.c) / [proto.h](App/proto.h) | 当前视觉 AA55/CRC16 二进制接收、QR/OBJ 类别转换；保留旧 ASCII 解析用于回归，二进制模式尚无切场景命令 | `proto_set_binary_mode`、`CLS_*`、`LAB_*`、`ProtoFrame`；按 `VISION_INTEGRATION.md` 核对映射与目标工作点 |
 | [test.c](App/test.c) / [test.h](App/test.h) | 蓝牙台架模式 1–29、`g` 控制、数据回传、RAM 调参；**不是**正式整场路线 | 执行器/命令解析在 `.c`；命令见下文，测试 `d/v` 不会写入 `mission.c` |
 | [test_config.h](App/test_config.h) | 台架命令长度、模式上限、采样周期、默认速度/距离/补偿种子及上电安全开关集中入口 | `BENCH_AUTO=0` 必须保持；只改变台架默认，不会自动改变正式路线；右转 90°仍复用 `turn_profile.h` |
 | [turn_profile.h](App/turn_profile.h) | 已做过落地测试的右转 90° 参数组，供测试模式20与正式 90°分支共用 | `TURN90_*`；模式22 的 180°只是候选，正式通用 180°参数在 `steps.c` |

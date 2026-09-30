@@ -5,6 +5,10 @@
 
 static ProtoFrame last_frame;
 static unsigned callbacks;
+static unsigned transmissions;
+uint32_t HAL_GetTick(void) { return 0u; }
+
+static void on_tx(const char *message) { (void)message; transmissions++; }
 
 static void on_frame(const ProtoFrame *frame)
 {
@@ -22,6 +26,15 @@ int main(void)
     ProtoStats stats;
     proto_init();
     proto_set_on_frame(on_frame);
+    proto_set_tx(on_tx);
+    proto_send_scene(SCENE_QR);
+    proto_send_ping();
+    if (transmissions != 2u) return 1;
+    proto_set_binary_mode(1);
+    proto_send_scene(SCENE_QR);
+    proto_send_ping();
+    if (transmissions != 2u) return 1; /* no invented binary commands */
+    proto_set_binary_mode(0);
 
     feed("QR,1,2,3\r\n");
     if (callbacks != 1u || last_frame.type != PF_QR ||

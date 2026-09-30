@@ -5,6 +5,9 @@
 
 #define PROTO_MAX_LEN 48
 #define PROTO_FIELDS  8
+#define PROTO_BINARY_MAX_OBJECTS 10u
+#define PROTO_BINARY_MAX_LEN     272u /* one QR, UTF-8 payload up to 255 bytes */
+#define PROTO_BINARY_GAP_MS      100u /* incomplete-frame gap, not mission timeout */
 
 typedef enum {
     PF_NONE = 0,
@@ -32,6 +35,7 @@ typedef struct {
     int cls, label;     /* OBJ */
     int cx, cy, w, h;   /* OBJ 像素 */
     int conf;           /* 0..100 */
+    uint16_t sequence, img_w, img_h; /* binary metadata; ASCII leaves zero */
 } ProtoFrame;
 
 typedef struct {
@@ -41,15 +45,17 @@ typedef struct {
     uint32_t obj;
     uint32_t rejected;
     uint32_t overflow;
+    uint32_t crc_bad, binary_bad, binary_gap, binary_unmapped, duplicate;
 } ProtoStats;
 
 void proto_init(void);
+void proto_set_binary_mode(int enabled); /* before arming RX; no autodetection */
 void proto_set_tx(void (*tx)(const char *s));          /* 用户提供串口发送 */
 void proto_set_on_frame(void (*cb)(const ProtoFrame *f));
 void proto_feed_byte(uint8_t ch);                       /* 每收到 1 字节调一次 */
 void proto_stats_get(ProtoStats *out);
 
-/* F407 -> MaixCam */
+/* Legacy ASCII TX only. Binary RX mode leaves these no-op until commands are agreed. */
 void proto_send_scene(ProtoScene sc);
 void proto_send_ping(void);
 
