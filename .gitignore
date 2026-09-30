@@ -1,0 +1,12 @@
+# Keil local build/debug outputs; keep the source project and RTE config.
+/MDK-ARM/jiejie/
+/MDK-ARM/*.uvoptx
+/MDK-ARM/*.uvguix.*
+/MDK-ARM/*build*.txt
+/MDK-ARM/*rebuild*.txt
+/MDK-ARM/*.log
+
+# Local editor / OS files.
+.DS_Store
+Thumbs.db
+*.bak
