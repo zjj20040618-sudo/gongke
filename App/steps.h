@@ -17,11 +17,11 @@ void wait_ms(uint32_t ms);                 /* 睡 ms(让出 CPU,期间可被中�
 int  wait_qr(int32_t d[3], uint32_t to);   /* 等二维码帧,存 d1/d2/d3;to==0→不限时;超时/中止→0 */
 
 /* ---- 视觉对准（两步，2026-09-13 实现）----
- * 阶段1 **纵向粗调**：用目标**像素高**反算距离（针孔 d ∝ 1/h），算出该走多少 mm
- *        **一次走完**（开环，最多迭代 3 次）；`d_站` 填 0 可关掉这段。
- * 阶段2 **横向闭环**：把目标 cx 拉到**标定值**（**不是画面中心** —— 用户给定像素坐标），
- *        带死区+限幅；**连续 N 帧**偏差都小才算对准（防抖、防一帧误判）。
- * 分时做（先纵后横）：车一前后动、透视会让 cx 也变，两个环同时闭会互相干扰。
+ * 左侧相机阶段1：用目标像素高估距离，再左平移靠近/右平移离开（最多3次）。
+ *        `d_站` 填0可关闭粗调；它不是沿车头方向移动。
+ * 阶段2：沿车身前后轴把cx拉到每类标定值，不是画面中心；容差外最小速度+限幅。
+ *        连续N帧偏差均达标才对准。VISION_CX_FWD_SIGN须实测为±1，0拒绝驱动。
+ * 分时做先纵深后画面左右，两轴不能按旧朝前相机的车体系混用。
  * 语义：三个要用视觉的任务都是「**等到对齐为止**」——调用方传 to=0（不设超时兜底）。
  * 标定值（站距 / 站位处像素高 / 目标 cx）在 steps.c 的 `s_stand[4]` 表里，按 cls 查：
  *   0球 / 1靶 / 2人质 / 3桶。**把车摆到满意站位时，这三个一次量齐。**
@@ -30,14 +30,14 @@ int  wait_qr(int32_t d[3], uint32_t to);   /* 等二维码帧,存 d1/d2/d3;to==0
  * ⚠️ 阈值/增益/站表全是种子值（在 steps.c），待实测标定；方向符号要台校。 */
 int  step_align(int cls, int label, uint32_t to);
 
-/* ---- 带内左右走扫目标(和 step_align 成对:align=目标已出现→锁;sweep=没出现→扫到出现) ----
+/* ---- 左侧相机沿车身前后轴扫目标（align=出现后锁；sweep=没出现时扫）----
  * 目标没在画面里时,车就在它那条带里来回走、边走边扫,目标一出现就停、回 1(交 step_align);
  * 一直读不到就持续在两个实测端点之间往返；to 超时/被中止则回 0，整场中止。
- * 各处共用这一份"左右走"代码,只差"找谁":
+ * 各处共用这一份前后往返代码,只差"找谁":
  * 当前只接受 want=PF_OBJ，按 cls+label 匹配；label<0 表示该类单只不挑 label。
  * want=PF_QR 会拒绝，d 参数为兼容旧接口而保留但不写入。
  * QR 扫描和三位合法性检查属于 mission.c；to==0 表示不限时。
- * 扫描运动按横向编码器里程在入口/远端间换向；速度与每类远端距离均待台上实测。 */
+ * 扫描用前后编码器里程在入口/远端间换向；SWEEP_FWD_MMS与每类远端距离待实测。 */
 int  step_sweep(int want, int cls, int label, int32_t d[3], uint32_t to);
 const char *steps_config_missing(void); /* 主流程启动前检查仍为占位的关键步骤参数 */
 
@@ -55,7 +55,7 @@ int   step_orth_kp_set(float kp);               /* 0..5，0=关闭，RAM-only */
 float step_orth_hold_cmd(int lateral_motion, float orth_reference_mm);
 int  step_straight(float dist_mm, float v_mms, uint32_t to); /* 定距直行(yaw锁向):走够 dist 刹停;to==0不限时 */
 int  step_strafe(float dist_mm, float v_mms, uint32_t to);   /* 定距横移:正=右/负=左；依赖横向编码器里程台校 */
-int  step_return_lateral_odo(float target_mm, uint32_t to);  /* 用扫描速度回到指定横向里程基准 */
+int  step_return_forward_odo(float target_mm, uint32_t to);  /* 用扫描速度回到指定前后里程基准 */
 int  step_nav_leg(float turn_deg, float dist_mm, float v_mms, uint32_t to); /* 停稳/清本段航向→转向→直行 */
 
 /* ---- 动作步骤(EOD / RESCUE 通用) ---- */

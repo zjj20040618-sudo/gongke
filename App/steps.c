@@ -64,7 +64,7 @@ static int take_frame(ProtoType type, ProtoFrame *out)
 
 /* 整场中止标三连:run_abort() 置位 / run_aborted() 阻塞步每 ~5ms 轮询、见标即退 /
  * run_reset() 只能在初始化或接受启动请求前清中止标与暂存帧；g 后立即 a 的中止
- * 不得被 MissionTask 醒来时重置。当前整场中止命令为 BT 'a'。 */
+ * 不得被 MissionTask 醒来时重置。整场运行中BT再次'g'或'a'均中止，不自动续跑。 */
 void run_reset(void)
 {
     s_abort = 0; s_qr_pending = 0;
@@ -99,17 +99,23 @@ int wait_qr(int32_t d[3], uint32_t to)   /* to==0 → 不限时:读到 / 被中�
 
 /* ---- 视觉对准闭环(2026-09-13 真正实现,替代原来"看到就返回 1") ----
  * 语义(用户口径)：三个要用视觉的任务都**等到对齐为止**（调用方传 to=0，不设兜底）。
- * 横向闭环把目标 cx 拉到每类实测的抓取/射击站位像素 cx_stand_px，
- * 它不等于画面中心；纵向是可关闭的像素高估距开环粗调，不是实时视觉闭环。
+ * 左侧相机：画面cx闭环使用车身前后轴；相机纵深粗调用车身左右轴。
+ * cx_stand_px不等于画面中心；像素高估距是可关闭的粗调，不是实时视觉闭环。
  * 判据：**连续 X_ALIGN_N 帧**偏差都在容差内 → 才算对准（防抖、防一帧误判）。
- * 控制律：偏差(像素) → 横移速度 vy，带死区 + 限幅（慢慢对，别猛冲过冲）。
+ * 控制律：偏差(像素) → 前后速度 vx，容差内停车；容差外保留最小速度并限幅。
  * ⚠️ 待实测/标定：画面宽、像素↔mm、增益/容差/帧数；**方向符号（偏右→往哪走）要台校**。 */
 #define X_ALIGN_TOL_PX  8.0f     /* TODO 台校：横向偏差 ≤ 这么多像素算"对上了" */
 #define X_ALIGN_N       5u       /* TODO 台校：连续这么多**有效帧**都小才算对准 */
-#define X_ALIGN_KP      0.6f     /* TODO 台校：偏差(px) → 横移速度(mm/s) */
-#define X_ALIGN_VMAX    80.0f    /* 横移最大速度 mm/s */
-#define X_ALIGN_VMIN    12.0f    /* 死区：算出来的速度小于它就别动（防抖）*/
+#define X_ALIGN_KP      0.6f     /* TODO 台校：画面偏差(px) → 车身前后速度(mm/s) */
+#define X_ALIGN_VMAX    80.0f    /* 前后对位最大速度 mm/s */
+#define X_ALIGN_VMIN    12.0f    /* 容差外的最小修正速度，待实测；不能把未达标误差清成0 */
 #define X_ALIGN_LOST_MS 300u     /* 多久没收到匹配帧算"目标丢了"→ 清计数 */
+
+/* +1:cx偏大时向车头修正；-1:向车尾修正。镜像/安装符号须实测，0不得驱动。
+ * #ifndef只便于主机分别检查两种符号；正式工程默认仍为未标定0。 */
+#ifndef VISION_CX_FWD_SIGN
+#define VISION_CX_FWD_SIGN 0
+#endif
 
 /* ---- 纵向粗调（开环算距离，见 step_align 阶段1）----
  * 针孔模型:距离 d ∝ 1/目标像素高。只要标定「站距 d_站」+「站位正确时的像素高 h_站」：
@@ -149,6 +155,13 @@ static int align_wait_frame(int cls, int label, ProtoFrame *out,
     return 0;
 }
 
+/* 目标比站距远(error>0)：朝左侧相机方向靠近；负误差则向右离开。 */
+static int align_depth_move(float error_mm, uint32_t to)
+{
+    float dist_mm = -error_mm;
+    return step_strafe(dist_mm, (dist_mm > 0.0f) ? X_DEPTH_V : -X_DEPTH_V, to);
+}
+
 int step_align(int cls, int label, uint32_t to)
 {
     /* 目标该落在画面哪个 cx —— 直接取标定值（**不是**画面中心，也不用知道画面宽） */
@@ -158,6 +171,9 @@ int step_align(int cls, int label, uint32_t to)
     uint8_t  ok_n = 0u;         /* 连续在容差内的有效帧数 */
     float orth0;
 
+    if (VISION_CX_FWD_SIGN != 1 && VISION_CX_FWD_SIGN != -1) {
+        motion_brake(); return 0;
+    }
     if (!step_prepare_leg()) return 0;
 
     select_object(cls, label);
@@ -182,7 +198,7 @@ int step_align(int cls, int label, uint32_t to)
             }
             if (f.h <= 0) continue;                            /* 视觉没给高度 → 这次跳过 */
             float d_now = d_stand * h_stand / (float)f.h;
-            float err   = d_now - d_stand;                     /* >0 = 比站位远 → 往前走 */
+            float err   = d_now - d_stand;                     /* >0 = 比站位远 → 向左靠近 */
             if (err > -X_DEPTH_TOL_MM && err < X_DEPTH_TOL_MM) break;   /* 纵向够了 */
             if (err >  X_DEPTH_MAX_MM) err =  X_DEPTH_MAX_MM;  /* 限幅：别一次冲太远 */
             if (err < -X_DEPTH_MAX_MM) err = -X_DEPTH_MAX_MM;
@@ -192,8 +208,7 @@ int step_align(int cls, int label, uint32_t to)
                 if (elapsed_ms >= to) { motion_brake(); return 0; }
                 remain_ms = to - elapsed_ms;
             }
-            if (!step_straight(err, (err > 0.0f) ? X_DEPTH_V : -X_DEPTH_V,
-                               remain_ms)) {
+            if (!align_depth_move(err, remain_ms)) {
                 motion_brake();
                 return 0;
             }
@@ -203,7 +218,7 @@ int step_align(int cls, int label, uint32_t to)
     /* 纵向粗调若动过车，横向锁定前重新停稳并重设本段航向零点。 */
     if (!step_prepare_leg()) return 0;
     select_object(cls, label);
-    orth0 = motion_odo_mm();
+    orth0 = motion_lateral_odo_mm();
 
     /* ===== 阶段2:横向闭环（把 cx 拉到该类别标定的 cx_stand_px）===== */
     while (!s_abort) {
@@ -216,21 +231,19 @@ int step_align(int cls, int label, uint32_t to)
             last_ok = now;
             float e = (float)f.cx - cx_tgt;          /* >0 = 目标在目标点右边 */
 
-            if (e > -X_ALIGN_TOL_PX && e < X_ALIGN_TOL_PX) {
+            if (e >= -X_ALIGN_TOL_PX && e <= X_ALIGN_TOL_PX) {
                 motion_brake();                      /* 对上了:停住别动(别抖着过冲) */
                 if (++ok_n >= X_ALIGN_N) return 1;   /* 连续 N 帧都小 → 对准完成 */
             } else {
                 ok_n = 0;
-                float v = -X_ALIGN_KP * e;           /* 像素误差→车体 vy，方向符号待台校 */
+                float v = (float)VISION_CX_FWD_SIGN * X_ALIGN_KP * e;
                 if (v >  X_ALIGN_VMAX) v =  X_ALIGN_VMAX;
                 if (v < -X_ALIGN_VMAX) v = -X_ALIGN_VMAX;
-                if (v > -X_ALIGN_VMIN && v < X_ALIGN_VMIN) {
-                    motion_brake();                  /* 死区:差一点点就别动,防抖 */
-                } else {
-                    if (!imu_ok()) { motion_brake(); return 0; }
-                    motion_vel_set(step_orth_hold_cmd(1, orth0), v,
-                                   step_heading_hold_w(0.0f));
-                }
+                if (v > 0.0f && v < X_ALIGN_VMIN) v = X_ALIGN_VMIN;
+                if (v < 0.0f && v > -X_ALIGN_VMIN) v = -X_ALIGN_VMIN;
+                if (!imu_ok()) { motion_brake(); return 0; }
+                motion_vel_set(v, step_orth_hold_cmd(0, orth0),
+                               step_heading_hold_w(0.0f));
             }
         } else if ((uint32_t)(now - last_ok) > X_ALIGN_LOST_MS) {
             ok_n = 0u;
@@ -242,11 +255,15 @@ int step_align(int cls, int label, uint32_t to)
     return 0;   /* 被中止 */
 }
 
-/* 工作带内左右扫描：入口点 x0 与远端 x1 均用横向编码器里程限定，绝不按时间盲走。
- * DELTA 是“从入口到远端”的有符号距离；符号与实际左右方向一起落地测试。
+/* 左侧相机的工作带扫描：入口点x0与远端x1用车身前后编码器里程限定。
+ * DELTA 是“从入口到远端”的有符号距离：正=前进，负=后退，须重新实测。
  * 扫到目标立即停车交给 step_align。任务结束后 mission 会按入口基准去下一节点。 */
-#define SWEEP_STR_MMS          0.0f  /* TODO 实测：扫描横移速度 mm/s */
+#ifndef SWEEP_FWD_MMS
+#define SWEEP_FWD_MMS          0.0f  /* TODO 实测：前后扫描速度 mm/s */
+#endif
+#ifndef SWEEP_BALL_DELTA_MM
 #define SWEEP_BALL_DELTA_MM    0.0f  /* TODO 实测：排爆入口→扫描远端 */
+#endif
 #define SWEEP_TARGET_DELTA_MM  0.0f  /* TODO 实测：反恐入口→扫描远端 */
 #define SWEEP_HOSTAGE_DELTA_MM 0.0f  /* TODO 实测：救援入口→扫描远端 */
 #define SWEEP_BUCKET_DELTA_MM  0.0f  /* TODO 实测：放球点入口→扫描远端 */
@@ -264,7 +281,8 @@ static float sweep_delta_mm(int cls)
 
 const char *steps_config_missing(void)
 {
-    if (SWEEP_STR_MMS <= 0.0f) return "SWEEP_STR_MMS";
+    if (VISION_CX_FWD_SIGN != 1 && VISION_CX_FWD_SIGN != -1) return "VISION_CX_FWD_SIGN";
+    if (SWEEP_FWD_MMS <= 0.0f) return "SWEEP_FWD_MMS";
     if (SWEEP_BALL_DELTA_MM == 0.0f) return "SWEEP_BALL_DELTA_MM";
     if (SWEEP_TARGET_DELTA_MM == 0.0f) return "SWEEP_TARGET_DELTA_MM";
     if (SWEEP_HOSTAGE_DELTA_MM == 0.0f) return "SWEEP_HOSTAGE_DELTA_MM";
@@ -282,16 +300,16 @@ int step_sweep(int want, int cls, int label, int32_t d[3], uint32_t to)
     (void)d;
     if (want != PF_OBJ || cls < CLS_BALL || cls > CLS_BUCKET) return 0;
     delta = sweep_delta_mm(cls);
-    if (SWEEP_STR_MMS <= 0.0f || delta == 0.0f) return 0;
+    if (SWEEP_FWD_MMS <= 0.0f || delta == 0.0f) return 0;
     if (!step_prepare_leg()) return 0;
-    x0 = motion_lateral_odo_mm();
+    x0 = motion_odo_mm();
     select_object(cls, label);
-    orth0 = motion_odo_mm();
+    orth0 = motion_lateral_odo_mm();
     x1 = x0 + delta;
     target = x1;
 
     while (!s_abort) {
-        float here = motion_lateral_odo_mm();
+        float here = motion_odo_mm();
         float remain = target - here;
         float dir = (remain > 0.0f) ? 1.0f : -1.0f;
         MotionRamp ramp;
@@ -305,12 +323,12 @@ int step_sweep(int want, int cls, int label, int32_t d[3], uint32_t to)
                 motion_brake(); return 1;       /* 扫到目标,交 step_align 锁 */
             }
             if (!imu_ok()) { motion_brake(); return 0; }
-            here = motion_lateral_odo_mm();
+            here = motion_odo_mm();
             if ((dir > 0.0f && here >= target) || (dir < 0.0f && here <= target)) break;
             remain = target - here;
-            motion_vel_set(step_orth_hold_cmd(1, orth0),
-                           motion_linear_profile_step(&ramp, dir * SWEEP_STR_MMS,
+            motion_vel_set(motion_linear_profile_step(&ramp, dir * SWEEP_FWD_MMS,
                                                       remain, 0.005f),
+                           step_orth_hold_cmd(0, orth0),
                            step_heading_hold_w(0.0f));
             osDelay(5);
         }
@@ -483,15 +501,15 @@ int step_strafe(float dist_mm, float v_mms, uint32_t to)
 }
 
 /* 任务区内恢复扫描基准：先停稳再计算余量，避免把制动余动漏到账外。
- * 使用同一个 SWEEP_STR_MMS，确保任务层不再私藏另一套未标定速度。 */
-int step_return_lateral_odo(float target_mm, uint32_t to)
+ * 使用同一个SWEEP_FWD_MMS及前后里程，不能只换扫描轴不换返回轴。 */
+int step_return_forward_odo(float target_mm, uint32_t to)
 {
     float remain;
-    if (SWEEP_STR_MMS <= 0.0f || !step_prepare_leg()) return 0;
-    remain = target_mm - motion_lateral_odo_mm();
+    if (SWEEP_FWD_MMS <= 0.0f || !step_prepare_leg()) return 0;
+    remain = target_mm - motion_odo_mm();
     if (remain > -0.5f && remain < 0.5f) return !s_abort;
-    return step_strafe(remain,
-                       (remain > 0.0f) ? SWEEP_STR_MMS : -SWEEP_STR_MMS,
+    return step_straight(remain,
+                       (remain > 0.0f) ? SWEEP_FWD_MMS : -SWEEP_FWD_MMS,
                        to);
 }
 

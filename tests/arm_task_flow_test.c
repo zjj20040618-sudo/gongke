@@ -85,11 +85,11 @@ int step_rotate_deg(int deg, uint32_t to)
     event(deg == 180 ? "TURN_180" : "WRONG_TURN");
     return deg == 180;
 }
-float motion_lateral_odo_mm(void) { return 0.0f; }
-int step_return_lateral_odo(float target, uint32_t to)
+float motion_odo_mm(void) { return 0.0f; }
+int step_return_forward_odo(float target, uint32_t to)
 {
     (void)target; (void)to;
-    event("RETURN_LATERAL");
+    event("RETURN_FORWARD");
     return 1;
 }
 
@@ -100,7 +100,7 @@ int main(void)
         "BALL_PRELOWER", "BALL_GRASP", "BALL_LIFT", "TURN_180",
         "SWEEP_BUCKET", "ALIGN_BUCKET", "BUCKET_STILL", "BUCKET_LOWER",
         "BUCKET_RELEASE", "BUCKET_LIFT_OUT", "RACK_RETRACT",
-        "RETURN_LATERAL", "TURN_180"
+        "RETURN_FORWARD", "TURN_180"
     };
     static const char *const rescue[] = {
         "SCENE_RESCUE", "SWEEP_HOSTAGE", "ALIGN_HOSTAGE", "HOSTAGE_STILL",

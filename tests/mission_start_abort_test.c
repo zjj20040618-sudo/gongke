@@ -111,7 +111,7 @@ int main(void)
 
     mission_init();
     if (!mission_config_missing() ||
-        strcmp(mission_config_missing(), "QR_FWD_Y_MM") != 0 ||
+        strcmp(mission_config_missing(), "QR_START_LEFT_MM") != 0 ||
         mission_start() != 0 || reset_calls != 1) {
         fputs("Production mission configuration gate unexpectedly opened\n", stderr);
         return 1;

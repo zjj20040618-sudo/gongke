@@ -1,4 +1,4 @@
-/* Host-only direction regression for real step_rotate_deg(±180).
+/* Host-only direction regression for real step_rotate_deg(±180, ±90).
  * Simulates one degree of IMU drift before first motor command; no physical
  * turn accuracy or loaded mecanum behavior is inferred. */
 #include "steps.h"
@@ -78,6 +78,8 @@ int main(void)
     if (!check(180, 0.0f, -1.0f, 1)) return 1;
     if (!check(180, 359.0f, 358.0f, 1)) return 1;
     if (!check(-180, 0.0f, 1.0f, -1)) return 1;
-    puts("continuous 180-degree direction: 3 cases passed");
+    if (!check(-90, 0.0f, 1.0f, -1)) return 1;
+    if (!check(90, 0.0f, -1.0f, 1)) return 1;
+    puts("turn first-command direction: 3 cases at 180 + left90 + right90 passed");
     return 0;
 }

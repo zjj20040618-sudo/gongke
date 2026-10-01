@@ -22,7 +22,7 @@ const char *task_eod_config_missing(void)
 
 /* EOD 排爆(第一个抓取任务):带内扫到 QR 选的色球 → 视觉锁 → 抓 → 原地转 180°
  * → 扫到排爆桶(单桶)并锁 → 松爪放进 → 再原地转 180° 回(朝向不变,走向下个区)。
- * 找目标=step_sweep(没出现→左右扫到出现)、对准=step_align(出现后锁),成对复用;
+ * 找目标=step_sweep(没出现→前后扫到出现)、对准=step_align(出现后锁),成对复用;
  * 抓球/放桶两次都走这一对。
  * 任务区间导航(驶入带、区与区间)由 mission 顶层负责,路点待实测。 */
 
@@ -33,8 +33,8 @@ int task_eod_run(int ball_color)
 
     proto_send_scene(SCENE_EOD);
 
-    /* 1 抓:找目标=慢慢经过时锁 d1 色球(赛题图中三球上下排列；车头朝图左时沿车体横轴扫);真没看到才
-     * 左右走补扫,to=0 **一直扫到出现、不弃站**(垫底,正常别走到这)。
+    /* 1 抓:左侧相机沿车身前后方向扫d1色球；真实入口/远端/像素符号待实测。
+     * 前后走补扫,to=0 **一直扫到出现、不弃站**(垫底,正常别走到这)。
      *   找到后视觉锁(补相机↔爪偏移) */
     if (!step_sweep(PF_OBJ, CLS_BALL, ball_color, 0, 0)) return TASK_ABORT;   /* to=0 不限时 */
     if (!step_align(CLS_BALL, ball_color, 0)) return TASK_ABORT;   /* to=0 对到成为止 */
@@ -47,7 +47,7 @@ int task_eod_run(int ball_color)
      *   IMU 无有效帧会停车返回失败。抬升步数未实测时主程序启动闸门会拒绝开跑。 */
     if (!step_arm_run("EOD", "BALL_LIFT", EOD_LIFT_STEPS, step_arm_lift)) return TASK_ABORT;
     if (!step_rotate_deg(180, 0)) return TASK_ABORT;   /* to=0 不限时:转到位 / 外部 stop 才停 */
-    bucket_scan_origin = motion_lateral_odo_mm();
+    bucket_scan_origin = motion_odo_mm();
 
     /* 3 放:排爆桶全场单只、在带内——扫到桶(不挑 label)→ 锁桶对正 → 先 axis1 降
      * EOD_LOWER_STEPS 落进桶口 → 开爪放进 → 抬回(出桶口)。不留限时兜底(2026-09-06 用户:
@@ -71,9 +71,9 @@ int task_eod_run(int ball_color)
         if (!step_arm_run("EOD", "VERTICAL_HOME_UP", EOD_BALL_PRELOWER_STEPS - EOD_LIFT_STEPS, step_arm_lift)) return TASK_ABORT;
     }
 
-    /* 此时车头反向，桶区横移里程的正负与入区时相反。先回到第一次转身后的基准，
-     * 再转回车头，顶层记录的入区横向里程才仍能代表同一条场地轴。 */
-    if (!step_return_lateral_odo(bucket_scan_origin, 0)) return TASK_ABORT;
+    /* 此时车头反向，桶区前后扫描轴与抓球时反向；先回第一次转身后的前后基准，
+     * 再转回车头，避免把放桶期间的扫描位移带到离区。其余离区路线待逐项确认。 */
+    if (!step_return_forward_odo(bucket_scan_origin, 0)) return TASK_ABORT;
 
     /* 4 再原地转 180° 回:相对当前航向再转 180 → 绝对朝向回原位,两次净转=0,出区朝向=进区朝向。
      *   然后 mission 导航去反恐区。 */

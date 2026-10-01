@@ -18,7 +18,8 @@
  *   (这一段就是给你"看暂停得准不准"的)→ g3 回原点/清态,可再下一轮。
  * 1-4 持续走没有回原点那拍:g2 停完直接回就绪,g 再按 = 继续走(v2 f/x 手感)。
  * 0 / a = 中途放弃或停机；模式15/16绝不因0/a自行倒车。空闲态(没选号,MS_BOOT)
- * 按 g = 开跑主程序整场;数字/参数/爪只在 MS_BOOT 服务。
+ * 按 g = 开跑主程序整场;整场运行中再次g与a一样中止，不能再g续跑。
+ * 数字/参数/爪只在 MS_BOOT 服务；测试回程中g取消剩余回程。
  * 参数槽全局一份；仅模式17/18选号时装入 v300/d1500 测试默认值，
  * 其他依赖参数的模式没设槽 → ERR 先设,不瞎跑。
  * 所有动作都 ~20ms 可中断；步进每 tick 单发一脉冲：
@@ -125,6 +126,7 @@ static void send(const char *s);
 static void format_deg2(char out[20], float deg);
 static void jog_stop(const char *phase);
 static void servo_stop(void);
+static void cmd_abort(void);
 
 static void begin_recorded_test(void)
 {
@@ -1203,6 +1205,7 @@ static void mode_g(void)
         return;
     }
     if (servo_mode() && s_round == R_DONE) { servo_stop(); return; }
+    if (s_round == R_RET) { cmd_abort(); return; }      /* 回程运行中g同样只停，不再继续回程 */
     if (s_round == R_READY) { mode_start(); return; }   /* g1 */
     if (s_round == R_RUN)   { mode_pause(); return; }   /* g2 */
     if (s_round == R_DONE)  { cmd_reset(); return; }    /* g3:回原点(5/6、11/12 停在 DONE 等你过目) */
@@ -1214,7 +1217,7 @@ static void mode_g(void)
 /* 'a' 急停:跑整场→run_abort;回程中→刹停作废回程;调试中→同 0 收回;空闲仅回一句 */
 static void cmd_abort(void)
 {
-    if (s_go) {   /* 先锁中止，再立刻下发底盘刹车；只确认命令，不谎报物理已停稳 */
+    if (s_go || mission_state() != MS_BOOT) { /* g/a共用：先锁中止，再刹车；不假报物理停稳 */
         run_abort();
         motion_brake();
         send("OK ABORT_REQUEST brake_commanded; physical_stop_unverified");
@@ -1314,13 +1317,13 @@ static void cmd_route_leg(int32_t leg)
     if (s_round == R_RUN || s_round == R_BRAKE || s_round == R_RET) {
         send("ERR ROUTE_STOP_FIRST g_or_a"); return;
     }
-    cmd_select(leg == 2 ? 17 : 15, 1);
+    cmd_select(leg == 1 ? 17 : (leg == 2 ? 16 : 15), 1);
     s_route_leg = (uint8_t)leg;
-    s_v = leg == 2 ? 300.0f : 80.0f; /* 仅台测起始值；不是正式赛道速度 */
+    s_v = leg == 1 ? 300.0f : 80.0f; /* 仅台测起始值；不是正式赛道速度 */
     s_d = -1.0f;                     /* 禁止沿用上一段/模式17默认的 1500 mm */
-    if (leg == 1) send("OK ROUTE leg=1 START_FWD v80; set d<mm>, then g");
-    else if (leg == 2) send("OK ROUTE leg=2 LEFT_TO_3RD v300; set d<mm>, then g");
-    else send("OK ROUTE leg=3 PRE_BUMP_FWD v80; measure safe STOP BEFORE bump, set d, then g");
+    if (leg == 1) send("OK ROUTE leg=1 START_LEFT v300; set d<mm>, then g");
+    else if (leg == 2) send("OK ROUTE leg=2 BACK_TO_3RD v80; set d<mm>, then g");
+    else send("OK ROUTE leg=3 AFTER_LEFT90_FWD v80; turn separately FIRST; set d, STOP BEFORE bump");
 }
 
 /* 设参数槽(key=d/v/p 之一;仅 BOOT 空闲可;越界/非正数拒掉并报原因) */
@@ -1353,9 +1356,10 @@ static void cmd_set(char key, int32_t val)
 static void cmd_help(void)
 {
     send("? Default=mission; select 1..29 for bench mode.");
+    send("  Mission: first g starts if calibrated; next g aborts. a also stops; restart board to rerun.");
     send("  1..4 continuous move; 5/6 timed leg; 7..10 wheels; 11/12 unsafe disabled; 13 enc; 14 IMU.");
     send("  15..18 distance: forward/back/left/right; 17/18 select loads v300 d1500.");
-    send("  route: no-obstacle path; r1 forward, r2 left, r3 forward to BEFORE bump.");
+    send("  route: r1 left, r2 backward; separate LEFT90; r3 forward to BEFORE bump.");
     send("  r1/r2/r3 select leg only; set measured d<mm>, then g; no auto next leg.");
     send("  v<mm/s> and d<mm> override slots after selecting; select 17/18 resets defaults.");
     send("  19 turn sign 250ms (suspended); 20 turn +90 hold within 0.3deg (ground).");
@@ -1509,6 +1513,9 @@ static void run_cmd(const char *ln)
     if (strcmp(buf, "?") == 0) { cmd_help(); return; }
     if (strcmp(buf, "g") == 0) {
         const char *missing;
+        /* 必须在选号和BOOT检查之前：首个g已接受但MissionTask尚未苏醒时也能停。
+         * 整场中止后不清s_go、不清run_abort，不把第三次g变成未经确认的重启。 */
+        if (s_go || mission_state() != MS_BOOT) { cmd_abort(); return; }
         if (s_msel != R_FREE) { mode_g(); return; }
         if (!bench_ok()) { send("ERR MISSION_LOCKED not_in_boot"); return; }
         motion_brake();
@@ -1581,8 +1588,8 @@ static void run_cmd(const char *ln)
     if (strcmp(buf, "diag") == 0) { robot_diag_report(); return; }
     if (strcmp(buf, "param") == 0) { cmd_param_report(); return; }
     if (strcmp(buf, "route") == 0) {
-        send("ROUTE no-obstacle: r1 forward; r2 left; r3 forward STOP before bump.");
-        send("Each leg: measure d<mm> from car center, select r1/r2/r3, then g.");
+        send("ROUTE no-obstacle: r1 left; r2 backward; separate LEFT90; r3 forward STOP before bump.");
+        send("Each leg: select r1/r2/r3 FIRST, then set measured d<mm>, then g.");
         send("No automatic next leg; QR/tasks/bump crossing are not run.");
         return;
     }
