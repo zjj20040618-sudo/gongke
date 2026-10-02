@@ -42,7 +42,12 @@ static void reset(const char *failure)
 int run_aborted(void) { return 0; }
 void proto_send_scene(ProtoScene scene)
 {
+    event(scene == SCENE_IDLE ? "IDLE" : "WRONG_ASYNC_SCENE");
+}
+int step_vision_scene(ProtoScene scene)
+{
     event(scene == SCENE_EOD ? "SCENE_EOD" : "SCENE_RESCUE");
+    return !fail_stage || strcmp(fail_stage, "VISION") != 0;
 }
 int step_sweep(int want, int cls, int label, int32_t d[3], uint32_t to)
 {
@@ -96,23 +101,23 @@ int step_return_forward_odo(float target, uint32_t to)
 int main(void)
 {
     static const char *const eod[] = {
-        "SCENE_EOD", "SWEEP_BALL", "ALIGN_BALL", "BALL_STILL",
+        "SCENE_EOD", "SWEEP_BALL", "ALIGN_BALL", "IDLE", "BALL_STILL",
         "BALL_PRELOWER", "BALL_GRASP", "BALL_LIFT", "TURN_180",
-        "SWEEP_BUCKET", "ALIGN_BUCKET", "BUCKET_STILL", "BUCKET_LOWER",
+        "SCENE_EOD", "SWEEP_BUCKET", "ALIGN_BUCKET", "IDLE", "BUCKET_STILL", "BUCKET_LOWER",
         "BUCKET_RELEASE", "BUCKET_LIFT_OUT", "RACK_RETRACT",
         "RETURN_FORWARD", "TURN_180"
     };
     static const char *const rescue[] = {
-        "SCENE_RESCUE", "SWEEP_HOSTAGE", "ALIGN_HOSTAGE", "HOSTAGE_STILL",
+        "SCENE_RESCUE", "SWEEP_HOSTAGE", "ALIGN_HOSTAGE", "IDLE", "HOSTAGE_STILL",
         "HOSTAGE_PRELOWER", "HOSTAGE_GRASP", "HOSTAGE_LIFT"
     };
     static const char *const eod_stop_at_still[] = {
-        "SCENE_EOD", "SWEEP_BALL", "ALIGN_BALL", "BALL_STILL"
+        "SCENE_EOD", "SWEEP_BALL", "ALIGN_BALL", "IDLE", "BALL_STILL"
     };
     static const char *const eod_stop_at_release[] = {
-        "SCENE_EOD", "SWEEP_BALL", "ALIGN_BALL", "BALL_STILL",
+        "SCENE_EOD", "SWEEP_BALL", "ALIGN_BALL", "IDLE", "BALL_STILL",
         "BALL_PRELOWER", "BALL_GRASP", "BALL_LIFT", "TURN_180",
-        "SWEEP_BUCKET", "ALIGN_BUCKET", "BUCKET_STILL", "BUCKET_LOWER",
+        "SCENE_EOD", "SWEEP_BUCKET", "ALIGN_BUCKET", "IDLE", "BUCKET_STILL", "BUCKET_LOWER",
         "BUCKET_RELEASE"
     };
     if (!task_eod_config_missing() || !task_rescue_config_missing()) {
@@ -130,6 +135,10 @@ int main(void)
     reset("BUCKET_RELEASE");
     if (task_eod_run(LAB_R) != TASK_ABORT ||
         !check("EOD_STOP_RELEASE", eod_stop_at_release, sizeof eod_stop_at_release / sizeof eod_stop_at_release[0])) return 1;
-    puts("arm task flow: 4 cases passed");
+    reset("VISION");
+    if (task_eod_run(LAB_R) != TASK_ABORT || event_count != 1u) return 1;
+    reset("VISION");
+    if (task_rescue_run(LAB_CYL) != TASK_ABORT || event_count != 1u) return 1;
+    puts("arm task flow: 6 cases passed (including failed vision handshake)");
     return 0;
 }

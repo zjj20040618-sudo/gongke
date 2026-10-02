@@ -6,7 +6,7 @@
 #define PROTO_MAX_LEN 48
 #define PROTO_FIELDS  8
 #define PROTO_BINARY_MAX_OBJECTS 10u
-#define PROTO_BINARY_MAX_LEN     272u /* one QR, UTF-8 payload up to 255 bytes */
+#define PROTO_BINARY_MAX_LEN     280u /* legacy payload plus request envelope */
 #define PROTO_BINARY_GAP_MS      100u /* incomplete-frame gap, not mission timeout */
 
 typedef enum {
@@ -51,12 +51,15 @@ typedef struct {
 void proto_init(void);
 void proto_set_binary_mode(int enabled); /* before arming RX; no autodetection */
 void proto_set_tx(void (*tx)(const char *s));          /* 用户提供串口发送 */
+void proto_set_binary_tx(void (*tx)(const uint8_t *data, uint16_t length));
 void proto_set_on_frame(void (*cb)(const ProtoFrame *f));
 void proto_feed_byte(uint8_t ch);                       /* 每收到 1 字节调一次 */
 void proto_stats_get(ProtoStats *out);
 
-/* Legacy ASCII TX only. Binary RX mode leaves these no-op until commands are agreed. */
+/* Binary: queue a new request; only proto_service (DefaultTask) transmits. */
 void proto_send_scene(ProtoScene sc);
+void proto_service(void);
+int proto_scene_status(void); /* -1 failed, 0 waiting, 1 ACK + fresh frame (IDLE: ACK only) */
 void proto_send_ping(void);
 
 #endif

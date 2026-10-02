@@ -17,7 +17,12 @@ static void record(const char *event)
 int run_aborted(void) { return 0; }
 void proto_send_scene(ProtoScene scene)
 {
+    record(scene == SCENE_IDLE ? "IDLE" : "WRONG_ASYNC_SCENE");
+}
+int step_vision_scene(ProtoScene scene)
+{
     record(scene == SCENE_ANTI ? "SCENE_ANTI" : "WRONG_SCENE");
+    return 1;
 }
 int step_sweep(int want, int cls, int label, int32_t d[3], uint32_t to)
 {
@@ -61,10 +66,10 @@ static int check(const char *name, const char *const *want, unsigned expected)
 int main(void)
 {
     static const char *const success[] = {
-        "SCENE_ANTI", "SWEEP_TARGET", "ALIGN_TARGET", "STILL_CHECK", "FIRE"
+        "SCENE_ANTI", "SWEEP_TARGET", "ALIGN_TARGET", "IDLE", "STILL_CHECK", "FIRE"
     };
     static const char *const failed_still[] = {
-        "SCENE_ANTI", "SWEEP_TARGET", "ALIGN_TARGET", "STILL_CHECK"
+        "SCENE_ANTI", "SWEEP_TARGET", "ALIGN_TARGET", "IDLE", "STILL_CHECK"
     };
     still_ok = 1;
     count = 0;

@@ -17,7 +17,7 @@ static uint8_t s_rx2, s_rx3, s_rx4;   /* 2=视觉(USART2 PD5/6) 3=蓝牙(USART3 
 
 /* BT 输入环形缓冲(huart3,ISR 写 / robot_bt_service 读) */
 #define BT_RX_N 64u
-#define FW_BUILD_ID "20261002-LEFT-ROUTE-GSTOP"
+#define FW_BUILD_ID "20261002-VISION-CONTROL"
 static volatile uint8_t s_bt[BT_RX_N];
 static volatile uint8_t s_bt_wr, s_bt_rd;
 static volatile uint32_t s_bt_drop;
@@ -59,6 +59,10 @@ static void uart2_tx(const char *s)
     if (!s) return;
     HAL_UART_Transmit(&huart2, (uint8_t *)s, (uint16_t)strlen(s), 20u);
 }
+static void uart2_binary_tx(const uint8_t *data, uint16_t length)
+{
+    if (data && length) HAL_UART_Transmit(&huart2, (uint8_t *)data, length, 20u);
+}
 
 /* 开机一次性初始化:底层→控制→运动→臂→IMU→协议→任务→调试,再挂三个串口 RX */
 void robot_init(void)
@@ -72,9 +76,11 @@ void robot_init(void)
     proto_init();
     proto_set_binary_mode(1); /* camera AA55/CRC16; Bluetooth remains ASCII */
     proto_set_tx(uart2_tx);
+    proto_set_binary_tx(uart2_binary_tx);
     proto_set_on_frame(steps_feed_frame);   /* MaixCam 帧 → steps 暂存,wait_* 消费 */
     mission_init();
     test_init();
+    proto_send_scene(SCENE_IDLE); /* no camera reports accepted before a requested stage */
 
     s_bt_wr = s_bt_rd = 0;
     s_bt_drop = 0u;
@@ -123,6 +129,7 @@ void robot_bt_service(void)
     }
     uart_rx_ensure_all();
     test_poll();
+    proto_service(); /* sole binary TX owner; never blocks inside RX callback */
 }
 
 /* UART RX 完成回调：按句柄分发（唯一强定义，CubeMX 没生成过） */

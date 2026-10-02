@@ -23,7 +23,8 @@ void osDelay(uint32_t ms)
 void run_reset(void) { abort_flag = 0; reset_calls++; }
 int run_aborted(void) { return abort_flag; }
 void run_abort(void) { abort_flag = 1; }
-void proto_send_scene(ProtoScene scene) { (void)scene; scene_calls++; }
+void proto_send_scene(ProtoScene scene) { if (scene != SCENE_IDLE) scene_calls++; }
+int step_vision_scene(ProtoScene scene) { proto_send_scene(scene); return !abort_flag; }
 void motion_brake(void) { brake_calls++; }
 void motion_vel_set(float x, float y, float w)
 {

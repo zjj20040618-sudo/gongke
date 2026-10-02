@@ -71,7 +71,26 @@ void run_reset(void)
     select_object(-1, -1);
 }
 int  run_aborted(void) { return s_abort; }
-void run_abort(void)   { s_abort = 1; }
+void run_abort(void)   { s_abort = 1; proto_send_scene(SCENE_IDLE); }
+
+int step_vision_scene(ProtoScene scene)
+{
+    uint32_t pm;
+    motion_brake();
+    pm = __get_PRIMASK();
+    __disable_irq();
+    if (s_abort) { __set_PRIMASK(pm); return 0; }
+    proto_send_scene(scene);
+    s_qr_pending = s_obj_pending = 0;
+    __set_PRIMASK(pm);
+    while (!s_abort) {
+        int status = proto_scene_status();
+        if (status < 0) { run_abort(); return 0; }
+        if (status > 0) return 1;
+        osDelay(5); /* no timeout pretending success; g/a can interrupt */
+    }
+    return 0;
+}
 
 /* 阻塞等 ms(被 run_abort 打断即提前回):机械/视觉动作后"停一拍"的通用延时 */
 void wait_ms(uint32_t ms)

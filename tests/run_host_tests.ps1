@@ -29,6 +29,7 @@ try {
     Invoke-HostCase 'eod_mission_departure_route_test' @('tests/mission_departure_route_test.c') @('tests/stubs', 'App') @('-lm')
     Invoke-HostCase 'eod_proto_frame_test' @('tests/proto_frame_test.c', 'App/proto.c') @('tests/stubs', 'App')
     Invoke-HostCase 'eod_vision_target_slot_test' @('tests/vision_target_slot_test.c') @('tests/stubs', 'App') @('-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_vision_scene_wait_test' @('tests/vision_scene_wait_test.c') @('tests/stubs', 'App') @('-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_rotate_continuous_test' @('tests/rotate_continuous_test.c', 'App/steps.c') @('tests/stubs', 'App') @('-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_align_timeout_test' @('tests/align_timeout_test.c', 'App/steps.c') @('tests/stubs', 'App') @('-DVISION_CX_FWD_SIGN=1', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_align_gate_test' @('tests/align_boundary_test.c') @('tests/stubs', 'App') @('-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')

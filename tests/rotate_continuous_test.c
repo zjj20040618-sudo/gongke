@@ -17,6 +17,8 @@ static unsigned heading_reads;
 static float first_w;
 static unsigned drive_calls;
 static unsigned brake_calls;
+void proto_send_scene(ProtoScene scene) { (void)scene; }
+int proto_scene_status(void) { return 1; }
 
 uint32_t HAL_GetTick(void) { return now_ms; }
 void osDelay(uint32_t ms) { now_ms += ms; }

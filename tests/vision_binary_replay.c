@@ -5,6 +5,12 @@
 
 static uint32_t now_ms;
 uint32_t HAL_GetTick(void) { return now_ms; }
+static void transmitted(const uint8_t *data, uint16_t length)
+{
+    printf("TX,");
+    for (unsigned i = 0u; i < length; i++) printf("%02x", data[i]);
+    printf("\n");
+}
 static void received(const ProtoFrame *f)
 {
     if (f->type == PF_QR) printf("QR,%d,%d,%d,%u\n", f->a, f->b, f->c, f->sequence);
@@ -23,9 +29,15 @@ int main(void)
     unsigned long tick;
     ProtoStats stats;
     proto_init(); proto_set_binary_mode(1); proto_set_on_frame(received);
+    proto_set_binary_tx(transmitted);
     while (scanf("%lu %1023s", &tick, hex) == 2) {
         const size_t n = strlen(hex);
         now_ms = (uint32_t)tick;
+        if (hex[0] == '@' && hex[1] >= '0' && hex[1] <= '4' && hex[2] == '\0') {
+            proto_send_scene((ProtoScene)(hex[1] - '0')); proto_service(); continue;
+        }
+        if (strcmp(hex, "?") == 0) { printf("STATUS,%d\n", proto_scene_status()); continue; }
+        if (strcmp(hex, "~") == 0) { proto_service(); continue; }
         if (n % 2u) return 1;
         for (size_t i = 0; i < n; i += 2u) {
             int high = nibble(hex[i]), low = nibble(hex[i + 1u]);

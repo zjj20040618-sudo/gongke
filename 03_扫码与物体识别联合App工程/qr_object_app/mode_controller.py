@@ -13,8 +13,13 @@ class ModeController:
         return (config.QR_WIDTH, config.QR_HEIGHT) if mode == config.MODE_QR else (config.OBJECT_WIDTH, config.OBJECT_HEIGHT)
 
     def enter(self, new_mode):
+        if new_mode == "IDLE":
+            self.mode = new_mode  # retain loaded model; no capture/inference/report while idle
+            return
         if new_mode not in (config.MODE_QR, config.MODE_OBJECT):
             raise ValueError("unknown mode: " + str(new_mode))
+        if new_mode == self.mode:
+            return
         old_size = (self.width, self.height)
         width, height = self._resolution_for(new_mode)
         started = time.ticks_ms()

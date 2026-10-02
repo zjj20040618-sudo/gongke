@@ -31,13 +31,14 @@ int task_eod_run(int ball_color)
     float bucket_scan_origin;
     if (run_aborted()) return TASK_ABORT;
 
-    proto_send_scene(SCENE_EOD);
+    if (!step_vision_scene(SCENE_EOD)) return TASK_ABORT;
 
     /* 1 抓:左侧相机沿车身前后方向扫d1色球；真实入口/远端/像素符号待实测。
      * 前后走补扫,to=0 **一直扫到出现、不弃站**(垫底,正常别走到这)。
      *   找到后视觉锁(补相机↔爪偏移) */
     if (!step_sweep(PF_OBJ, CLS_BALL, ball_color, 0, 0)) return TASK_ABORT;   /* to=0 不限时 */
     if (!step_align(CLS_BALL, ball_color, 0)) return TASK_ABORT;   /* to=0 对到成为止 */
+    proto_send_scene(SCENE_IDLE);
     if (!step_arm_prepare("EOD", "BALL_STILL")) return TASK_ABORT;
     if (!step_arm_run("EOD", "BALL_PRELOWER", EOD_BALL_PRELOWER_STEPS, step_arm_lower)) return TASK_ABORT;
     if (!step_arm_run("EOD", "BALL_GRASP", EOD_BALL_EXTEND_STEPS, step_grasp)) return TASK_ABORT;
@@ -53,8 +54,10 @@ int task_eod_run(int ball_color)
      * EOD_LOWER_STEPS 落进桶口 → 开爪放进 → 抬回(出桶口)。不留限时兜底(2026-09-06 用户:
      * 别限自己任务时间,先完成再完美)——咬着球也一直扫到桶放进为止,不主动"超时丢球"弃分;
      * 停整场只靠外部 stop / 比赛时限。 */
+    if (!step_vision_scene(SCENE_EOD)) return TASK_ABORT; /* new request even though algorithm is OBJECT again */
     if (!step_sweep(PF_OBJ, CLS_BUCKET, -1, 0, 0)) return TASK_ABORT;   /* to=0 不限时 */
     if (!step_align(CLS_BUCKET, -1, 0)) return TASK_ABORT;   /* to=0 对到成为止 */
+    proto_send_scene(SCENE_IDLE);
     if (!step_arm_prepare("EOD", "BUCKET_STILL")) return TASK_ABORT;
     if (!step_arm_run("EOD", "BUCKET_LOWER", EOD_LOWER_STEPS, step_arm_lower)) return TASK_ABORT;
     if (!step_arm_release("EOD", "BUCKET_RELEASE")) return TASK_ABORT;

@@ -25,6 +25,7 @@ void run_reset(void) { aborted = 0; }
 int run_aborted(void) { return aborted; }
 void run_abort(void) { aborted = 1; }
 void proto_send_scene(ProtoScene scene) { (void)scene; }
+int step_vision_scene(ProtoScene scene) { (void)scene; return !aborted; }
 void motion_brake(void) { vx = vy = 0.0f; }
 void motion_vel_set(float x, float y, float w)
 {

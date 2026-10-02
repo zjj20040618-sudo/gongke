@@ -5,6 +5,7 @@
 #include <string.h>
 
 static void (*s_tx)(const char *) = 0;
+static void (*s_binary_tx)(const uint8_t *, uint16_t) = 0;
 static void (*s_on_frame)(const ProtoFrame *) = 0;
 
 static char buf[PROTO_MAX_LEN];
@@ -16,6 +17,9 @@ static unsigned s_binary_len;
 static uint32_t s_binary_tick;
 static uint16_t s_binary_seq;
 static uint8_t s_binary_have_seq;
+static volatile uint16_t s_request;
+static volatile uint8_t s_controlled, s_mode, s_ack, s_fresh, s_failed, s_due;
+static uint32_t s_send_tick;
 
 static int token_int(const char *tok, int *out);
 static int parse_scene(const char *tok);
@@ -28,6 +32,7 @@ void proto_init(void)
 {
     blen = dropping = 0;
     s_binary = 0u; s_binary_len = 0u; s_binary_have_seq = 0u;
+    s_request = 0u; s_controlled = s_mode = s_ack = s_fresh = s_failed = s_due = 0u;
     memset((void *)&s_stats, 0, sizeof s_stats);
 }
 void proto_set_binary_mode(int enabled)
@@ -36,6 +41,7 @@ void proto_set_binary_mode(int enabled)
     blen = dropping = 0; s_binary_len = 0u; s_binary_have_seq = 0u;
 }
 void proto_set_tx(void (*tx)(const char *s))          { s_tx = tx; }
+void proto_set_binary_tx(void (*tx)(const uint8_t *, uint16_t)) { s_binary_tx = tx; }
 void proto_set_on_frame(void (*cb)(const ProtoFrame *f)) { s_on_frame = cb; }
 
 /* 串口逐字节喂入(USART2 RxCplt 回调里被调):攒行,\n 触发一次整帧 dispatch,孤立 \r 忽略 */
@@ -215,6 +221,39 @@ static int binary_dispatch(const uint8_t *p)
     return 1;
 }
 
+/* Called only after outer CRC and exact length validation. Never transmit in RX ISR. */
+static int control_dispatch(const uint8_t *p, unsigned length)
+{
+    if (p[0] == 0x61u) {
+        if (length != 5u || p[3] > 2u || p[4] > 1u) return 0;
+        if (!s_controlled || read_le16(p + 1) != s_request) return 1;
+        if (p[4] != 0u || p[3] != s_mode) { s_failed = 1u; s_ack = 0u; return 1; }
+        s_ack = 1u;
+        return 1;
+    }
+    if (p[0] == 0x62u) {
+        const unsigned n = read_le16(p + 3);
+        const uint8_t *body = p + 5;
+        if (n + 5u != length || n < 4u) return 0;
+        if (!s_controlled || !s_ack || s_failed || s_mode == 0u
+            || read_le16(p + 1) != s_request) { s_stats.rejected++; return 1; }
+        if (s_mode == 1u && body[0] == 0x51u) {
+            if (body[3] == 0u && n == 4u) { s_fresh = 1u; return 1; }
+            if (body[3] != 1u || n < 5u || n != 13u + body[4]) return 0;
+            /* A structurally fresh but invalid QR is not a valid task selection. */
+            s_fresh = 1u;
+        } else if (s_mode == 2u && body[0] == 0x01u) {
+            if (body[3] > PROTO_BINARY_MAX_OBJECTS || n != 14u + 11u * body[3]) return 0;
+        } else return 0;
+        if (!binary_dispatch(body)) return 0;
+        s_fresh = 1u;
+        return 1;
+    }
+    /* Legacy frames remain available for standalone replay, never for an armed run. */
+    if (s_controlled) { s_stats.rejected++; return 1; }
+    return binary_dispatch(p);
+}
+
 static void binary_drop(unsigned length)
 {
     s_binary_len -= length;
@@ -238,7 +277,15 @@ static void binary_feed(uint8_t ch)
         if (s_binary_buf[1] != 0x55u) { binary_drop(1u); continue; }
         if (s_binary_len < 6u) return;
         type = s_binary_buf[2]; count = s_binary_buf[5];
-        if (type == 0x01u && count <= PROTO_BINARY_MAX_OBJECTS) length = 18u + 11u * count;
+        if (type == 0x61u) length = 9u;
+        else if (type == 0x62u) {
+            if (s_binary_len < 7u) return;
+            length = 9u + read_le16(s_binary_buf + 5);
+            if (length > PROTO_BINARY_MAX_LEN || length < 13u) {
+                s_stats.binary_bad++; s_stats.rejected++; binary_drop(1u); continue;
+            }
+        }
+        else if (type == 0x01u && count <= PROTO_BINARY_MAX_OBJECTS) length = 18u + 11u * count;
         else if (type == 0x51u && count <= 1u) {
             if (count == 0u) length = 8u;
             else {
@@ -253,7 +300,7 @@ static void binary_feed(uint8_t ch)
             binary_drop(1u); /* keep subsequent headers after corrupt length/CRC */
             continue;
         }
-        if (!binary_dispatch(s_binary_buf + 2)) { s_stats.binary_bad++; s_stats.rejected++; }
+        if (!control_dispatch(s_binary_buf + 2, length - 4u)) { s_stats.binary_bad++; s_stats.rejected++; }
         binary_drop(length);
     }
 }
@@ -280,8 +327,18 @@ static int token_int(const char *tok, int *out)
 /* 发 "SET,scene" 给视觉:切当前任务的上报场景(mission 每区开头调) */
 void proto_send_scene(ProtoScene sc)
 {
-    /* Current Maix binary app has no RX command handler. Do not send ASCII to it. */
-    if (s_binary) return;
+    if (s_binary) {
+        uint32_t pm = __get_PRIMASK();
+        __disable_irq();
+        s_controlled = 1u;
+        s_mode = sc == SCENE_IDLE ? 0u : sc == SCENE_QR ? 1u : 2u;
+        s_ack = s_fresh = 0u; s_binary_have_seq = 0u;
+        /* Do not silently reuse an in-run request number on wrap. */
+        if (s_request == 65535u) { s_failed = 1u; s_due = 0u; }
+        else { s_request++; s_failed = 0u; s_due = 1u; }
+        __set_PRIMASK(pm);
+        return;
+    }
     const char *name = "idle";
     switch (sc) {
         case SCENE_QR: name = "qr"; break;
@@ -294,6 +351,34 @@ void proto_send_scene(ProtoScene sc)
     int n = snprintf(s, sizeof s, "SET,%s\r\n", name);
     (void)n;
     if (s_tx) s_tx(s);
+}
+
+int proto_scene_status(void)
+{
+    uint32_t pm = __get_PRIMASK();
+    int status;
+    __disable_irq();
+    status = s_failed ? -1 : (s_ack && (s_mode == 0u || s_fresh)) ? 1 : 0;
+    __set_PRIMASK(pm);
+    return status;
+}
+
+void proto_service(void)
+{
+    uint8_t packet[8] = {0xAAu, 0x55u, 0x60u, 0u, 0u, 0u, 0u, 0u};
+    uint16_t crc;
+    uint32_t pm = __get_PRIMASK(), now = HAL_GetTick();
+    __disable_irq();
+    if (!s_binary || !s_controlled || s_failed || s_ack || !s_binary_tx
+        || (!s_due && (uint32_t)(now - s_send_tick) < 500u)) {
+        __set_PRIMASK(pm); return;
+    }
+    packet[3] = (uint8_t)s_request; packet[4] = (uint8_t)(s_request >> 8);
+    packet[5] = s_mode; s_due = 0u; s_send_tick = now;
+    __set_PRIMASK(pm);
+    crc = binary_crc(packet + 2, 4u);
+    packet[6] = (uint8_t)crc; packet[7] = (uint8_t)(crc >> 8);
+    s_binary_tx(packet, sizeof packet);
 }
 
 /* 发 PING 给视觉探活(链路测试用) */

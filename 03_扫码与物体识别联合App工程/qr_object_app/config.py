@@ -1,7 +1,7 @@
 """联合 App 配置，作用类似 C 工程的 config.h。"""
 MODE_QR = "QR"
 MODE_OBJECT = "OBJECT"
-START_MODE = MODE_QR
+START_MODE = "IDLE"  # wait for MCU; USER can start standalone QR before UART ownership
 KEY_DEBOUNCE_MS = 180
 KEY_LONG_PRESS_MS = 1500
 QR_WIDTH, QR_HEIGHT = 1600, 900

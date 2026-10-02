@@ -292,11 +292,12 @@ void mission_main(void)
     /* ① QR 获取：左平移→倒退到第三段起点；无效则在倒退段两端前后有界补扫。
      * 节点按最新口径停车确认/清本段航向/等待；未标定路线直接 ABORT。 */
     to_state(MS_READ_QR);
-    proto_send_scene(SCENE_QR);   /* 让视觉切 QR 上报;MaixCam 常开也照吃 */
+    if (!step_vision_scene(SCENE_QR)) goto failed;
     if (!qr_travel()) { to_state(MS_ABORT); motion_brake(); goto terminal; }
 
     /* 防御性二次门：只有三个任务目标已同时解码并锁存，才允许切到越障。 */
     if (!s_qr_ok) goto failed;
+    proto_send_scene(SCENE_IDLE);
 
     /* ② 第三段前车身左转90°，再沿新车头前进到减速带前安全起冲点，再越障。
      * 倒退端点不等于越障入口；距离须按车中心/车头安全间隙实测。
@@ -355,5 +356,6 @@ failed:
     to_state(MS_ABORT);
 terminal:
     motion_brake();
+    proto_send_scene(SCENE_IDLE); /* stop immediately; camera ACK never delays braking */
     for (;;) osDelay(200);   /* 终端驻留:停着等人工复位/重启 */
 }

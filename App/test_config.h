@@ -15,6 +15,7 @@
 #define T_JOG_RETURN_WAIT_MS 2000u
 #define T_SERVO_RETURN_WAIT_MS 2000u
 #define T_DIST_STILL_MS 250u
+#define T_WALK_ORIGIN_TOL_MM 0.5f /* Encoder-axis stop tolerance, not physical position accuracy. */
 #define T_ENC_REPORT_MS 1000u
 #define T_DIST_TRACE_MS 500u
 

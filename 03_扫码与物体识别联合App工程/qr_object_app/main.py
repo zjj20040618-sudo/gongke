@@ -8,7 +8,8 @@ from maix import app, camera, display, image, time
 import config
 from hardware import init_uart, send_packet
 from mode_controller import ModeController
-from protocol import build_object_packet, build_qr_packet
+from protocol import build_object_packet, build_qr_packet, CommandReceiver
+from control_session import ControlSession
 from qr_reader import QrReader
 from ui import draw_header, draw_objects, draw_qrs
 from user_button import UserButton
@@ -19,16 +20,26 @@ def main():
     screen = display.Display() if config.DISPLAY_ENABLED else None
     serial, button = init_uart(), UserButton()
     modes, qr_reader = ModeController(cam), QrReader()
+    receiver, control = CommandReceiver(), ControlSession(modes)
     sequence = frame_count = fps_count = 0
     fps_value, fps_started = 0.0, time.ticks_ms()
     cached_qrs, cached_qr_left = [], 0
     modes.enter(config.START_MODE)
-    print("[APP] ready; left USER switches modes; RESET restarts board")
+    print("[APP] ready IDLE; UART controls recognition; USER for standalone only")
     try:
         while not app.need_exit():
             loop_started = time.ticks_ms()
+            if serial is not None:
+                # Official MaixPy UART: timeout=0 returns immediately, max 256 bytes this loop.
+                data = serial.read(len=256, timeout=0)
+                for request_id, mode in receiver.feed(data):
+                    ack, changed = control.apply(request_id, mode)
+                    if changed:
+                        cached_qrs, cached_qr_left = [], 0
+                        fps_count, fps_value, fps_started = 0, 0.0, time.ticks_ms()
+                    send_packet(serial, ack)  # applied mode ACK precedes any new-result frame
             # 回调线程只置位；主线程在没有旧图像被占用时安全切换。
-            if button.take_toggle_request():
+            if button.take_toggle_request() and not control.remote_owned:
                 try:
                     modes.toggle()
                     cached_qrs, cached_qr_left = [], 0
@@ -36,6 +47,10 @@ def main():
                     gc.collect()
                 except Exception as exc:
                     print("[MODE] switch failed; old mode continues:", exc)
+
+            if modes.mode == "IDLE" or (control.remote_owned and control.request_id is None):
+                time.sleep_ms(10)
+                continue
 
             capture_started = time.ticks_ms()
             img = cam.read()
@@ -50,10 +65,11 @@ def main():
                     cached_qrs, cached_qr_left = qrs, config.QR_KEEP_FRAMES
                     for qr in qrs:
                         print("[QR] payload={} {} center=({}, {})".format(qr["payload"], qr["text"], qr["x"] + qr["w"] // 2, qr["y"] + qr["h"] // 2))
-                    uart_started = time.ticks_ms()
-                    if send_packet(serial, build_qr_packet(sequence, qrs)):
-                        sequence = (sequence + 1) & 0xFFFF
-                    uart_ms = time.ticks_ms() - uart_started
+                # Empty QR is a fresh heartbeat, not QR success. Cached drawing is never sent.
+                uart_started = time.ticks_ms()
+                if send_packet(serial, control.result(build_qr_packet(sequence, qrs))):
+                    sequence = (sequence + 1) & 0xFFFF
+                uart_ms = time.ticks_ms() - uart_started
                 if cached_qr_left > 0:
                     draw_qrs(img, cached_qrs); cached_qr_left -= 1
             else:
@@ -61,7 +77,7 @@ def main():
                 vision_ms = time.ticks_ms() - loop_started
                 uart_started = time.ticks_ms()
                 packet = build_object_packet(sequence, objects, img.width(), img.height(), capture_ms, work_ms, vision_ms)
-                if send_packet(serial, packet):
+                if send_packet(serial, control.result(packet)):
                     sequence = (sequence + 1) & 0xFFFF
                 uart_ms = time.ticks_ms() - uart_started
                 draw_objects(img, objects)

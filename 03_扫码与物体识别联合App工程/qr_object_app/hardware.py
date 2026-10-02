@@ -16,11 +16,10 @@ def init_uart():
         return None
 
 def send_packet(serial, packet):
-    if serial is None:
+    if serial is None or packet is None:
         return False
     try:
-        serial.write(packet)
-        return True
+        return serial.write(packet) == len(packet)
     except Exception as exc:
         print("[UART] send failed:", exc)
         return False

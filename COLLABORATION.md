@@ -17,11 +17,11 @@
 
 本约定同样要求电控侧用证据纠正自身错误，不是认定某个人永远正确。视觉自身算法可继续迭代，但影响双端接口或任务行为的部分需要共同核对。这里是审核规则，**没有配置服务器端自动拦截或分支保护**。
 
-## 本次交接：2026-10-02 左装路线与g停止
+## 本次交接：2026-10-02 双向视觉控制与行走g回程
 
-源码固件号 `20261002-LEFT-ROUTE-GSTOP`。用户逐段确认的机械臂/相机朝左路线已落实，默认整场启动后再次 `g` 中止，测试回程可用 `g` 停止，`a` 保留；停止不自动续跑整场。实际提交编号看本次 Git 历史，不把固件号当作设备已烧录证明。
+源码固件号 `20261002-VISION-CONTROL`。左装路线基于已上传 `aadf028`，本轮行走测试新增g启动→g暂停→g按本轮已走编码器距离反向返回，回程再g可停并续返；整场仍第二次g中止、不自动续跑。电控及视觉App均已配套开始/停止/切模式、ACK与请求绑定结果，操作见 [VISION_CONTROL_PROTOCOL.md](VISION_CONTROL_PROTOCOL.md)。视觉识别算法/模型未改，桶识别仍待队友补。实际提交编号看Git历史，不把源码当作设备已更新证明。
 
-主机回归、11组视觉二进制回放通过，Keil全量0 Error / 0 Warning；无新增烧录/实机验证。四个标定闸门保持0，`BENCH_AUTO=0`，未测数值仍占位。视觉自动切模式、类别覆盖和实机标定未齐，不放行整场。最新操作口径及构建摘要看 [PROJECT_GUIDE.md](PROJECT_GUIDE.md)，单项实测看 [CONTROL_TUNING_TODO.md](CONTROL_TUNING_TODO.md)，视觉缺口看 [VISION_CONTROL_TODO.md](VISION_CONTROL_TODO.md)。
+全套电控主机回归、18组协议回放/控制检查、2组真实视觉主循环的模拟设备检查通过，Keil全量0 Error / 0 Warning；无新增烧录/实机验证。四个标定闸门保持0，`BENCH_AUTO=0`，未测数值占位。自动切换已有软件，实际UART/重启处置/识别效果仍待联调，类别与标定未齐，不放行整场。最新操作口径及构建摘要看 [PROJECT_GUIDE.md](PROJECT_GUIDE.md)，单项实测看 [CONTROL_TUNING_TODO.md](CONTROL_TUNING_TODO.md)，视觉缺口看 [VISION_CONTROL_TODO.md](VISION_CONTROL_TODO.md)。
 
 ## 四个名词，怎么认
 

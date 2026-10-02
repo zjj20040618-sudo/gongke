@@ -12,7 +12,9 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "03_扫码与物体识别联合App工程/qr_object_app"))
-from protocol import build_object_packet, build_qr_packet
+from protocol import (build_object_packet, build_qr_packet, build_control_packet,
+                      build_ack_packet, bind_result, CommandReceiver)
+from control_session import ControlSession
 from utils import crc16_ccitt
 
 
@@ -52,12 +54,100 @@ class BinaryReplayTests(unittest.TestCase):
             chunks = [(0, chunks)]
         lines = []
         for tick, chunk in chunks:
+            if isinstance(chunk, str):
+                lines.append("{} {}\n".format(tick, chunk))
+                continue
             for offset in range(0, len(chunk), 500):
                 lines.append("{} {}\n".format(tick, chunk[offset:offset + 500].hex()))
         output = subprocess.run([str(self.executable)], input="".join(lines).encode(),
                                 capture_output=True, check=True).stdout.decode().splitlines()
         stats = tuple(map(int, output[-1].split(",")[1:]))
         return output[:-1], stats
+
+    def test_control_ack_then_fresh_qr_not_ack_alone(self):
+        frames, _ = self.replay([(0, "@1"), (1, "?"),
+            (2, bind_result(qr(1), 1)), (3, build_ack_packet(1, 1)), (4, "?"),
+            (5, bind_result(build_qr_packet(2, []), 1)), (6, "?"),
+            (7, bind_result(qr(3), 1))])
+        self.assertEqual(frames, ["TX," + build_control_packet(1, 1).hex(),
+            "STATUS,0", "STATUS,0", "STATUS,1", "QR,1,2,3,3"])
+
+    def test_control_stale_legacy_wrong_kind_and_stop(self):
+        frames, _ = self.replay([(0, "@2"), (1, build_ack_packet(1, 2)),
+            (2, objects(1, [detection(4)])), (3, bind_result(qr(1), 1)),
+            (4, bind_result(objects(2, [detection(4)]), 1)),
+            (5, "@2"), (6, bind_result(objects(3, [detection(4)]), 1)),
+            (7, build_ack_packet(1, 2)), (8, "?"), (9, build_ack_packet(2, 2)),
+            (10, bind_result(objects(4, []), 2)), (11, "?"),
+            (12, "@0"), (13, bind_result(objects(5, [detection(4)]), 2)),
+            (14, build_ack_packet(3, 0)), (15, "?")])
+        self.assertEqual([f for f in frames if f.startswith("OBJ,")],
+                         ["OBJ,0,0,25,40,30,40,88,2,480,320"])
+        self.assertEqual([f for f in frames if f.startswith("STATUS")],
+                         ["STATUS,0", "STATUS,1", "STATUS,1"])
+        self.assertFalse(any(f.startswith("QR,") for f in frames))
+
+    def test_control_retry_exact_id_and_negative_ack(self):
+        command = "TX," + build_control_packet(1, 1).hex()
+        frames, _ = self.replay([(0, "@1"), (499, "~"), (500, "~"),
+            (501, build_ack_packet(99, 1)), (502, "?"),
+            (503, build_ack_packet(1, 0, 1)), (504, "?"), (1000, "~"),
+            (1001, bind_result(qr(1), 1)), (1002, "@0"),
+            (1003, build_ack_packet(2, 0)), (1004, "?")])
+        self.assertEqual(frames, [command, command, "STATUS,0", "STATUS,-1",
+            "TX," + build_control_packet(2, 0).hex(), "STATUS,1"])
+
+    def test_control_bad_crc_length_and_wrong_actual_mode(self):
+        corrupt = bytearray(build_ack_packet(1, 1)); corrupt[-1] ^= 1
+        bad_length = recalculate_crc(b"\xaa\x55\x62\x01\x00\xff\xff\x00\x00")
+        frames, stats = self.replay([(0, "@1"), (1, bytes(corrupt) + bad_length),
+            (200, build_ack_packet(1, 2)), (201, "?"),
+            (202, bind_result(qr(9), 1))])
+        self.assertEqual(frames[-1], "STATUS,-1")
+        self.assertFalse(any(f.startswith("QR,") for f in frames))
+        self.assertGreaterEqual(stats[3], 1)
+
+    def test_control_invalid_qr_is_fresh_but_not_task_success(self):
+        frames, _ = self.replay([(0, "@1"), (1, build_ack_packet(1, 1)),
+            (2, bind_result(qr(1, "12x"), 1)), (3, "?"),
+            (4, bind_result(qr(2, "x" * 255), 1)), (5, bind_result(qr(3), 1))])
+        self.assertEqual(frames, ["TX," + build_control_packet(1, 1).hex(),
+            "STATUS,1", "QR,1,2,3,3"])
+
+    def test_camera_command_parser_fragment_noise_and_crc(self):
+        receiver = CommandReceiver()
+        command = build_control_packet(7, 2)
+        corrupt = bytearray(command); corrupt[-1] ^= 1
+        self.assertEqual(receiver.feed(b"noise" * 1000 + bytes(corrupt) + command[:4]), [])
+        self.assertLessEqual(len(receiver.buffer), 7)
+        self.assertEqual(receiver.feed(command[4:] + build_control_packet(8, 0)), [(7, 2), (8, 0)])
+        self.assertEqual(receiver.feed(build_control_packet(0, 1)), [])
+
+    def test_camera_apply_idempotent_stop_and_failure(self):
+        class Modes:
+            mode = "IDLE"
+            calls = 0
+            fail = False
+            def enter(self, mode):
+                self.calls += 1
+                if self.fail:
+                    raise RuntimeError("synthetic model load failure")
+                self.mode = mode
+        modes = Modes(); control = ControlSession(modes)
+        ack, changed = control.apply(1, 2)
+        self.assertTrue(changed)
+        self.assertEqual(ack, build_ack_packet(1, 2))
+        self.assertEqual(control.result(objects(1, [])), bind_result(objects(1, []), 1))
+        self.assertEqual(control.apply(1, 2), (ack, False))
+        self.assertEqual(modes.calls, 1)
+        self.assertTrue(control.apply(2, 2)[1])
+        self.assertEqual(control.result(objects(2, [])), bind_result(objects(2, []), 2))
+        self.assertEqual(control.apply(3, 0)[0], build_ack_packet(3, 0))
+        self.assertIsNone(control.result(qr(3)))
+        modes.fail = True
+        self.assertEqual(control.apply(4, 1)[0], build_ack_packet(4, 0, 1))
+        self.assertIsNone(control.result(qr(4)))
+        self.assertEqual(control.apply(4, 1)[1], False)
 
     def test_all_27_qr_codes_fragmented_and_concatenated(self):
         packets = [qr(i, "".join(digits)) for i, digits in enumerate(itertools.product("123", repeat=3))]
