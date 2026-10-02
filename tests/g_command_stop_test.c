@@ -15,17 +15,25 @@ static int host_imu_valid, reset_calls;
 static int32_t host_counts[4];
 static char last_message[512];
 static size_t host_tx_bytes;
+static unsigned param_packets, param_while_driving;
+static char last_params[768];
 
 uint32_t HAL_GetTick(void) { return host_tick; }
 void osDelay(uint32_t ms) { host_tick += ms; }
 void bp_debug_send(const char *s)
 {
     host_tx_bytes += strlen(s);
+    if (strncmp(s, "PARAM_START ", 12u) == 0) {
+        param_packets++;
+        if (host_vx || host_vy || host_w) param_while_driving++;
+        snprintf(last_params, sizeof last_params, "%s", s);
+    }
     /* Production send() appends CRLF in a separate UART write. */
     if (strcmp(s, "\r\n") != 0)
         snprintf(last_message, sizeof last_message, "%s", s);
 }
 void bp_laser_set(int on) { (void)on; }
+uint32_t bp_debug_tx_dropped(void) { return 0u; }
 int32_t bp_enc_raw_total(int m) { (void)m; return 0; }
 void bp_enc_raw_reset_all(void) { }
 void motion_brake(void) { brake_calls++; host_vx = host_vy = host_w = 0.0f; }
@@ -88,6 +96,8 @@ static void reset_fixture(void)
     host_yaw = 0.0f;
     host_imu_valid = 1; reset_calls = 0;
     memset(host_counts, 0, sizeof host_counts);
+    host_tx_bytes = param_packets = param_while_driving = 0u;
+    last_params[0] = '\0';
     test_init();
 }
 
@@ -352,6 +362,51 @@ int main(void)
     CHECK(strstr(last_message, "ok=0 yaw_deg=9999.00"));
     run_cmd("g"); CHECK(s_round == R_READY && !host_vx && !host_w);
     puts("BLE help burst fits TX queue; IMU 1Hz trace marks invalid samples; g stops stats");
+
+    reset_fixture(); run_cmd("r1"); run_cmd("g"); CHECK(!param_packets && !s_test_seq);
+    run_cmd("d100"); (run_cmd)("g"); CHECK(s_round == R_PREP && !param_packets);
+    (run_cmd)("g"); CHECK(!param_packets && !s_test_seq); /* PREP cancel is not a new test */
+    run_cmd("g");
+    CHECK(param_packets == 1u && !param_while_driving);
+    CHECK(strstr(last_params, "FW=" ROBOT_FW_BUILD_ID " test=1 mode=17 leg=1 phase=OUT"));
+    CHECK(strstr(last_params, "PARAM_MOVE test=1 phase=OUT v_mms=300.0 cmd_mm=-100.0"));
+    CHECK(strstr(last_params, "PARAM_END test=1 phase=OUT tx_drop=0\r\n"));
+    CHECK(host_tx_bytes < 1400u); /* ordinary select/params/PREP/snapshot/start fits 2047B */
+    host_lateral = -45.0f; run_cmd("g"); settle(); CHECK(param_packets == 1u);
+    run_cmd("v500"); run_cmd("d900"); run_cmd("rff0.04"); run_cmd("g");
+    CHECK(param_packets == 2u && !param_while_driving);
+    CHECK(strstr(last_params, "phase=RETURN v_mms=300.0 cmd_mm=45.0 ff_ratio=0.0400"));
+    host_lateral = -20.0f; run_cmd("g"); settle(); run_cmd("g");
+    CHECK(param_packets == 3u && s_active_test == 1u);
+    CHECK(strstr(last_params, "phase=RETURN_RESUME v_mms=300.0 cmd_mm=20.0"));
+    run_cmd("a"); CHECK(param_packets == 3u);
+
+    for (int mode = 1; mode <= 32; ++mode) {
+        char cmd[12];
+        if (mode == 11 || mode == 12) continue;
+        reset_fixture(); snprintf(cmd, sizeof cmd, "%d", mode); run_cmd(cmd);
+        if (mode != 13) {
+            if (mode <= 6 || (mode >= 15 && mode <= 18) || mode == 31) run_cmd("v200");
+            if (mode == 5 || mode == 6 || (mode >= 15 && mode <= 18)) run_cmd("d100");
+            if (mode >= 7 && mode <= 10) run_cmd("p45");
+            if (mode >= 24 && mode <= 27) run_cmd("nl2");
+            if (mode == 28 || mode == 29) run_cmd("u1500");
+            run_cmd("g");
+        }
+        CHECK(param_packets == 1u && !param_while_driving && strlen(last_params) < 768u);
+        CHECK(strstr(last_params, "PARAM_END test=1"));
+    }
+    reset_fixture(); run_cmd("30"); run_cmd("g");
+    CHECK(strstr(last_params, "target_deg=-90.0 kp=0.020") && strstr(last_params, "tol_deg=1.00"));
+    reset_fixture(); run_cmd("31"); run_cmd("v150"); host_abort = 1; run_cmd("g");
+    CHECK(!param_packets && !s_test_seq && !host_vx && strstr(last_message, "ERR CROSS_START"));
+    reset_fixture(); run_cmd("26"); run_cmd("g"); CHECK(!param_packets);
+    run_cmd("nl2"); run_cmd("g"); tick(); tick(); host_tick += 2000u; tick();
+    CHECK(param_packets == 2u && strstr(last_params, "phase=RETURN axis=0 dir=1 n=2"));
+    reset_fixture(); run_cmd("28"); run_cmd("g"); CHECK(!param_packets);
+    run_cmd("u1500"); run_cmd("g"); host_tick += 2000u; tick();
+    CHECK(param_packets == 2u && strstr(last_params, "phase=RETURN us=1400"));
+    puts("auto PARAM: all 30 enabled modes, actual return/resume values, no invalid/cancel snapshots, actuator return, bounded atomic packet passed");
 
     puts("walk g cycle: all 10 modes signed return / brake drift / pause-resume / speed snapshot; auto-stop, timed actual distance, directional FF, IMU failure and cancel passed");
     puts("real g router: pending/running/terminal mission stop, a alias, closed gate, CRLF/idle framing, wheel/distance/turn/IMU/jog/servo/return passed");

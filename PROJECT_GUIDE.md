@@ -2,7 +2,7 @@
 
 更新：2026-10-02。当前共用工作工程为 `C:/Users/15119/gongkesai/gongke`（GitHub `zjj20040618-sudo/gongke`）；不要与桌面交接包或旧 `jiejie` 仓库混编。Keil 从 [MDK-ARM/jiejie.uvprojx](MDK-ARM/jiejie.uvprojx) 打开，工程名不代表仍使用旧仓库。
 
-当前源码固件号 `20261002-ROUTE-SAFETY`，基于 `ddd90c9` 的双端视觉控制版本准备今晚独立路线/越障测试。**当前入口以 [ROUTE_NIGHT_PLAN.md](ROUTE_NIGHT_PLAN.md) 为准**；软件修改、复核结果与最新构建见 [ROUTE_SAFETY_AUDIT.md](ROUTE_SAFETY_AUDIT.md)。下文各阶段的固件号、“当前”“未提交”均指该阶段历史，不覆盖本段；实际共享版本以Git提交编号为准，未烧录/实机验收。
+当前源码固件号 `20261002-AUTO-PARAM`（统一定义在`App/robot.h`）；在路线准备版`9f4d664`上增加每轮自动参数快照，用户不必再手发param。**当前入口以 [ROUTE_NIGHT_PLAN.md](ROUTE_NIGHT_PLAN.md) 为准**；软件修改、复核结果与最新构建见 [ROUTE_SAFETY_AUDIT.md](ROUTE_SAFETY_AUDIT.md)。下文各阶段的固件号、“当前”“未提交”均指该阶段历史，不覆盖本段；实际共享版本以Git提交编号为准，未烧录/实机验收。
 
 双向协议与队友操作见 [VISION_CONTROL_PROTOCOL.md](VISION_CONTROL_PROTOCOL.md)，旧结果body和类别映射见 [VISION_INTEGRATION.md](VISION_INTEGRATION.md)。18组协议回放、2组相机主循环检查本轮再次通过；今晚路线版的最新日志/HEX校验值见安全检查记录，双向协议文档的校验值仍对应上一版。主机与编译证据不是整机验收。
 
@@ -16,6 +16,7 @@
 | 右90、通用左90/180的不同参数组 | `App/turn_profile.h`；没有统一套用快180候选 |
 | 正式段长/任务出口剩余距离 | `App/mission.c`；r段命令不自动写这些值，闸门保持关闭 |
 | 日志离线解码与分轮分析 | `tests/analyze_route_log.py`；实测记录用`tests/route_measurements_template.csv` |
+| 每轮自动参数包 | `App/test.c::auto_param_snapshot`；有效开始/回程时一次入队，完整包以PARAM_START/END界定，不在停车路径发送 |
 | 陀螺仪漂移/比例/动态误差的区分 | [IMU_TURN_CALIBRATION.md](IMU_TURN_CALIBRATION.md)，不先猜90→92 |
 
 这是一张**找代码的地图**，不是“全部参数已经调好”的证明。`TODO`、`0` 和标注为“种子”的值都要按实车测试填写。当前正式整场有配置闸门，不能因工程能编译就直接上车跑。
@@ -126,7 +127,7 @@ App/robot.c               初始化、三路串口分流、蓝牙服务
 
 | 文件 | 职责 | 要找的参数/入口 |
 | --- | --- | --- |
-| [robot.c](App/robot.c) / [robot.h](App/robot.h) | 全系统初始化；USART2 视觉、USART3 蓝牙、UART4 IMU 接收分流；周期任务入口与诊断回传 | `FW_BUILD_ID`、`robot_init()`、`robot_diag_report()`；固件号需随发布版本人工更新 |
+| [robot.c](App/robot.c) / [robot.h](App/robot.h) | 全系统初始化；USART2 视觉、USART3 蓝牙、UART4 IMU 接收分流；周期任务入口与诊断回传 | `robot.h::ROBOT_FW_BUILD_ID`、`robot_init()`、`robot_diag_report()`；固件号需随发布版本更新 |
 | [mission.c](App/mission.c) / [mission.h](App/mission.h) | 正式整场顺序、QR 三目标校验、路线腿和启动闸门 | `QR_*`、`R_*`、`ROUTE_FWD_V_MMS`、`ROUTE_STRAFE_V_MMS`、`CROSS_*`、`CAL_*_READY`；`mission_config_missing()` 会指出缺项 |
 | [task_eod.c](App/task_eod.c) | 排爆：对球、预降、伸爪抓球、抬升、两次 180°、对桶放球、双轴按步数回起点 | `EOD_BALL_PRELOWER_STEPS`、`EOD_BALL_EXTEND_STEPS`、`EOD_LIFT_STEPS`、`EOD_LOWER_STEPS`（全待实测） |
 | [task_anti.c](App/task_anti.c) | 反恐：对选定颜色靶、用节点停稳判据确认、激光射击 | `LASER_ON_MS`；停稳时序复用 `steps.c::step_prepare_leg()`，站位在 `steps.c` |

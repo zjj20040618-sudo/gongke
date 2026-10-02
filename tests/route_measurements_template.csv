@@ -1,5 +1,5 @@
 item_id,category,status,repeat,fw_id,source_commit,log_file,test_id,from_node,to_node,mode_or_command,direction,slot,object_color_or_shape,v_cmd_mms,d_cmd_mm,physical_mm,brake_enc_mm,final_enc_mm,orth_max_mm,yaw_imu_end_deg,yaw_physical_end_deg,turn_center_shift_mm,run_ms,stop_reason,battery_V,load,ground,hand_moved_since_start,xrise_deg,xflat_deg,rear_clear_ms,cross_done_ms,param_snapshot,formal_parameter,notes,boot_batch,record_type,phase,record_key
-T01,preflight,UNTESTED,1,,,,,BOOT,BOOT,diag/param/?,,,,,,,,,,,,,,,,,,,,,,,,FW_BUILD_ID,Record dimensions including wheels and protrusions,,,,
+T01,preflight,UNTESTED,1,,,,,BOOT,BOOT,diag/auto_PARAM,,,,,,,,,,,,,,,,,,,,,,,,ROBOT_FW_BUILD_ID,No manual param required; record dimensions including wheels and protrusions,,,,
 T02,imu_static,UNTESTED,1,,,,,STILL,STILL,14,none,,,,,,,,,,,,,,,,,,,,,,,IMU,Record 60-70s drift and frame health,,,,
 T03F,short_move,UNTESTED,1,,,,,TEST_START,TEST_END,15,forward,,,200,100,,,,,,,,,,,,,,,,,,,DRIVE,Initial short test only; measure real travel,,,,
 T03B,short_move,UNTESTED,1,,,,,TEST_START,TEST_END,16,backward,,,200,100,,,,,,,,,,,,,,,,,,,DRIVE,Do not infer backward correction from forward result,,,,

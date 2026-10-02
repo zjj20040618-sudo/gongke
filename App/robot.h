@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+#define ROBOT_FW_BUILD_ID "20261002-AUTO-PARAM"
+
 /* 胶水层：让 CubeMX 生成的 main.c / freertos.c 只认识 robot_* 接口，
  * 具体分层(proto/imu/ctrl/…)都藏在 App 里。 */
 

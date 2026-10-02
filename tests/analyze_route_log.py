@@ -6,10 +6,13 @@ python tests/analyze_route_log.py BLE_Log.txt --measurements route_measurements_
 python tests/analyze_route_log.py --self-test
 
 The output directory receives summaries.csv, records.jsonl and decoded RX text.
+records.jsonl retains PARAM_BUNDLE objects plus the parameter snapshot seen by
+each REC/TRC. RETURN_RESUME never changes an earlier pause record's parameters.
 Input files and measurement sheets are never rewritten. No third-party packages.
 """
 
 import argparse
+import copy
 import csv
 import io
 import json
@@ -23,6 +26,26 @@ from pathlib import Path
 TYPES = {"DIST", "ROUTE", "TURN90", "TURN180", "TURNL90", "TURN180_FORMAL", "CROSS", "IMU"}
 PAIR = re.compile(r"([A-Za-z_][A-Za-z_0-9]*)=([^\s;]+)")
 EVENT = re.compile(r"\b(REC|TRC)\s+type=([A-Za-z_0-9]+)\b")
+PARAM_EVENT = re.compile(r"\b(PARAM(?:_START|_END|_MOVE|_TURN|_CROSS|_JOG|_SERVO|_WHEEL)?)\s+")
+PARAM_REQUIRED = {
+    "PARAM_START": {"FW", "test", "mode", "leg", "phase"},
+    "PARAM": {"test", "phase", "kp", "ki", "lp", "dead", "ykp", "okp", "acc", "dec", "lff", "rff", "fff"},
+    "PARAM_END": {"test", "phase", "tx_drop"},
+    "PARAM_MOVE": {"test", "phase", "v_mms", "cmd_mm", "ff_ratio"},
+    "PARAM_TURN": {"test", "phase", "target_deg", "kp", "wmax", "wmin", "tol_deg", "max_ms"},
+    "PARAM_CROSS": {"test", "phase", "v_mms", "xrise", "xflat", "max_ms"},
+    "PARAM_JOG": {"test", "phase", "axis", "dir", "n"},
+    "PARAM_SERVO": {"test", "phase", "us", "no_feedback"},
+    "PARAM_WHEEL": {"test", "phase", "wheel", "duty"},
+}
+PARAM_DETAIL_BY_MODE = {
+    **dict.fromkeys([*range(1, 7), *range(15, 19)], "PARAM_MOVE"),
+    **dict.fromkeys([20, 22, 30, 32], "PARAM_TURN"),
+    **dict.fromkeys(range(24, 28), "PARAM_JOG"),
+    **dict.fromkeys([28, 29], "PARAM_SERVO"),
+    **dict.fromkeys(range(7, 11), "PARAM_WHEEL"),
+    31: "PARAM_CROSS",
+}
 RX = re.compile(r"(?:接收数据|Received data|\[RX\])", re.I)
 TX = re.compile(r"(?:\[写入\]|\[发送\]|\[TX\]|写入成功)", re.I)
 HEX = re.compile(r"(?:[0-9a-fA-F]{2}\s+)*[0-9a-fA-F]{2}")
@@ -71,7 +94,7 @@ def decode_lines(text):
                 pending = ""
             logical.append((number, number, payload, True))
         else:
-            if EVENT.search(raw) or "READY FW=" in raw or "DIAG FW=" in raw or raw.startswith(("PARAM ", "ERR ")):
+            if EVENT.search(raw) or PARAM_EVENT.search(raw) or "READY FW=" in raw or "DIAG FW=" in raw or raw.startswith("ERR "):
                 if pending:
                     logical.append((start, number - 1, pending, False))
                     warnings.append(f"line {start}: interrupted RX fragment")
@@ -90,8 +113,52 @@ def parse_capture(text, source):
     previous_test = None
     fw = ""
     events = []
+    bundles = []
+    latest_bundle = {}
+    active_bundle = None
+
+    def normalized_phase(phase):
+        return "RETURN" if phase == "RETURN_RESUME" else phase
+
+    def update_counter(test, first):
+        nonlocal previous_test, epoch, active_bundle
+        if previous_test is not None and int(test) < previous_test:
+            if active_bundle is not None:
+                active_bundle["issues"].append("counter_changed_before_PARAM_END")
+                active_bundle = None
+            epoch += 1
+            warnings.append(f"line {first}: test counter decreased without READY; new fragment, not a proven power cycle")
+        previous_test = int(test)
+
+    def append_parameter_line(bundle, kind, fields, first, last, raw, complete):
+        bundle["lines"].append({"kind": kind, "fields": fields, "line_start": first,
+                                "line_end": last, "complete_line": complete, "raw": raw})
+        bundle["line_end"] = last
+        if not complete:
+            bundle["issues"].append("truncated_or_unterminated_parameter_line")
+        missing = PARAM_REQUIRED[kind] - fields.keys()
+        if missing:
+            bundle["issues"].append(kind + "_missing_" + ",".join(sorted(missing)))
+        if fields.get("test") != bundle["test_id"] or fields.get("phase") != bundle["phase"]:
+            bundle["issues"].append("parameter_identity_mismatch")
+        if kind in bundle["parameters"]:
+            bundle["issues"].append("duplicate_" + kind)
+        bundle["parameters"][kind] = fields
+
+    def new_bundle(fields, first, last):
+        bundle = {"bundle_id": "|".join((source, str(boot), str(epoch), "PARAM", str(len(bundles) + 1))),
+                  "source_file": source, "boot_batch": str(boot), "counter_epoch": str(epoch),
+                  "fw_id": fw, "test_id": fields.get("test", ""), "phase": fields.get("phase", ""),
+                  "line_start": first, "line_end": last, "complete": False,
+                  "parameters": {}, "lines": [], "issues": []}
+        bundles.append(bundle)
+        return bundle
+
     for first, last, raw, complete in logical:
         if "READY FW=" in raw:
+            if active_bundle is not None:
+                active_bundle["issues"].append("READY_before_PARAM_END")
+                active_bundle = None
             boot += 1
             epoch = 0
             previous_test = None
@@ -99,6 +166,42 @@ def parse_capture(text, source):
             fw = dict(PAIR.findall(raw)).get("FW", fw)
         if raw.startswith("ERR "):
             warnings.append(f"line {first}: {raw}")
+        param_match = PARAM_EVENT.search(raw)
+        if param_match:
+            kind = param_match.group(1)
+            fields = dict(PAIR.findall(raw[param_match.start():]))
+            test = fields.get("test", "")
+            # Historical manual PARAM dumps have no identity; preserve them in decoded text only.
+            if kind == "PARAM" and (not test.isdigit() or not fields.get("phase")):
+                continue
+            if kind == "PARAM_START":
+                if test.isdigit():
+                    update_counter(test, first)
+                if active_bundle is not None:
+                    active_bundle["issues"].append("new_PARAM_START_before_PARAM_END")
+                active_bundle = new_bundle(fields, first, last)
+                if not test.isdigit():
+                    active_bundle["issues"].append("invalid_parameter_test")
+                if fields.get("phase") not in {"OUT", "TEST", "RETURN", "RETURN_RESUME"}:
+                    active_bundle["issues"].append("invalid_parameter_phase")
+                latest_bundle[(str(boot), str(epoch), test, normalized_phase(fields.get("phase", "")))] = active_bundle
+                append_parameter_line(active_bundle, kind, fields, first, last, raw, complete)
+            else:
+                if active_bundle is None:
+                    active_bundle = new_bundle(fields, first, last)
+                    active_bundle["issues"].append("missing_PARAM_START")
+                    latest_bundle[(str(boot), str(epoch), test, normalized_phase(fields.get("phase", "")))] = active_bundle
+                append_parameter_line(active_bundle, kind, fields, first, last, raw, complete)
+                if kind == "PARAM_END":
+                    if "PARAM" not in active_bundle["parameters"]:
+                        active_bundle["issues"].append("missing_common_PARAM")
+                    mode_text = active_bundle["parameters"].get("PARAM_START", {}).get("mode", "")
+                    required_detail = PARAM_DETAIL_BY_MODE.get(int(mode_text)) if mode_text.isdigit() else None
+                    if required_detail and required_detail not in active_bundle["parameters"]:
+                        active_bundle["issues"].append("missing_required_" + required_detail)
+                    active_bundle["complete"] = not active_bundle["issues"]
+                    active_bundle = None
+            continue
         match = EVENT.search(raw)
         if not match or match.group(2) not in TYPES:
             continue
@@ -107,16 +210,18 @@ def parse_capture(text, source):
         if not test.isdigit():
             warnings.append(f"line {first}: missing/integer-invalid test id; not merged with numbered tests")
             test = f"missing-line-{first}"
-        elif previous_test is not None and int(test) < previous_test:
-            epoch += 1
-            warnings.append(f"line {first}: test counter decreased without READY; new fragment, not a proven power cycle")
         if test.isdigit():
-            previous_test = int(test)
+            update_counter(test, first)
         phase = fields.get("phase", "OUT" if fields["type"] in {"DIST", "ROUTE"} else "TEST")
+        # Snapshot NOW. A later RETURN_RESUME packet cannot alter a previous pause record.
+        snapshot = copy.deepcopy(latest_bundle.get((str(boot), str(epoch), test, normalized_phase(phase))))
         events.append({"source_file": source, "boot_batch": str(boot), "counter_epoch": str(epoch),
                        "fw_id": fw, "kind": match.group(1), "record_type": fields["type"],
                        "test_id": test, "phase": phase, "line_start": first, "line_end": last,
-                       "complete_line": complete, "fields": fields, "raw": raw})
+                       "complete_line": complete, "fields": fields, "raw": raw,
+                       "parameter_bundle": snapshot})
+    if active_bundle is not None:
+        active_bundle["issues"].append("missing_PARAM_END")
     # Firmware route legs reuse DIST traces. Associate only when a unique ROUTE REC proves it.
     route_keys = defaultdict(set)
     for event in events:
@@ -135,6 +240,11 @@ def parse_capture(text, source):
         warnings.append("No READY banner: boot_batch=0 is unknown; files are never merged by test id alone")
     if not events:
         warnings.append("No supported REC/TRC records found")
+    # Keep even unassociated/partial packages in records.jsonl; summaries ignore this kind.
+    for bundle in bundles:
+        if not bundle["complete"]:
+            warnings.append(f"line {bundle['line_start']}: partial parameter bundle: " + ";".join(bundle["issues"]))
+        events.append({"kind": "PARAM_BUNDLE", **bundle})
     return events, logical, warnings
 
 
@@ -152,7 +262,8 @@ def number(fields, *names):
 def summarize(events):
     groups = defaultdict(list)
     for event in events:
-        groups[event["record_key"]].append(event)
+        if event["kind"] != "PARAM_BUNDLE":
+            groups[event["record_key"]].append(event)
     rows = []
     for key, group in groups.items():
         recs = [e for e in group if e["kind"] == "REC"]
@@ -171,6 +282,18 @@ def summarize(events):
             warnings.append("not_completed")
         if status not in KNOWN_STATUS:
             warnings.append(f"review_status_{status}")
+        snapshot = last.get("parameter_bundle")
+        if snapshot is None:
+            parameter_status = "missing"
+            warnings.append("missing_parameter_bundle_legacy_or_incomplete_capture")
+        elif not snapshot["complete"]:
+            parameter_status = "partial"
+            warnings.append("partial_parameter_bundle")
+        else:
+            parameter_status = "complete"
+        if snapshot and number(snapshot["parameters"].get("PARAM_END", {}), "tx_drop"):
+            warnings.append("tx_drop_counter_nonzero_review_capture")
+        snapshot_ids = list(dict.fromkeys(e["parameter_bundle"]["bundle_id"] for e in group if e.get("parameter_bundle")))
         yaws = [number(e["fields"], "yaw_deg", "yaw", "yend_deg") for e in group]
         if any(y is not None and abs(y) >= 9999 for y in yaws):
             warnings.append("invalid_yaw_sentinel")
@@ -182,6 +305,10 @@ def summarize(events):
                     "mode": fields.get("mode", ""), "leg": fields.get("leg", ""), "status": status,
                     "completion": "firmware_done" if status == "DONE" else "measurement_reported" if status == "OK" else "not_completed",
                     "rec_count": len(recs), "trace_count": len(traces),
+                    "parameter_status": parameter_status,
+                    "parameter_phase": snapshot["phase"] if snapshot else "",
+                    "parameter_bundle_ids": ";".join(snapshot_ids),
+                    "parameters_json": json.dumps(snapshot["parameters"], ensure_ascii=False) if snapshot else "",
                     "sampled_yaw_abs_max_deg": max(map(abs, yaws)) if yaws else "",
                     "sampled_yaw_error_abs_max_deg": max(map(abs, yaw_errors)) if yaw_errors else "",
                     "yaw_imu_end_deg": number(fields, "yaw_deg", "yend_deg", "yaw"),
@@ -248,6 +375,15 @@ def associate_measurements(rows, sheet):
 
 
 class AnalyzerTests(unittest.TestCase):
+    @staticmethod
+    def parameter_packet(test=1, phase="OUT", speed=300, distance=500, end=True):
+        text = (f"PARAM_START FW=20261002-AUTO-PARAM test={test} mode=15 leg=0 phase={phase}\n"
+                f"PARAM test={test} phase={phase} kp=0.05 ki=0.004 lp=0.2 dead=25 ykp=2 okp=0 acc=0 dec=0 lff=0.02 rff=0.02 fff=0\n"
+                f"PARAM_MOVE test={test} phase={phase} v_mms={speed} cmd_mm={distance} ff_ratio=0\n")
+        if end:
+            text += f"PARAM_END test={test} phase={phase} tx_drop=0\n"
+        return text
+
     def test_hex_fragments_and_tx(self):
         payload = "REC type=DIST test=1 phase=OUT status=DONE enc_mm=100 brake_mm=96\r\n"
         chunks = [payload[:19], payload[19:41], payload[41:]]
@@ -314,6 +450,83 @@ class AnalyzerTests(unittest.TestCase):
         self.assertIn("IMU_invalid_trace_present", row["warnings"])
         self.assertIn("stationary_required", row["warnings"])
 
+    def test_parameter_firmware_without_ready_and_hex_reassembly(self):
+        payload = self.parameter_packet().replace("\n", "\r\n")
+        payload += "REC type=DIST test=1 phase=OUT status=DONE enc_mm=501\r\n"
+        text = "\n".join("[通知] 接收数据 | 数据: " + payload[i:i + 17].encode().hex(" ")
+                         for i in range(0, len(payload), 17))
+        events, _, _ = parse_capture(text, "new.txt")
+        row = summarize(events)[0]
+        self.assertEqual(row["fw_id"], "20261002-AUTO-PARAM")
+        self.assertEqual(row["boot_batch"], "0")
+        self.assertEqual(row["parameter_status"], "complete")
+        self.assertEqual(json.loads(row["parameters_json"])["PARAM_MOVE"]["cmd_mm"], "500")
+        self.assertEqual(len([e for e in events if e["kind"] == "PARAM_BUNDLE"]), 1)
+
+    def test_parameter_out_return_and_resume_do_not_rewrite_pause(self):
+        text = self.parameter_packet(speed=300, distance=500)
+        text += "REC type=DIST test=1 phase=OUT status=STOP\n"
+        text += self.parameter_packet(phase="RETURN", speed=180, distance=-140)
+        text += "REC type=DIST test=1 phase=RETURN status=STOP\n"
+        text += self.parameter_packet(phase="RETURN_RESUME", speed=200, distance=-70)
+        text += "REC type=DIST test=1 phase=RETURN status=DONE\n"
+        events, _, _ = parse_capture(text, "return.txt")
+        recs = [e for e in events if e["kind"] == "REC"]
+        self.assertEqual([e["parameter_bundle"]["parameters"]["PARAM_MOVE"]["v_mms"] for e in recs],
+                         ["300", "180", "200"])
+        self.assertEqual([e["parameter_bundle"]["parameters"]["PARAM_MOVE"]["cmd_mm"] for e in recs],
+                         ["500", "-140", "-70"])
+        rows = summarize(events)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[1]["parameter_phase"], "RETURN_RESUME")
+        self.assertEqual(len(rows[1]["parameter_bundle_ids"].split(";")), 2)
+        self.assertTrue(all(e["counter_epoch"] == "0" for e in recs))
+
+    def test_parameter_missing_end_stays_partial(self):
+        text = self.parameter_packet(end=False) + "REC type=DIST test=1 phase=OUT status=DONE\n"
+        events, _, _ = parse_capture(text, "partial.txt")
+        self.assertEqual(summarize(events)[0]["parameter_status"], "partial")
+        bundle = next(e for e in events if e["kind"] == "PARAM_BUNDLE")
+        self.assertIn("missing_PARAM_END", bundle["issues"])
+        self.assertFalse(bundle["complete"])
+
+    def test_parameter_counter_reset_and_ready_boundaries(self):
+        text = self.parameter_packet(test=7) + "REC type=DIST test=7 phase=OUT status=DONE\n"
+        text += self.parameter_packet(test=1, speed=200) + "REC type=DIST test=1 phase=OUT status=DONE\n"
+        text += "READY FW=20261002-AUTO-PARAM\nREC type=DIST test=1 phase=OUT status=DONE\n"
+        events, _, warnings = parse_capture(text, "reset.txt")
+        recs = [e for e in events if e["kind"] == "REC"]
+        self.assertEqual([e["counter_epoch"] for e in recs], ["0", "1", "0"])
+        self.assertEqual([e["boot_batch"] for e in recs], ["0", "0", "1"])
+        self.assertEqual(recs[1]["parameter_bundle"]["counter_epoch"], "1")
+        self.assertIsNone(recs[2]["parameter_bundle"])
+        self.assertEqual(sum("counter decreased" in w for w in warnings), 1)
+
+    def test_parameter_mode_requires_its_action_detail(self):
+        for mode, detail in PARAM_DETAIL_BY_MODE.items():
+            with self.subTest(mode=mode, required=detail):
+                packet = self.parameter_packet().replace("mode=15 ", f"mode={mode} ")
+                packet = "\n".join(line for line in packet.splitlines() if not line.startswith("PARAM_MOVE ")) + "\n"
+                packet += "REC type=DIST test=1 phase=OUT status=DONE\n"
+                events, _, _ = parse_capture(packet, "missing-detail.txt")
+                self.assertEqual(summarize(events)[0]["parameter_status"], "partial")
+                bundle = next(e for e in events if e["kind"] == "PARAM_BUNDLE")
+                self.assertIn("missing_required_" + detail, bundle["issues"])
+
+    def test_parameter_wheel_and_modes_without_detail(self):
+        packet = self.parameter_packet().replace("mode=15 ", "mode=7 ")
+        packet = re.sub(r"PARAM_MOVE[^\n]+", "PARAM_WHEEL test=1 phase=OUT wheel=0 duty=120", packet)
+        events, _, _ = parse_capture(packet, "wheel.txt")
+        bundle = next(e for e in events if e["kind"] == "PARAM_BUNDLE")
+        self.assertTrue(bundle["complete"])
+        self.assertEqual(bundle["parameters"]["PARAM_WHEEL"]["duty"], "120")
+        for mode in (13, 14, 19, 21, 23):
+            with self.subTest(mode=mode):
+                packet = self.parameter_packet().replace("mode=15 ", f"mode={mode} ")
+                packet = "\n".join(line for line in packet.splitlines() if not line.startswith("PARAM_MOVE ")) + "\n"
+                events, _, _ = parse_capture(packet, "no-detail-required.txt")
+                self.assertTrue(next(e for e in events if e["kind"] == "PARAM_BUNDLE")["complete"])
+
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -339,6 +552,7 @@ def main(argv=None):
     for row in rows:
         print(f"{Path(row['source_file']).name} boot={row['boot_batch']} epoch={row['counter_epoch']} "
               f"{row['record_type']} test={row['test_id']} {row['phase']} {row['status']} "
+              f"params={row['parameter_status']} "
               f"yaw={row['yaw_imu_end_deg']} enc={row['enc_mm']} brake_delta={row['encoder_brake_delta_mm']} "
               f"[{row['warnings']}]")
     for warning in warnings:

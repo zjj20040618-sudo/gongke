@@ -139,6 +139,7 @@ static void servo_stop(void);
 static void cmd_abort(void);
 static void mode_start(void);
 static void cross_report(void);
+static void auto_param_snapshot(const char *phase);
 
 static const char *dist_status(void)
 {
@@ -322,6 +323,7 @@ static void walk_return_start(void)
 {
     float d = dist_odo() - s_dist_odo0;
     float out_dir = dist_lateral() ? s_rvy : s_rvx;
+    int resuming = s_walk_returning;
     if (!s_walk_origin_valid) { send("ERR RETURN_NO_ORIGIN select_mode_again"); return; }
     motion_brake();
     if (!imu_ok()) { send("ERR RETURN_IMU no_drive"); return; }
@@ -345,6 +347,7 @@ static void walk_return_start(void)
     s_meas_t0 = s_dist_trace_t0 = HAL_GetTick();
     s_progress_ms = s_meas_t0; s_progress_odo = dist_odo();
     s_round = R_RET;
+    auto_param_snapshot(resuming ? "RETURN_RESUME" : "RETURN");
     snprintf(s_dist_report, sizeof s_dist_report,
              "OK RETURN test=%lu mode=%d cmd_mm=%.1f v_mms=%.0f ff_ratio=%.4f encoder_origin_only; g_pause a/0_cancel",
              (unsigned long)s_active_test, s_msel, -d, s_walk_speed, s_dist_ff_ratio);
@@ -429,6 +432,60 @@ static int turn_angle_limit(float yaw)
     float target = turn_target_deg();
     float progress = target < 0.0f ? -yaw : yaw;
     return progress > turn_abs(target) + T_TURN_LIMIT_DEG || progress < -T_TURN_LIMIT_DEG;
+}
+
+/* One bounded, atomic UART enqueue per accepted start. No wait for transmission,
+ * no periodic copies, and never called on a stop/cancel path. Actual execution
+ * values are read only AFTER that phase's context has been initialized. */
+static void auto_param_snapshot(const char *phase)
+{
+    static char packet[768], detail[224];
+    CtrlTune t;
+    MotionProfileTune p;
+    unsigned long id = (unsigned long)s_active_test;
+    int returning = strncmp(phase, "RETURN", 6u) == 0;
+    int n;
+    ctrl_tune_get(&t);
+    motion_profile_get(&p);
+    detail[0] = '\0';
+    if (walk_mode()) {
+        snprintf(detail, sizeof detail,
+                 "PARAM_MOVE test=%lu phase=%s v_mms=%.1f cmd_mm=%.1f ff_ratio=%.4f\r\n",
+                 id, phase, returning ? s_walk_speed : s_v, s_dist_target, s_dist_ff_ratio);
+    } else if (turn_closed_loop_mode()) {
+        snprintf(detail, sizeof detail,
+                 "PARAM_TURN test=%lu phase=%s target_deg=%.1f kp=%.3f wmax=%.2f wmin=%.2f tol_deg=%.2f max_ms=%lu\r\n",
+                 id, phase, turn_target_deg(), turn_formal_mode() ? ROT_KP_RADS_DEG : T_TURN_KP,
+                 turn_formal_mode() ? ROT_SPIN_RADS : T_TURN_MAX_W,
+                 turn_formal_mode() ? ROT_MIN_RADS : T_TURN_MIN_W, turn_tol(), (unsigned long)turn_max_ms());
+    } else if (s_msel == 31) {
+        float rise, flat;
+        cross_tune_get(&rise, &flat);
+        snprintf(detail, sizeof detail,
+                 "PARAM_CROSS test=%lu phase=%s v_mms=%.1f xrise=%.2f xflat=%.2f max_ms=%lu\r\n",
+                 id, phase, s_v, rise, flat, (unsigned long)T_CROSS_MAX_MS);
+    } else if (jog_mode()) {
+        snprintf(detail, sizeof detail, "PARAM_JOG test=%lu phase=%s axis=%d dir=%d n=%lu\r\n",
+                 id, phase, jog_axis(), (s_jog_request < 0 ? 0 : 1) ^ returning,
+                 (unsigned long)(s_jog_request < 0 ? -s_jog_request : s_jog_request));
+    } else if (servo_mode()) {
+        snprintf(detail, sizeof detail, "PARAM_SERVO test=%lu phase=%s us=%u no_feedback=1\r\n",
+                 id, phase, (unsigned)(returning ? s_servo_origin_us : s_servo_target_us));
+    } else if (s_msel >= 7 && s_msel <= 10) {
+        snprintf(detail, sizeof detail, "PARAM_WHEEL test=%lu phase=%s wheel=%d duty=%d\r\n",
+                 id, phase, s_msel - 7, (int)s_p);
+    }
+    n = snprintf(packet, sizeof packet,
+                 "PARAM_START FW=" ROBOT_FW_BUILD_ID " test=%lu mode=%d leg=%u phase=%s\r\n"
+                 "PARAM test=%lu phase=%s kp=%.4f ki=%.5f lp=%.3f dead=%u ykp=%.3f okp=%.3f acc=%.1f dec=%.1f lff=%.4f rff=%.4f fff=%.4f\r\n"
+                 "%sPARAM_END test=%lu phase=%s tx_drop=%lu\r\n",
+                 id, s_msel, (unsigned)s_route_leg, phase,
+                 id, phase, t.kp, t.ki, t.lp_alpha, (unsigned)t.dead_min,
+                 step_heading_kp_deg(), step_orth_kp(), p.acc_mms2, p.dec_mms2,
+                 s_left_ff_ratio, s_right_ff_ratio, s_forward_ff_ratio,
+                 detail, id, phase, (unsigned long)bp_debug_tx_dropped());
+    if (n < 0 || (size_t)n >= sizeof packet) { send("ERR PARAM_SNAPSHOT_TOO_LONG"); return; }
+    bp_debug_send(packet); /* Whole snapshot or whole drop, never a partial packet. */
 }
 
 static void turn_begin_settle(const char *reason)
@@ -910,11 +967,13 @@ static void tick(void)
             arm_stepper_dir(s_axis, s_jog_request < 0 ? 1 : 0);
             s_back = 0u;
             s_round = R_RET;
+            auto_param_snapshot("RETURN");
             send("OK JOG_RETURN_START g/a/0 stops_no_further_steps");
         }
     } else if (s_round == R_DONE && s_msel == 28) {
         if ((uint32_t)(HAL_GetTick() - s_servo_hold_t0) >= T_SERVO_RETURN_WAIT_MS) {
             static char b[112];
+            auto_param_snapshot("RETURN");
             arm_claw_set_us(s_servo_origin_us);
             s_round = R_READY;
             snprintf(b, sizeof b,
@@ -1003,10 +1062,14 @@ static void mode_start(void)
     motion_brake();   /* 清残留轮速目标,再按本模式设目标 */
     char b[48];
     if (s_msel == 31) {
-        begin_recorded_test();
         s_cross_odo0 = motion_odo_mm();
         s_cross_trace = HAL_GetTick();
-        if (!cross_begin(s_v, 0.0f, T_CROSS_MAX_MS)) { cross_report(); return; }
+        if (!cross_begin(s_v, 0.0f, T_CROSS_MAX_MS)) {
+            snprintf(b, sizeof b, "ERR CROSS_START status=%s", cross_status_name(cross_status()));
+            send(b); return;
+        }
+        begin_recorded_test();
+        auto_param_snapshot("TEST");
         s_round = R_RUN;
         send("OK CROSS constant_speed max_ms=8000; g/a/0 stop_no_return; d_not_used");
         return;
@@ -1020,6 +1083,7 @@ static void mode_start(void)
         walk_capture_origin();
         s_dist_target = (s_msel == 5 || s_msel == 6) ? (dist_lateral() ? s_rvy : s_rvx) * s_d : 0.0f;
         s_dist_ff_ratio = 0.0f;
+        auto_param_snapshot("OUT");
         motion_vel_set(s_rvx * s_v, s_rvy * s_v, 0.0f);
         if (s_msel == 5 || s_msel == 6) {
             s_leg_start = HAL_GetTick();
@@ -1039,6 +1103,7 @@ static void mode_start(void)
         s_wheel = s_msel - 7;
         ctrl_enc_reset_all();                    /* 本轮从 0 起计 */
         s_meas_t0 = HAL_GetTick();
+        auto_param_snapshot("TEST");
         ctrl_set_duty_open(s_wheel, (int16_t)s_p);   /* 直通 duty,验驱动/方向(不开环别走速度环) */
         snprintf(b, sizeof b, "OK WHEEL wheel=%d duty=%d (g2 stop)", s_wheel, (int)s_p);
         s_round = R_RUN;
@@ -1047,6 +1112,7 @@ static void mode_start(void)
     }
     if (s_msel == 13) {                         /* 四轮编码器手转/单圈 CPR */
         begin_recorded_test();
+        auto_param_snapshot("TEST");
         ctrl_coast_all();                       /* 手转必须自由滑行，不能让 TB6612 短接刹车 */
         ctrl_enc_reset_all();
         s_meas_t0 = HAL_GetTick();
@@ -1061,6 +1127,7 @@ static void mode_start(void)
         if (!imu_zero_leg_heading()) { send("ERR IMU_NO_VALID_FRAME"); return; }
         begin_recorded_test();
         imu_stat_clear();
+        auto_param_snapshot("TEST");
         s_meas_t0 = HAL_GetTick();
         s_enc_report_t0 = s_meas_t0;
         imu_stat_take();
@@ -1070,6 +1137,7 @@ static void mode_start(void)
     }
     if (s_msel == 19 || turn_closed_loop_mode()) {
         begin_recorded_test();
+        auto_param_snapshot("TEST");
         s_meas_t0 = HAL_GetTick();
         s_turn_trace_t0 = s_meas_t0;
         s_round = R_RUN;
@@ -1095,6 +1163,7 @@ static void mode_start(void)
         int16_t target[4];
         static char pb[100];
         begin_recorded_test();
+        auto_param_snapshot("TEST");
         ctrl_enc_reset_all();
         motion_ik(0.0f, 0.0f, T_SPEED_PROBE_W, target);
         s_meas_t0 = HAL_GetTick();
@@ -1109,6 +1178,7 @@ static void mode_start(void)
     }
     if (s_msel == 23) {
         begin_recorded_test();
+        auto_param_snapshot("TEST");
         ctrl_enc_reset_all();
         for (int i = 0; i < 4; i++) s_fwd_open_count[i] = 0;
         s_fwd_phase = 0u;
@@ -1131,6 +1201,7 @@ static void mode_start(void)
         s_dist_ff_ratio = (s_msel == 15 && s_v == 200.0f) ? s_forward_ff_ratio
             : (s_msel == 17 && s_v == 300.0f) ? s_left_ff_ratio
             : (s_msel == 18 && s_v == 300.0f) ? s_right_ff_ratio : 0.0f;
+        auto_param_snapshot("OUT");
         motion_linear_ramp_init(&s_dist_ramp);
         s_meas_t0 = HAL_GetTick();
         s_dist_trace_t0 = s_meas_t0;
@@ -1150,6 +1221,7 @@ static void mode_start(void)
         begin_recorded_test();
         s_axis = jog_axis();
         s_jog_done = 0u; s_back = 0u; s_jog_hold_t0 = 0u;
+        auto_param_snapshot("OUT");
         arm_stepper_dir(s_axis, s_jog_request < 0 ? 0 : 1);
         s_round = R_RUN;
         snprintf(jb, sizeof jb, "OK JOG test=%lu mode=%d axis=%d dir=%d n=%lu %s; g_stops_no_return",
@@ -1164,6 +1236,7 @@ static void mode_start(void)
         if (s_servo_target_us == 0u) { send("ERR SET_U first: u1000..u1800; test without horn first"); return; }
         begin_recorded_test();
         s_servo_origin_us = arm_claw_command_us();
+        auto_param_snapshot("OUT");
         arm_claw_set_us(s_servo_target_us);
         s_servo_hold_t0 = HAL_GetTick();
         s_round = R_DONE;

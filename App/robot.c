@@ -17,7 +17,6 @@ static uint8_t s_rx2, s_rx3, s_rx4;   /* 2=视觉(USART2 PD5/6) 3=蓝牙(USART3 
 
 /* BT 输入环形缓冲(huart3,ISR 写 / robot_bt_service 读) */
 #define BT_RX_N 64u
-#define FW_BUILD_ID "20261002-ROUTE-SAFETY"
 static volatile uint8_t s_bt[BT_RX_N];
 static volatile uint8_t s_bt_wr, s_bt_rd;
 static volatile uint32_t s_bt_drop;
@@ -88,7 +87,7 @@ void robot_init(void)
         s_uart_err[i] = 0u; s_uart_last_err[i] = 0u; s_uart_arm_fail[i] = 0u;
     }
     uart_rx_ensure_all();                           /* 三路首次挂接；失败由 DefaultTask 重试 */
-    bp_debug_send("\r\nREADY FW=" FW_BUILD_ID " SEND ? OR diag\r\n");
+    bp_debug_send("\r\nREADY FW=" ROBOT_FW_BUILD_ID " SEND ? OR diag\r\n");
 }
 
 /* 三个 FreeRTOS 线程各自的入口:1ms 控制环 / 整场脚本 / IMU 解析(周期见 freertos.c) */
@@ -180,7 +179,7 @@ void robot_diag_report(void)
     proto_stats_get(&ps);
     robot_get_stack_watermarks(sw);
     snprintf(b, sizeof b, "\r\nDIAG FW=%s IMU=%s age=%lums\r\n",
-             FW_BUILD_ID, imu_ok() ? "OK" : "BAD",
+             ROBOT_FW_BUILD_ID, imu_ok() ? "OK" : "BAD",
              (unsigned long)(age == UINT32_MAX ? 0xFFFFFFFFu : age));
     bp_debug_send(b);
     snprintf(b, sizeof b,
