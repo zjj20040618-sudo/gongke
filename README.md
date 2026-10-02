@@ -7,6 +7,7 @@
 - 两人拉取/提交/推送、提交编号与标签怎么辨认：[COLLABORATION.md](COLLABORATION.md)
 - 视觉—电控共同待办、责任分工和队友回复格式：[VISION_CONTROL_TODO.md](VISION_CONTROL_TODO.md)
 - 用户休息时队友接手电控测试、数值填写和记录：[CONTROL_TUNING_TODO.md](CONTROL_TUNING_TODO.md)
+- 今晚只走路线、含越障的顺序/逐段距离与站位表：[ROUTE_NIGHT_PLAN.md](ROUTE_NIGHT_PLAN.md)；当前固件 `20261002-ROUTE-SAFETY` 的检查和构建依据：[ROUTE_SAFETY_AUDIT.md](ROUTE_SAFETY_AUDIT.md)
 - 2026-10-01 视觉接收改为队友现有二进制，蓝牙保持 ASCII；接口、测试和未完成项见 [VISION_INTEGRATION.md](VISION_INTEGRATION.md)。这是接收侧对接，自动切模式、桶/两种人质映射和夹爪站位仍待联调。
 - 自写业务代码在 `App/`；CubeMX 生成的启动、外设与任务入口在 `Src/`、`Inc/` 和根目录 `jiejie.ioc`。
 

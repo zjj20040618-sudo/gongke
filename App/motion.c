@@ -98,7 +98,7 @@ float motion_linear_profile_step(MotionRamp *r, float cruise_mms,
  * w 正向定义为车身顺时针：与 2026-09-24 手转 IMU yaw 正向一致。
  * 轮位按 2026-09-25 后轮单轮复核：m0左后、m1右后、m2右前、m3左前。
  * 后轮正向极性已在 board_pins.c 同步修正；横移仍须整车实测。 */
-void motion_ik(float vx, float vy, float w, int16_t rpm[4])
+void motion_ik_rpm(float vx, float vy, float w, float rpm[4])
 {
     static const int8_t sgn[4][3] = {   /* [轮][vx, vy, w] 系数 */
         {  1, -1,  1 },   /* m0 = 左后 */
@@ -110,16 +110,24 @@ void motion_ik(float vx, float vy, float w, int16_t rpm[4])
     for (int i = 0; i < MOTOR_NUM; i++) {
         float lin = sgn[i][0] * vx + sgn[i][1] * vy + sgn[i][2] * M_A_HALF_MM * w;
         float rps = lin / (M_WHEEL_R_MM * 2.0f * 3.14159f);      /* 轮转/s */
-        rpm[i] = (int16_t)(rps * M_GEAR_RATIO * 60.0f);          /* 轴端 rpm */
+        rpm[i] = rps * M_GEAR_RATIO * 60.0f; /* 保留小角度修正，不能在控制入口截成整数 */
     }
+}
+
+/* 旧整数接口只供方向探针/兼容日志；实际控制走 motion_ik_rpm。 */
+void motion_ik(float vx, float vy, float w, int16_t rpm[4])
+{
+    float precise[4];
+    motion_ik_rpm(vx, vy, w, precise);
+    for (int i = 0; i < MOTOR_NUM; ++i) rpm[i] = (int16_t)precise[i];
 }
 
 /* 体坐标速度(vx前/vy横/w转 mm·rad/s)→ IK 算四轮 rpm → 下发 control。
  * 普通路线的加减速在调用方按剩余距离生成 vx/vy；越障可继续直接给恒速。 */
 void motion_vel_set(float vx, float vy, float w)
 {
-    int16_t rpm[4];
-    motion_ik(vx, vy, w, rpm);
+    float rpm[4];
+    motion_ik_rpm(vx, vy, w, rpm);
     for (int i = 0; i < MOTOR_NUM; i++) ctrl_set_speed(i, rpm[i]);
 }
 

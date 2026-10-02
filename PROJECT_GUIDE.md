@@ -2,9 +2,21 @@
 
 更新：2026-10-02。当前共用工作工程为 `C:/Users/15119/gongkesai/gongke`（GitHub `zjj20040618-sudo/gongke`）；不要与桌面交接包或旧 `jiejie` 仓库混编。Keil 从 [MDK-ARM/jiejie.uvprojx](MDK-ARM/jiejie.uvprojx) 打开，工程名不代表仍使用旧仓库。
 
-当前源码固件号 `20261002-VISION-CONTROL`。本次用户授权交接共用main：包括行走三次g回程及双端视觉开始/停止/切换。下文各阶段“未提交”是当时的历史记录，不是本次交接状态；实际上传以Git提交编号为准，未烧录/实机验收。
+当前源码固件号 `20261002-ROUTE-SAFETY`，基于 `ddd90c9` 的双端视觉控制版本准备今晚独立路线/越障测试。**当前入口以 [ROUTE_NIGHT_PLAN.md](ROUTE_NIGHT_PLAN.md) 为准**；软件修改、复核结果与最新构建见 [ROUTE_SAFETY_AUDIT.md](ROUTE_SAFETY_AUDIT.md)。下文各阶段的固件号、“当前”“未提交”均指该阶段历史，不覆盖本段；实际共享版本以Git提交编号为准，未烧录/实机验收。
 
-最新双向协议与队友操作见 [VISION_CONTROL_PROTOCOL.md](VISION_CONTROL_PROTOCOL.md)，旧结果body和类别映射见 [VISION_INTEGRATION.md](VISION_INTEGRATION.md)。本轮18组协议回放、2组相机主循环检查、全套电控主机回归通过，Keil全量0/0，最新日志/HEX校验值见双向协议文档。下面各轮编译是历史记录，不是新协议整机验收。
+双向协议与队友操作见 [VISION_CONTROL_PROTOCOL.md](VISION_CONTROL_PROTOCOL.md)，旧结果body和类别映射见 [VISION_INTEGRATION.md](VISION_INTEGRATION.md)。18组协议回放、2组相机主循环检查本轮再次通过；今晚路线版的最新日志/HEX校验值见安全检查记录，双向协议文档的校验值仍对应上一版。主机与编译证据不是整机验收。
+
+## 今晚调试代码怎么找
+
+| 功能 | 文件与入口 |
+|---|---|
+| 蓝牙选择、g停/回程、30左90/31越障/32正式180、r1～r11 | `App/test.c`；限制/日志周期在`App/test_config.h` |
+| 实际轮速小数目标、速度环 | `App/motion.c::motion_ik_rpm` → `App/control.c::ctrl_set_speed`；TRC的tgt与rpm分别是目标与估计 |
+| 正式与独立越障共享状态 | `App/auto_steps.c::cross_begin/cross_tick`；xrise/xflat是RAM种子，未标定 |
+| 右90、通用左90/180的不同参数组 | `App/turn_profile.h`；没有统一套用快180候选 |
+| 正式段长/任务出口剩余距离 | `App/mission.c`；r段命令不自动写这些值，闸门保持关闭 |
+| 日志离线解码与分轮分析 | `tests/analyze_route_log.py`；实测记录用`tests/route_measurements_template.csv` |
+| 陀螺仪漂移/比例/动态误差的区分 | [IMU_TURN_CALIBRATION.md](IMU_TURN_CALIBRATION.md)，不先猜90→92 |
 
 这是一张**找代码的地图**，不是“全部参数已经调好”的证明。`TODO`、`0` 和标注为“种子”的值都要按实车测试填写。当前正式整场有配置闸门，不能因工程能编译就直接上车跑。
 

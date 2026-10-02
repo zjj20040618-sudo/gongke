@@ -13,4 +13,13 @@
 #define TURN90_MIN_W_RADS      0.18f
 #define TURN90_STILL_DEG       0.2f
 
+/* Existing formal non-right90 profile. Shared with bench30/32 for comparison;
+ * these values are unchanged and remain pending ground calibration. */
+#define ROT_SPIN_RADS          2.0f
+#define ROT_MIN_RADS           0.12f
+#define ROT_KP_RADS_DEG        0.02f
+#define ROT_TOL_DEG            1.0f
+#define ROT_SETTLE_MS          700u
+#define ROT_STILL_DEG          0.2f
+
 #endif

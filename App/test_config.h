@@ -10,7 +10,7 @@
 #define T_IDLE_MS    20u
 #define T_V_MAX      600
 #define T_D_MAX      20000
-#define T_MODE_MAX   29
+#define T_MODE_MAX   32
 #define T_JOG_MAX_STEPS 50u
 #define T_JOG_RETURN_WAIT_MS 2000u
 #define T_SERVO_RETURN_WAIT_MS 2000u
@@ -18,6 +18,11 @@
 #define T_WALK_ORIGIN_TOL_MM 0.5f /* Encoder-axis stop tolerance, not physical position accuracy. */
 #define T_ENC_REPORT_MS 1000u
 #define T_DIST_TRACE_MS 500u
+#define T_PREP_MAX_MS 5000u /* physical stillness guard; failure never starts motion */
+#define T_FORMAL_TURN_MAX_MS 20000u /* bench-only run-away guard for the slower formal profile */
+#define T_CROSS_MAX_MS 8000u /* same physical run-away guard as the formal crossing */
+#define T_DIST_NO_PROGRESS_MS 1500u /* bench fault stop, never skip/pretend arrival */
+#define T_DIST_WRONGWAY_MM 10.0f
 
 /* Modes 19-23: 19 is an elevated sign check; 20 is the ground-tested +90.
  * Mode 22's +180 profile remains a bench candidate, not the mission tune. */

@@ -24,8 +24,9 @@ try {
     Invoke-HostCase 'eod_anti_task_flow_test' @('tests/anti_task_flow_test.c', 'App/task_anti.c') @('App')
     Invoke-HostCase 'eod_obstacle_abort_test' @('tests/obstacle_abort_test.c', 'App/auto_steps.c') @('tests/stubs', 'App')
     Invoke-HostCase 'eod_mission_start_abort_test' @('tests/mission_start_abort_test.c') @('tests/stubs', 'App')
-    # Real legacy test.c has an unrelated unused cmd_reset local; report it without changing that code.
-    Invoke-HostCase 'eod_g_command_stop_test' @('tests/g_command_stop_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_g_command_stop_test' @('tests/g_command_stop_test.c', 'App/auto_steps.c') @('tests/stubs', 'App') @('-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_motion_precision_test' @('tests/motion_precision_test.c', 'App/motion.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-lm')
+    Invoke-HostCase 'eod_obstacle_state_test' @('tests/obstacle_state_test.c', 'App/auto_steps.c') @('tests/stubs', 'App') @('-lm')
     Invoke-HostCase 'eod_mission_departure_route_test' @('tests/mission_departure_route_test.c') @('tests/stubs', 'App') @('-lm')
     Invoke-HostCase 'eod_proto_frame_test' @('tests/proto_frame_test.c', 'App/proto.c') @('tests/stubs', 'App')
     Invoke-HostCase 'eod_vision_target_slot_test' @('tests/vision_target_slot_test.c') @('tests/stubs', 'App') @('-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
@@ -71,7 +72,7 @@ try {
         throw 'Departure route contract: valid QR -> left90 -> forward approach -> obstacle'
     }
     $routeSelect = [regex]::Match($test, 'static void cmd_route_leg\(int32_t leg\)\s*\{(?<body>.*?)\n\}', 'Singleline').Groups['body'].Value
-    if (-not $routeSelect.Contains('cmd_select(leg == 1 ? 17 : (leg == 2 ? 16 : 15), 1);') -or
+    if (-not $routeSelect.Contains('cmd_select((leg == 1 || leg == 5) ? 17 : (leg == 2 ? 16 : 15), 1);') -or
         -not $routeSelect.Contains('s_d = -1.0f;') -or
         $routeSelect.Contains('step_rotate_deg(')) {
         throw 'Departure bench contract: r1 left, r2 back, r3 forward only; explicit distance required'

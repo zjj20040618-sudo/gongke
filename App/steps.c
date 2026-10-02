@@ -545,12 +545,7 @@ int step_nav_leg(float turn_deg, float dist_mm, float v_mms, uint32_t to)
 }
 
 /* ---- 原地旋转(麦轮绕自身中心自转,EOD 抓球放桶转 180° 用):转的判据 = IMU yaw ---- */
-#define ROT_SPIN_RADS  2.0f   /* 最大角速度 rad/s，待实测 */
-#define ROT_MIN_RADS   0.12f  /* 克服静摩擦的最小角速度，待实测 */
-#define ROT_KP_RADS_DEG 0.02f /* 航向误差(deg)→角速度(rad/s)，待实测 */
-#define ROT_TOL_DEG    1.0f   /* 用户 2026-09-24：停稳后误差必须≤1° */
-#define ROT_SETTLE_MS  700u   /* 抱闸后稳定观察；若惯性越界则继续修正 */
-#define ROT_STILL_DEG  0.2f   /* 观察窗内若仍变化>0.2°，重新计稳定时间 */
+/* ROT_* lives in turn_profile.h; bench30/32 now use these same constants. */
 
 /* Only +90 deg uses the on-ground validated mode-20 profile. The caller
  * prepares/stops/zeros the leg first; continuous heading avoids wraparound.
