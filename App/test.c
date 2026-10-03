@@ -52,7 +52,8 @@ static const char *const s_mname[T_MODE_MAX + 1u] = {
     "turn_sign", "turn_90_hold", "turn_speed_probe", "turn_180_hold",
     "forward_sign_probe", "jog_axis0", "jog_axis1",
     "jog_return_axis0", "jog_return_axis1", "servo_return", "servo_hold",
-    "turn_left_90_hold", "route_only_sequence", "no_arm_single_pass_mission"
+    "turn_left_90_hold", "route_only_sequence", "no_arm_single_pass_mission",
+    "vision_receive_only"
 };
 
 static char     s_line[T_LINE_MAX + 1u];
@@ -129,6 +130,20 @@ static uint8_t s_seq_state, s_seq_stage, s_seq_prepared;
 static uint32_t s_seq_run, s_seq_still_t0, s_seq_wait_t0;
 static int32_t s_seq_last[4];
 
+/* Mode33 is receive-only. The ISR caches each selected class separately;
+ * packet_index distinguishes a missing target in the latest (even empty) packet. */
+#define VISION_DIAG_MODE 33
+enum { VD_OFF = 0, VD_QR_WAIT, VD_OBJECT_WAIT, VD_OBJECT };
+typedef struct {
+    ProtoFrame frame;
+    uint32_t tick, seen, packet_index;
+} VisionDiagSample;
+static volatile uint8_t s_vdiag_phase, s_vdiag_qr_pending;
+static int32_t s_vdiag_qr[3];
+static VisionDiagSample s_vdiag_sample[4];
+static uint32_t s_vdiag_report_t0;
+static ProtoStats s_vdiag_base;
+
 static void run_cmd(const char *ln);
 static void flush_line(void);
 static void tick(void);
@@ -144,12 +159,146 @@ static void route_seq_poll(void);
 static void route_seq_g(void);
 static void route_seq_end(const char *status);
 static void route_seq_next(void);
+static void vision_diag_start(void);
+static void vision_diag_stop(void);
+static void vision_diag_poll(void);
+static void vision_diag_report(void);
 
 static void begin_recorded_test(void)
 {
     s_test_seq++;
     if (s_test_seq == 0u) s_test_seq = 1u; /* 理论回绕时也不使用 0 */
     s_active_test = s_test_seq;
+}
+
+void test_vision_feed_frame(const ProtoFrame *f)
+{
+    ProtoStats stats;
+    VisionDiagSample *sample;
+    if (!f || s_vdiag_phase == VD_OFF) return;
+    if (s_vdiag_phase == VD_QR_WAIT) {
+        if (f->type == PF_QR && !s_vdiag_qr_pending &&
+            f->a >= 1 && f->a <= 3 && f->b >= 1 && f->b <= 3 &&
+            f->c >= 1 && f->c <= 3) {
+            s_vdiag_qr[0] = f->a; s_vdiag_qr[1] = f->b; s_vdiag_qr[2] = f->c;
+            s_vdiag_qr_pending = 1u;
+        }
+        return;
+    }
+    if (f->type != PF_OBJ || f->cls < CLS_BALL || f->cls > CLS_BUCKET) return;
+    if ((f->cls == CLS_BALL && f->label != s_vdiag_qr[0] - 1) ||
+        (f->cls == CLS_TARGET && f->label != s_vdiag_qr[1] - 1) ||
+        (f->cls == CLS_HOSTAGE && f->label != s_vdiag_qr[2] + 2)) return;
+    proto_stats_get(&stats);
+    sample = &s_vdiag_sample[f->cls];
+    sample->frame = *f;
+    sample->tick = HAL_GetTick();
+    sample->packet_index = stats.obj;
+    sample->seen++;
+}
+
+static void vision_diag_start(void)
+{
+    uint32_t pm;
+    motion_brake(); bp_laser_set(0);
+    begin_recorded_test();
+    pm = __get_PRIMASK(); __disable_irq();
+    memset(s_vdiag_sample, 0, sizeof s_vdiag_sample);
+    memset(s_vdiag_qr, 0, sizeof s_vdiag_qr);
+    s_vdiag_qr_pending = 0u;
+    proto_stats_get(&s_vdiag_base);
+    proto_send_scene(SCENE_QR); /* Queue only; DefaultTask owns actual binary TX. */
+    s_vdiag_phase = VD_QR_WAIT;
+    __set_PRIMASK(pm);
+    s_round = R_RUN;
+    s_vdiag_report_t0 = HAL_GetTick();
+    robot_diag_report(); /* automatic FW/UART/parameter provenance */
+    static char b[112];
+    snprintf(b, sizeof b, "VD33 test=%lu START QR_WAIT no_motion=1 laser=0; next_g/a/0 stops",
+             (unsigned long)s_active_test);
+    send(b);
+}
+
+static void vision_diag_stop(void)
+{
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    s_vdiag_phase = VD_OFF; s_vdiag_qr_pending = 0u;
+    memset(s_vdiag_sample, 0, sizeof s_vdiag_sample);
+    memset(s_vdiag_qr, 0, sizeof s_vdiag_qr);
+    proto_send_scene(SCENE_IDLE); /* New request immediately rejects old results. */
+    __set_PRIMASK(pm);
+    motion_brake(); bp_laser_set(0);
+    s_round = R_READY; /* Keep mode33 selected: next g cannot launch the mission. */
+    static char b[100];
+    snprintf(b, sizeof b, "VD33 test=%lu STOP IDLE_requested no_motion=1; g starts_new_QR_test",
+             (unsigned long)s_active_test);
+    send(b);
+}
+
+static void vision_diag_report(void)
+{
+    static VisionDiagSample snapshot[4];
+    static char b[192];
+    static const char *const names[] = { "BALL", "TARGET", "HOSTAGE", "BUCKET" };
+    static const char *const phases[] = { "OFF", "QR_WAIT", "OBJECT_WAIT", "OBJECT" };
+    ProtoStats stats;
+    uint32_t now = HAL_GetTick(), pm = __get_PRIMASK();
+    __disable_irq();
+    memcpy(snapshot, s_vdiag_sample, sizeof snapshot);
+    proto_stats_get(&stats);
+    __set_PRIMASK(pm);
+    snprintf(b, sizeof b,
+             "VD33 test=%lu phase=%s link=%d QR=%ld%ld%ld pkt=%lu bad=%lu crc=%lu unmapped=%lu",
+             (unsigned long)s_active_test, phases[s_vdiag_phase], proto_scene_status(),
+             (long)s_vdiag_qr[0], (long)s_vdiag_qr[1], (long)s_vdiag_qr[2],
+             (unsigned long)(stats.obj - s_vdiag_base.obj),
+             (unsigned long)(stats.binary_bad - s_vdiag_base.binary_bad),
+             (unsigned long)(stats.crc_bad - s_vdiag_base.crc_bad),
+             (unsigned long)(stats.binary_unmapped - s_vdiag_base.binary_unmapped));
+    send(b);
+    if (s_vdiag_phase != VD_OBJECT_WAIT && s_vdiag_phase != VD_OBJECT) return;
+    for (int i = 0; i < 4; i++) {
+        const VisionDiagSample *sample = &snapshot[i];
+        const ProtoFrame *f = &sample->frame;
+        if (!sample->seen) {
+            snprintf(b, sizeof b, "VD33 test=%lu cls=%s seen=0 latest=0 no_coordinate=1",
+                     (unsigned long)s_active_test, names[i]);
+        } else {
+            snprintf(b, sizeof b,
+                     "VD33 test=%lu cls=%s lab=%d seen=%lu latest=%d age=%lu seq=%u lastcx=%d lastcy=%d w=%d h=%d conf=%d img=%ux%u",
+                     (unsigned long)s_active_test, names[i], f->label,
+                     (unsigned long)sample->seen, sample->packet_index == stats.obj,
+                     (unsigned long)(now - sample->tick), (unsigned)f->sequence,
+                     f->cx, f->cy, f->w, f->h, f->conf,
+                     (unsigned)f->img_w, (unsigned)f->img_h);
+        }
+        send(b);
+    }
+}
+
+static void vision_diag_poll(void)
+{
+    if (s_vdiag_phase == VD_OFF) return;
+    if (s_vdiag_phase == VD_QR_WAIT && s_vdiag_qr_pending && proto_scene_status() == 1) {
+        uint32_t pm = __get_PRIMASK();
+        static char b[112];
+        __disable_irq();
+        s_vdiag_qr_pending = 0u;
+        proto_send_scene(SCENE_EOD); /* OBJECT algorithm; target tuple stays latched in camera. */
+        s_vdiag_phase = VD_OBJECT_WAIT;
+        __set_PRIMASK(pm);
+        snprintf(b, sizeof b, "VD33 test=%lu QR_VALID=%ld%ld%ld OBJECT_requested no_motion=1",
+                 (unsigned long)s_active_test,
+                 (long)s_vdiag_qr[0], (long)s_vdiag_qr[1], (long)s_vdiag_qr[2]);
+        send(b);
+    } else if (s_vdiag_phase == VD_OBJECT_WAIT && proto_scene_status() == 1) {
+        s_vdiag_phase = VD_OBJECT;
+    }
+    if ((uint32_t)(HAL_GetTick() - s_vdiag_report_t0) >= 1000u) {
+        s_vdiag_report_t0 = HAL_GetTick();
+        vision_diag_report(); /* <=1 Hz snapshots, not a claim to log every camera frame. */
+    }
 }
 
 static int dist_mode(void)
@@ -397,6 +546,10 @@ void test_init(void)
     s_meas_t0 = 0u;
     s_enc_report_t0 = 0u; s_enc_report_seq = 0u;
     s_test_seq = 0u; s_active_test = 0u;
+    s_vdiag_phase = VD_OFF; s_vdiag_qr_pending = 0u; s_vdiag_report_t0 = 0u;
+    memset(s_vdiag_sample, 0, sizeof s_vdiag_sample);
+    memset(s_vdiag_qr, 0, sizeof s_vdiag_qr);
+    memset(&s_vdiag_base, 0, sizeof s_vdiag_base);
     s_dist_odo0 = 0.0f; s_dist_heading0 = 0.0f; s_dist_orth0 = 0.0f; s_dist_target = 0.0f;
     s_dist_ff_ratio = 0.0f;
     s_dist_run_ms = 0u; s_dist_brake_t0 = 0u; s_dist_still_t0 = 0u;
@@ -531,6 +684,7 @@ void test_poll(void)
 {
     if (s_len != 0u && (uint32_t)(HAL_GetTick() - s_last) >= T_IDLE_MS)
         flush_line();   /* 无 CR:空闲成行(选号/单键 g/0/a 用) */
+    if (s_msel == VISION_DIAG_MODE) { vision_diag_poll(); return; }
     if (route_seq_active()) route_seq_poll();
     if (s_seq_state != SQ_STILL && s_seq_state != SQ_WAIT)
         tick();         /* 段走/回程/步进的非阻塞推进(g 随时可插) */
@@ -1248,6 +1402,7 @@ static void cmd_reset(void)
 {
     if (s_go || mission_state() != MS_BOOT) { cmd_abort(); return; }
     if (s_msel == R_FREE) { send("OK IDLE select_mode_first"); return; }
+    if (s_msel == VISION_DIAG_MODE) { vision_diag_stop(); return; }
     if (s_msel == MISSION_TRIAL_MODE) {
         motion_brake();
         send("OK TRIAL32_IDLE no_motion_no_auto_return; g starts after calibration");
@@ -1361,6 +1516,11 @@ static void cmd_reset(void)
 /* 'g' 一键推一轮:READY→启动(g1)、RUN→暂停补终点动作(g2)、DONE→回原点(g3) */
 static void mode_g(void)
 {
+    if (s_msel == VISION_DIAG_MODE) {
+        if (s_vdiag_phase == VD_OFF) vision_diag_start();
+        else vision_diag_stop();
+        return;
+    }
     if (s_msel == ROUTE_TEST_MODE || route_seq_active()) { route_seq_g(); return; }
     if (jog_return_mode() && s_round != R_READY) {
         jog_stop(s_round == R_RET ? "RETURN" : (s_round == R_DONE ? "WAIT" : "OUT"));
@@ -1420,11 +1580,11 @@ static void cmd_abort(void)
     send("OK IDLE no_action");
 }
 
-/* 数字选号进调试模式(1..32;仅 BOOT 空闲可,先刹掉当前动作再切,顺带清回程量) */
+/* 数字选号进调试模式(1..33;仅 BOOT 空闲可,先刹掉当前动作再切,顺带清回程量) */
 static void cmd_select(int32_t m, int quiet)
 {
     if (!bench_ok()) { send("ERR BENCH_LOCKED power_cycle_to_retest"); return; }
-    if (m < 1 || m > T_MODE_MAX) { send("ERR MODE_RANGE 1..32"); return; }
+    if (m < 1 || m > T_MODE_MAX) { send("ERR MODE_RANGE 1..33"); return; }
     if (route_seq_active()) { send("ERR ROUTE_SEQ_ACTIVE stop_with_g_first"); return; }
     if (m == 11 || m == 12) { send("ERR STEPPER_UNBOUNDED_DISABLED use_mode24_or25"); return; }
     if (jog_return_mode() && s_round != R_READY) {
@@ -1446,6 +1606,11 @@ static void cmd_select(int32_t m, int quiet)
     s_steps = 0; s_back = 0; s_leg_ms = 0; s_leg_run = 0;
     s_jog_request = 0; s_jog_done = 0u; s_jog_hold_t0 = 0u;
     s_servo_target_us = 0u; s_servo_origin_us = 0u; s_servo_hold_t0 = 0u;
+    if (s_msel == VISION_DIAG_MODE) {
+        motion_brake(); bp_laser_set(0);
+        send("OK MODE=33 VISION_RX_ONLY; g requests_QR_then_OBJECT; next_g/a/0 stops; no_motion_no_laser");
+        return;
+    }
     if (s_msel == ROUTE_TEST_MODE) {
         s_seq_state = SQ_READY; s_seq_stage = 0u; s_round = R_READY;
         send("OK MODE=31 ROUTE_SEQ 10_steps v100; position_at_START then g; g/a/0 stops_whole_chain; no_QR_tasks");
@@ -1535,7 +1700,7 @@ static void cmd_set(char key, int32_t val)
 /* '?' 打印命令语法、g 键一圈说明与当前槽/模式值 */
 static void cmd_help(void)
 {
-    send("? Default=mission; select 1..32 for bench mode.");
+    send("? Default=mission; select 1..33 for bench mode.");
     send("  Mission: first g starts if calibrated; next g aborts. a also stops; restart board to rerun.");
     send("  1..4 continuous move; 5/6 timed leg; 7..10 wheels; 11/12 unsafe disabled; 13 enc; 14 IMU.");
     send("  15..18 distance: forward/back/left/right; 17/18 select loads v300 d1500.");
@@ -1548,7 +1713,10 @@ static void cmd_help(void)
     send("  30 turn LEFT -95 hold within 0.3deg (90 + 5deg trial compensation).");
     send("  31 fixed 10-step route-only sequence v100; g starts, g/a/0 stops chain, no QR/tasks/auto return.");
     send("  32 no-arm single-pass mission: QR/vision/two+180/laser; ball/bucket/hostage hold10s; next g/a/0 aborts.");
+    send("  33 receive-only: g requests QR then OBJECT; ASCII VD33 snapshots each second; g/a/0 stops to IDLE.");
+    send("  vision reports mode33 now; latest=1 means in last accepted packet, age/lastcx are receive-time snapshots.");
     send("  trial reports mode32; positive cx error: vsg1 forward, vsg2 backward; bcx/tcx/hcx/kcx<pixel> RAM workpoints.");
+    send("  b1d<mm>: measured entry-corner to bucket first leg; 1..2449, RAM-only; mode32 second=2450-first.");
     send("  23 forward sign probe: suspended only, open+closed pulse, auto brake.");
     send("  24/25 stepper jog: nl1..nl50=dir0, nr1..nr50=dir1, then g; no auto return.");
     send("  26/27 stepper jog: same nl/nr; g start, wait 2s, reverse same steps.");
@@ -1694,6 +1862,17 @@ static void run_cmd(const char *ln)
     buf[i] = '\0';
     if (i == 0u) return;
 
+    /* Receive-only session owns the interface: no arm, mode or tuning writes. */
+    if (s_vdiag_phase != VD_OFF) {
+        if (strcmp(buf, "g") == 0 || strcmp(buf, "a") == 0 || strcmp(buf, "0") == 0) {
+            vision_diag_stop(); return;
+        }
+        if (strcmp(buf, "?") != 0 && strcmp(buf, "diag") != 0 &&
+            strcmp(buf, "param") != 0 && strcmp(buf, "vision") != 0) {
+            send("ERR VISION_DIAG_ACTIVE stop_with_g_first"); return;
+        }
+    }
+
     /* Fixed route: no mode/parameter/arm writes while any phase owns the
      * wheels, including preparation and braking. Read-only reports are allowed. */
     if (route_seq_active()) {
@@ -1745,6 +1924,26 @@ static void run_cmd(const char *ln)
     if (strcmp(buf, "a") == 0) { cmd_abort(); return; }
     if (strcmp(buf, "0") == 0 && (s_go || mission_state() != MS_BOOT)) { cmd_abort(); return; }
     if (strcmp(buf, "trial") == 0) { mission_trial_report(); return; }
+    if (strcmp(buf, "vision") == 0) { vision_diag_report(); return; }
+    if (strncmp(buf, "b1d", 3u) == 0) {
+        int32_t value;
+        if (!bench_ok() || s_round == R_RUN || s_round == R_RET || s_round == R_BRAKE ||
+            (servo_mode() && s_round == R_DONE)) {
+            send("ERR TRIAL_DISTANCE_LOCKED stop_test_first; mission_requires_restart");
+            return;
+        }
+        if (!parse_num(buf + 3, &value) || value <= 0 ||
+            value >= (int32_t)MISSION_TRIAL_TASK_CORRIDOR_MM) {
+            send("ERR B1D_RANGE measured_first_leg_mm_1..2449");
+            return;
+        }
+        if (!mission_trial_set_first_leg((uint16_t)value)) {
+            send("ERR TRIAL_DISTANCE_LOCKED");
+            return;
+        }
+        mission_trial_report();
+        return;
+    }
     if (strncmp(buf, "vsg", 3u) == 0 || strncmp(buf, "bcx", 3u) == 0 ||
         strncmp(buf, "tcx", 3u) == 0 || strncmp(buf, "hcx", 3u) == 0 ||
         strncmp(buf, "kcx", 3u) == 0) {

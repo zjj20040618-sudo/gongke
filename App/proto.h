@@ -27,7 +27,7 @@ enum { LAB_R = 0, LAB_G, LAB_B,          /* ball/target 颜色 */
        LAB_CYL, LAB_CONE, LAB_WAIST };   /* hostage 形状 */
 /* CLS_BUCKET(排爆桶):EOD 放桶也要视觉锁对准 → MaixCam 需在 EOD 场景上报桶。
  *   全场单只无色、无同类并列 → 对齐时不挑 label(step_align 传 -1),
- *   视觉报个固定 label 占位即可。⚠️ 协议新增,待视觉队友确认。 */
+ *   当前9541模型ID9映射为CLS_BUCKET/label0；实际桶口工作点仍须标定。 */
 
 typedef struct {
     ProtoType type;

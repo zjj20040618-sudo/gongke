@@ -18,7 +18,7 @@ static uint8_t s_rx2, s_rx3, s_rx4;   /* 2=视觉(USART2 PD5/6) 3=蓝牙(USART3 
 
 /* BT 输入环形缓冲(huart3,ISR 写 / robot_bt_service 读) */
 #define BT_RX_N 64u
-#define FW_BUILD_ID "20261004-NOARM-SINGLEPASS32"
+#define FW_BUILD_ID "20261004-VISION-DIAG33"
 static volatile uint8_t s_bt[BT_RX_N];
 static volatile uint8_t s_bt_wr, s_bt_rd;
 static volatile uint32_t s_bt_drop;
@@ -69,6 +69,13 @@ static void uart2_binary_tx(const uint8_t *data, uint16_t length)
     HAL_UART_Transmit(&huart2, (uint8_t *)data, length, 20u);
 }
 
+/* RX ISR fan-out: both consumers only cache; no UART TX or formatting here. */
+static void robot_vision_frame(const ProtoFrame *f)
+{
+    steps_feed_frame(f);
+    test_vision_feed_frame(f);
+}
+
 /* 开机一次性初始化:底层→控制→运动→臂→IMU→协议→任务→调试,再挂三个串口 RX */
 void robot_init(void)
 {
@@ -82,7 +89,7 @@ void robot_init(void)
     proto_set_binary_mode(1); /* camera AA55/CRC16; Bluetooth remains ASCII */
     proto_set_tx(uart2_tx);
     proto_set_binary_tx(uart2_binary_tx);
-    proto_set_on_frame(steps_feed_frame);   /* MaixCam 帧 → steps 暂存,wait_* 消费 */
+    proto_set_on_frame(robot_vision_frame); /* MaixCam 帧 → task/diagnostic caches */
     mission_init();
     mission_trial_init();
     test_init();

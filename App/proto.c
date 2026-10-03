@@ -154,17 +154,20 @@ static uint16_t binary_crc(const uint8_t *p, unsigned length)
     return crc;
 }
 
-/* 0 oblate / 2 truncated_cone are unresolved. Current model has no bucket. */
+/* model_9541 training aliases: 0 waist-drum, 2 cone, 9 common bucket. */
 static int binary_class(uint8_t model_class, int *cls, int *label)
 {
     switch (model_class) {
+        case 0: *cls = CLS_HOSTAGE; *label = LAB_WAIST; return 1;
         case 1: *cls = CLS_HOSTAGE; *label = LAB_CYL; return 1;
+        case 2: *cls = CLS_HOSTAGE; *label = LAB_CONE; return 1;
         case 3: *cls = CLS_BALL; *label = LAB_B; return 1;
         case 4: *cls = CLS_BALL; *label = LAB_R; return 1;
         case 5: *cls = CLS_BALL; *label = LAB_G; return 1;
         case 6: *cls = CLS_TARGET; *label = LAB_R; return 1;
         case 7: *cls = CLS_TARGET; *label = LAB_B; return 1;
         case 8: *cls = CLS_TARGET; *label = LAB_G; return 1;
+        case 9: *cls = CLS_BUCKET; *label = 0; return 1;
         default: return 0;
     }
 }
@@ -189,7 +192,7 @@ static int binary_dispatch(const uint8_t *p)
             const uint16_t score = read_le16(obj + 1);
             const uint16_t cx = read_le16(obj + 3), cy = read_le16(obj + 5);
             const uint16_t w = read_le16(obj + 7), h = read_le16(obj + 9);
-            if (obj[0] > 8u || score > 1000u || cx >= f.img_w || cy >= f.img_h
+            if (obj[0] > 9u || score > 1000u || cx >= f.img_w || cy >= f.img_h
                 || w == 0u || h == 0u || w > f.img_w || h > f.img_h) return 0;
         }
     }

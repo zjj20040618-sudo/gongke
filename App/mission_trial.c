@@ -29,6 +29,8 @@ static int s_cx[4], s_sign;
 static uint8_t s_cx_ready[4];
 static int32_t s_qr[3];
 static unsigned s_hits;
+static uint16_t s_first_leg_mm;
+static uint8_t s_bucket_anchor; /* 0 unset, 1 completed visual chain, 2 missing. */
 
 static float wrap(float d)
 {
@@ -51,6 +53,7 @@ void mission_trial_init(void)
 {
     s_tracking = s_running = 0u; s_road.initialized = 0u;
     s_sign = 0; s_phase = "BOOT"; s_hits = 0u;
+    s_first_leg_mm = 0u; s_bucket_anchor = 0u;
     for (int i = 0; i < 4; ++i) { s_cx[i] = 0; s_cx_ready[i] = 0u; }
     s_qr[0] = s_qr[1] = s_qr[2] = 0;
 }
@@ -59,6 +62,7 @@ const char *mission_trial_config_missing(void)
     static const char *const names[4] = { "bcx", "tcx", "hcx", "kcx" };
     if (s_sign != 1 && s_sign != -1) return "vsg1_or_vsg2";
     for (int i = 0; i < 4; ++i) if (!s_cx_ready[i]) return names[i];
+    if (!s_first_leg_mm) return "b1d";
     return 0;
 }
 int mission_trial_set_alignment(int cls, int cx, int sign)
@@ -67,6 +71,12 @@ int mission_trial_set_alignment(int cls, int cx, int sign)
         || (sign != 0 && sign != 1 && sign != -1) || s_running) return 0;
     if (cls >= 0 && cx >= 0) { s_cx[cls] = cx; s_cx_ready[cls] = 1u; }
     if (sign) s_sign = sign;
+    return 1;
+}
+int mission_trial_set_first_leg(uint16_t mm)
+{
+    if (!mm || mm >= mission_trial_route_plan[7].distance_mm || s_running) return 0;
+    s_first_leg_mm = mm;
     return 1;
 }
 const char *mission_trial_phase(void) { return s_phase; }
@@ -90,6 +100,11 @@ void mission_trial_report(void)
     snprintf(b, sizeof b, "\r\nTRIAL32 v=100 task=2450 rescue=2125 hold=10000 sign=%d cx=%d,%d,%d,%d ready=%u%u%u%u\r\n",
         s_sign, s_cx[0], s_cx[1], s_cx[2], s_cx[3],
         s_cx_ready[0], s_cx_ready[1], s_cx_ready[2], s_cx_ready[3]);
+    bp_debug_send(b);
+    snprintf(b, sizeof b, "TRIAL32 first=%u second=%u bucket_anchor=%s\r\n",
+        (unsigned)s_first_leg_mm,
+        s_first_leg_mm ? (unsigned)(mission_trial_route_plan[7].distance_mm - s_first_leg_mm) : 0u,
+        s_bucket_anchor == 1u ? "VISION" : (s_bucket_anchor == 2u ? "MISSING" : "UNSET"));
     bp_debug_send(b);
     for (unsigned i = 0u; i < MISSION_TRIAL_ROUTE_LEGS; ++i) {
         const MissionTrialRouteLeg *leg = &mission_trial_route_plan[i];
@@ -199,13 +214,15 @@ static int turn(float angle, const char *name)
     }
     motion_brake(); return 0;
 }
-static int align(int cls, int label, const char *name)
+static int align(int cls, int label, const char *name, float *road_anchor)
 {
     uint32_t last_frame;
     uint32_t trace_t0;
     unsigned good = 0u;
     phase(name);
     if (!step_prepare_leg()) return 0;
+    /* Capture only after braking/settling, before any image correction moves. */
+    if (road_anchor) mission_trial_get_progress(road_anchor, 0);
     step_object_select(cls, label);
     last_frame = HAL_GetTick();
     trace_t0 = last_frame;
@@ -242,6 +259,32 @@ static int align(int cls, int label, const char *name)
     }
     motion_brake(); return 0;
 }
+/* Restore only NET backward alignment displacement after the task is done.
+ * Keep the live corridor ledger: this movement is already included in it,
+ * so the following remainder must not add another return distance. */
+static int return_forward_to(float road_anchor, const char *name)
+{
+    MotionRamp ramp;
+    phase(name);
+    if (!step_prepare_leg()) return 0;
+    motion_linear_ramp_init(&ramp);
+    while (!run_aborted()) {
+        float done, total, rest;
+        if (!imu_ok()) break;
+        mission_trial_get_progress(&done, &total);
+        /* Braking at detection can carry the anchor beyond the road end.
+         * Restore at most that end, never command a return farther into it. */
+        rest = (road_anchor < total ? road_anchor : total) - done;
+        if (rest <= 0.0f) {
+            motion_brake();
+            return step_prepare_leg();
+        }
+        road_velocity(motion_linear_profile_step(&ramp, MISSION_TRIAL_ROUTE_SPEED_MMS,
+                                                rest, 0.005f), 0.0f);
+        osDelay(5);
+    }
+    motion_brake(); return 0;
+}
 /* A single continuous corridor, never a new full-length leg after parking.
  * 1=selected object found, 0=road end, -1=manual/sensor stop. */
 static int pass_until(int cls, int label, const char *name)
@@ -267,8 +310,8 @@ static int pass_until(int cls, int label, const char *name)
 static int read_qr(void)
 {
     int32_t d[3];
-    phase("QR_STOP10S");
-    if (!step_vision_scene(SCENE_QR) || !stopped_hold(10000u)) return 0;
+    phase("QR_WAIT");
+    if (!step_prepare_leg() || !step_vision_scene(SCENE_QR)) return 0;
     while (!run_aborted()) {
         if (!wait_qr(d, 0u)) return 0;
         if (d[0] >= 1 && d[0] <= 3 && d[1] >= 1 && d[1] <= 3 && d[2] >= 1 && d[2] <= 3) {
@@ -289,8 +332,10 @@ int mission_trial_run(void)
         "R5_LEFT730", "R6_FORWARD830", "R7_RIGHT85"
     };
     int found;
+    float task_anchor;
     if (run_aborted() || mission_trial_config_missing() || !imu_ok()) return 0;
     s_tracking = 0u; s_running = 1u; s_road.initialized = 0u; s_hits = 0u;
+    s_bucket_anchor = 0u;
     s_qr[0] = s_qr[1] = s_qr[2] = 0;
     s_heading = imu_heading_deg();
     bp_laser_set(0);
@@ -305,41 +350,53 @@ int mission_trial_run(void)
         }
         if (i == 0u && !read_qr()) goto stop;
     }
+    /* The draw can place the selected ball beyond the common bucket position.
+     * b1d sets the bucket-based SECOND leg, not the ball search limit. */
     road_start((float)mission_trial_route_plan[7].distance_mm, s_heading);
     if (!step_vision_scene(SCENE_EOD)) goto stop;
     found = pass_until(CLS_BALL, (int)s_qr[0] - 1, "BALL_SINGLE_PASS");
     if (found < 0) goto stop;
     if (found > 0) {
-        if (!align(CLS_BALL, (int)s_qr[0] - 1, "BALL_ALIGN")) goto stop;
+        if (!align(CLS_BALL, (int)s_qr[0] - 1, "BALL_ALIGN", 0)) goto stop;
         phase("BALL_HOLD10S");
         if (!stopped_hold(MISSION_TRIAL_BALL_HOLD_MS)
             || !turn(180.0f, "BALL_TURN180")
-            || !align(CLS_BUCKET, -1, "BUCKET_ALIGN")) goto stop;
+            || !align(CLS_BUCKET, -1, "BUCKET_ALIGN", 0)) goto stop;
         phase("BUCKET_HOLD10S");
         if (!stopped_hold(MISSION_TRIAL_BUCKET_HOLD_MS)
             || !turn(180.0f, "BUCKET_TURN180_BACK")) goto stop;
         s_hits |= 1u;
+        if (!step_prepare_leg()) goto stop;
+        s_bucket_anchor = 1u;
+        phase("BUCKET_LEG_START");
+        road_start((float)(mission_trial_route_plan[7].distance_mm - s_first_leg_mm), s_heading);
+    } else {
+        /* No observed bucket node: keep the exhausted original corridor. */
+        s_bucket_anchor = 2u;
+        phase("BUCKET_ANCHOR_MISSING");
     }
     if (!step_vision_scene(SCENE_ANTI)) goto stop;
     found = pass_until(CLS_TARGET, (int)s_qr[1] - 1, "TARGET_SINGLE_PASS");
     if (found < 0) goto stop;
     if (found > 0) {
-        if (!align(CLS_TARGET, (int)s_qr[1] - 1, "TARGET_ALIGN")) goto stop;
+        if (!align(CLS_TARGET, (int)s_qr[1] - 1, "TARGET_ALIGN", &task_anchor)) goto stop;
         phase("TARGET_LASER");
         if (!step_fire(2000u)) goto stop;
         s_hits |= 2u;
+        if (!return_forward_to(task_anchor, "TARGET_RETURN")) goto stop;
     }
-    if (pass_until(-1, -1, "TASK_REMAINDER2450") < 0
+    if (pass_until(-1, -1, "BUCKET_TO_CORNER_REMAINDER") < 0
         || !turn((float)mission_trial_route_plan[8].turn_deg, "R9_RIGHT85")) goto stop;
     road_start((float)mission_trial_route_plan[9].distance_mm, s_heading);
     if (!step_vision_scene(SCENE_RESCUE)) goto stop;
     found = pass_until(CLS_HOSTAGE, (int)s_qr[2] + 2, "HOSTAGE_SINGLE_PASS");
     if (found < 0) goto stop;
     if (found > 0) {
-        if (!align(CLS_HOSTAGE, (int)s_qr[2] + 2, "HOSTAGE_ALIGN")) goto stop;
+        if (!align(CLS_HOSTAGE, (int)s_qr[2] + 2, "HOSTAGE_ALIGN", &task_anchor)) goto stop;
         phase("HOSTAGE_HOLD10S");
         if (!stopped_hold(MISSION_TRIAL_HOSTAGE_HOLD_MS)) goto stop;
         s_hits |= 4u;
+        if (!return_forward_to(task_anchor, "HOSTAGE_RETURN")) goto stop;
     }
     if (pass_until(-1, -1, "RESCUE_REMAINDER2125") < 0) goto stop;
     motion_brake();

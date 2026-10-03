@@ -17,7 +17,13 @@ static uint16_t host_servo;
 static char last_message[256];
 static int trial_start_calls, trial_report_calls, trial_gate_closed;
 static int trial_alignment_calls, trial_alignment_cls, trial_alignment_cx, trial_alignment_sign;
+static int trial_distance_calls;
+static uint16_t trial_first_leg_mm;
 static int laser_state;
+static ProtoStats host_proto_stats;
+static ProtoScene host_scene;
+static int host_scene_calls, host_scene_status;
+static char host_messages[8192];
 
 uint32_t HAL_GetTick(void) { return host_tick; }
 void bp_debug_send(const char *s)
@@ -25,6 +31,8 @@ void bp_debug_send(const char *s)
     /* Production send() appends CRLF in a separate UART write. */
     if (strcmp(s, "\r\n") != 0)
         snprintf(last_message, sizeof last_message, "%s", s);
+    if (strlen(host_messages) + strlen(s) < sizeof host_messages)
+        strcat(host_messages, s);
 }
 void bp_laser_set(int on) { laser_state = on; }
 int32_t bp_enc_raw_total(int m) { (void)m; return 0; }
@@ -82,6 +90,12 @@ const char *mission_trial_config_missing(void)
     return trial_gate_closed ? "TRIAL_VISION_UNCONFIRMED" : 0;
 }
 void mission_trial_report(void) { trial_report_calls++; }
+int mission_trial_set_first_leg(uint16_t mm)
+{
+    trial_distance_calls++;
+    trial_first_leg_mm = mm;
+    return mm > 0u && mm < 2450u;
+}
 int mission_trial_set_alignment(int cls, int cx, int sign)
 {
     trial_alignment_calls++;
@@ -89,6 +103,10 @@ int mission_trial_set_alignment(int cls, int cx, int sign)
     return cls >= -1 && cls <= 3 && cx >= -1 && cx <= 4095 && sign >= -1 && sign <= 1;
 }
 void robot_diag_report(void) { }
+void proto_stats_get(ProtoStats *out) { *out = host_proto_stats; }
+int proto_scene_status(void) { return host_scene_status; }
+void proto_send_scene(ProtoScene scene)
+{ host_scene = scene; host_scene_calls++; host_scene_status = 0; }
 
 static void reset_fixture(void)
 {
@@ -100,7 +118,11 @@ static void reset_fixture(void)
     host_servo = 1400u; last_message[0] = '\0';
     trial_start_calls = trial_report_calls = trial_gate_closed = trial_alignment_calls = 0;
     trial_alignment_cls = trial_alignment_cx = trial_alignment_sign = 0;
+    trial_distance_calls = 0; trial_first_leg_mm = 0u;
     laser_state = 0;
+    memset(&host_proto_stats, 0, sizeof host_proto_stats);
+    host_scene = SCENE_IDLE; host_scene_calls = host_scene_status = 0;
+    host_messages[0] = '\0';
     test_init();
 }
 
@@ -205,7 +227,7 @@ static int check_route_sequence(void)
     test_feed('g'); host_tick += T_IDLE_MS; test_poll();
     CHECK(s_seq_state == SQ_STOPPED && s_len == 0u && last_x == 0.0f && last_y == 0.0f);
 
-    static const char *const writes[] = {"v300","d1500","ykp4","r1","20","31","cc","co","su1500","n5"};
+    static const char *const writes[] = {"v300","d1500","ykp4","r1","20","31","cc","co","su1500","n5","b1d800"};
     for (int phase = 0; phase < 4; phase++) {
         reset_fixture(); run_cmd("31"); run_cmd("g");
         if (phase == 1) { host_tick += T_DIST_STILL_MS; test_poll(); }
@@ -347,6 +369,12 @@ static int check_trial32_router(void)
     run_cmd("32");
     CHECK(s_msel == 32 && s_round == R_READY && !s_go && trial_start_calls == 0);
     CHECK(strcmp(s_mname[32], "no_arm_single_pass_mission") == 0 && trial_report_calls == 1);
+    run_cmd("b1d1"); CHECK(trial_distance_calls == 1 && trial_first_leg_mm == 1u);
+    run_cmd("b1d2449"); CHECK(trial_distance_calls == 2 && trial_first_leg_mm == 2449u);
+    run_cmd("b1d800"); CHECK(trial_distance_calls == 3 && trial_first_leg_mm == 800u);
+    run_cmd("b1d0"); run_cmd("b1d2450"); run_cmd("b1d-1"); run_cmd("b1d");
+    run_cmd("b1d800x"); run_cmd("b1d800.5"); run_cmd("b1d65537");
+    CHECK(trial_distance_calls == 3 && trial_first_leg_mm == 800u);
     run_cmd("vsg1");
     CHECK(trial_alignment_calls == 1 && trial_alignment_cls == -1 &&
           trial_alignment_cx == -1 && trial_alignment_sign == 1);
@@ -370,8 +398,8 @@ static int check_trial32_router(void)
         /* Only a queued request: DefaultTask keeps handling Bluetooth. */
         host_tick += 100u; test_poll();
         CHECK(last_x == 0.0f && last_y == 0.0f && last_w == 0.0f && pulse_calls == 0);
-        run_cmd("bcx199"); run_cmd("vsg1"); run_cmd("24"); run_cmd("co");
-        CHECK(trial_alignment_calls == 0 && s_msel == 32 && host_servo == 1400u);
+        run_cmd("bcx199"); run_cmd("vsg1"); run_cmd("b1d800"); run_cmd("24"); run_cmd("co");
+        CHECK(trial_alignment_calls == 0 && trial_distance_calls == 0 && s_msel == 32 && host_servo == 1400u);
         run_cmd("trial");
         CHECK(trial_report_calls == 3); /* select, g automatic report, explicit report */
         laser_state = 1;
@@ -384,9 +412,94 @@ static int check_trial32_router(void)
     reset_fixture(); run_cmd("32"); trial_gate_closed = 1; run_cmd("g");
     CHECK(!s_go && !host_abort && trial_start_calls == 0 && start_calls == 0);
     CHECK(strstr(last_message, "TRIAL32_UNCALIBRATED") != NULL);
-    reset_fixture(); run_cmd("7"); run_cmd("p45"); run_cmd("g"); run_cmd("bcx180");
-    CHECK(trial_alignment_calls == 0 && s_round == R_RUN);
-    puts("trial32 router: selection/RAM workpoints/sign aliases, malformed writes, queued start, pending g/a/0, laser-off, terminal no-restart and write lock passed");
+    reset_fixture(); run_cmd("7"); run_cmd("p45"); run_cmd("g"); run_cmd("bcx180"); run_cmd("b1d800");
+    CHECK(trial_alignment_calls == 0 && trial_distance_calls == 0 && s_round == R_RUN);
+    puts("trial32 router: selection/RAM workpoints/sign/first-leg aliases, malformed writes, queued start, pending g/a/0, laser-off, terminal no-restart and write lock passed");
+    return 0;
+}
+
+static void diagnostic_qr(int a, int b, int c)
+{
+    ProtoFrame frame = {0};
+    frame.type = PF_QR; frame.a = a; frame.b = b; frame.c = c;
+    test_vision_feed_frame(&frame);
+}
+
+static int check_vision33_router(void)
+{
+    static const char *const stops[] = { "g", "a", "0" };
+    static const char *const writes[] = {
+        "31", "32", "7", "r1", "v100", "d500", "p45", "fff0.02",
+        "bcx160", "b1d800", "vsg1", "co", "cc", "su1800", "u1800", "nr10", "imu"
+    };
+    ProtoFrame frame = {0};
+    reset_fixture(); run_cmd("33");
+    CHECK(s_msel == 33 && s_round == R_READY && host_scene_calls == 0);
+    CHECK(strcmp(s_mname[33], "vision_receive_only") == 0 && !s_go);
+    diagnostic_qr(1, 2, 3); CHECK(!s_vdiag_qr_pending);
+    run_cmd("g");
+    CHECK(s_round == R_RUN && s_vdiag_phase == VD_QR_WAIT && host_scene == SCENE_QR);
+    CHECK(s_active_test == 1u && !laser_state && !host_abort && !s_go);
+    diagnostic_qr(0, 2, 3); CHECK(!s_vdiag_qr_pending);
+    diagnostic_qr(1, 2, 3); diagnostic_qr(3, 2, 1);
+    CHECK(s_vdiag_qr_pending && s_vdiag_qr[0] == 1 && s_vdiag_qr[2] == 3);
+    test_poll(); CHECK(host_scene_calls == 1); /* ACK/fresh still absent. */
+    host_scene_status = 1; test_poll();
+    CHECK(s_vdiag_phase == VD_OBJECT_WAIT && host_scene == SCENE_EOD && host_scene_calls == 2);
+    CHECK(!s_vdiag_qr_pending && !s_go && start_calls == 0 && trial_start_calls == 0);
+    host_scene_status = 1; test_poll(); CHECK(s_vdiag_phase == VD_OBJECT);
+    frame.type = PF_OBJ; frame.cls = CLS_HOSTAGE; frame.label = LAB_WAIST;
+    frame.cx = 120; frame.cy = 135; frame.w = 30; frame.h = 70;
+    frame.conf = 88; frame.sequence = 7; frame.img_w = frame.img_h = 320;
+    host_proto_stats.obj = 1u;
+    test_vision_feed_frame(&frame);
+    CHECK(s_vdiag_sample[CLS_HOSTAGE].seen == 1u && s_vdiag_sample[CLS_HOSTAGE].packet_index == 1u);
+    frame.label = LAB_CYL; test_vision_feed_frame(&frame);
+    CHECK(s_vdiag_sample[CLS_HOSTAGE].seen == 1u); /* Non-selected shape is ignored. */
+    run_cmd("vision");
+    CHECK(strstr(host_messages, "cls=HOSTAGE lab=5 seen=1 latest=1") != NULL);
+    CHECK(strstr(host_messages, "lastcx=120 lastcy=135") != NULL && strstr(host_messages, "img=320x320") != NULL);
+    host_proto_stats.obj++; /* Empty packet: parser has no per-object callback. */
+    host_messages[0] = '\0'; host_tick += 1000u; test_poll();
+    CHECK(strstr(host_messages, "cls=HOSTAGE lab=5 seen=1 latest=0 age=1000") != NULL);
+    CHECK(strstr(host_messages, "cls=BUCKET seen=0 latest=0 no_coordinate=1") != NULL);
+    for (unsigned i = 0; i < sizeof writes / sizeof writes[0]; i++) {
+        run_cmd(writes[i]);
+        CHECK(s_msel == 33 && s_round == R_RUN && strstr(last_message, "VISION_DIAG_ACTIVE") != NULL);
+        CHECK(host_servo == 1400u && pulse_calls == 0 && servo_calls == 0 &&
+              last_x == 0.0f && last_y == 0.0f && last_w == 0.0f && !laser_state);
+    }
+    CHECK(zero_calls == 0 && prepare_calls == 0 && start_calls == 0 && trial_start_calls == 0);
+
+    /* Every stop key in QR_WAIT, pending QR, OBJECT_WAIT, and OBJECT. */
+    for (unsigned key = 0; key < 3; key++) {
+        for (int phase = 0; phase < 4; phase++) {
+            reset_fixture(); run_cmd("33"); run_cmd("g");
+            if (phase >= 1) diagnostic_qr(1, 2, 3);
+            if (phase >= 2) { host_scene_status = 1; test_poll(); }
+            if (phase >= 3) { host_scene_status = 1; test_poll(); }
+            int requests = host_scene_calls;
+            run_cmd(stops[key]);
+            CHECK(s_vdiag_phase == VD_OFF && !s_vdiag_qr_pending && s_round == R_READY && s_msel == 33);
+            CHECK(host_scene == SCENE_IDLE && host_scene_calls == requests + 1);
+            diagnostic_qr(2, 2, 2); test_vision_feed_frame(&frame);
+            host_scene_status = 1; test_poll();
+            CHECK(!s_vdiag_qr_pending && s_vdiag_sample[CLS_HOSTAGE].seen == 0u && host_scene == SCENE_IDLE);
+            CHECK(!s_go && !host_abort && start_calls == 0 && trial_start_calls == 0 &&
+                  pulse_calls == 0 && servo_calls == 0 && !laser_state);
+            run_cmd("g");
+            CHECK(s_vdiag_phase == VD_QR_WAIT && host_scene == SCENE_QR && s_active_test == 2u);
+            CHECK(s_vdiag_qr[0] == 0 && s_vdiag_sample[CLS_HOSTAGE].seen == 0u);
+        }
+    }
+    reset_fixture();
+    const char *batch = "33\ng\ng\n";
+    while (*batch) test_feed((uint8_t)*batch++);
+    test_poll(); CHECK(host_scene == SCENE_IDLE && s_vdiag_phase == VD_OFF && !s_go);
+    reset_fixture(); host_state = MS_EOD; run_cmd("33"); CHECK(s_msel == R_FREE && !host_scene_calls);
+    reset_fixture(); run_cmd("33"); run_cmd("g"); host_scene_status = -1; host_tick += 1000u; test_poll();
+    CHECK(s_vdiag_phase == VD_QR_WAIT && strstr(last_message, "link=-1") != NULL && !s_go);
+    puts("vision33: ACK/fresh QR gating, current/empty packet snapshots, 17 write locks, 12 stops, late frames, same-batch cancellation and repeated test IDs passed; no actuator calls");
     return 0;
 }
 
@@ -492,7 +605,7 @@ int main(void)
     CHECK(s_round == R_READY && last_w == 0.0f);
     reset_fixture(); run_cmd("30"); run_cmd("g"); tick(); run_cmd("0");
     CHECK(s_round == R_READY && last_w == 0.0f);
-    reset_fixture(); run_cmd("33"); CHECK(s_msel == R_FREE && strstr(last_message, "MODE_RANGE") != NULL);
+    reset_fixture(); run_cmd("34"); CHECK(s_msel == R_FREE && strstr(last_message, "MODE_RANGE") != NULL);
     for (int mode = 20; mode <= 22; mode += 2) {
         reset_fixture(); s_msel = mode; run_cmd("g"); tick();
         CHECK(s_round == R_RUN && last_w == T_TURN_MAX_W);
@@ -538,6 +651,7 @@ int main(void)
     CHECK(check_shared_turn_hold() == 0);
     CHECK(check_route_sequence() == 0);
     CHECK(check_trial32_router() == 0);
+    CHECK(check_vision33_router() == 0);
     puts("real g router: pending/running/terminal mission stop, a alias, closed gate, CRLF/idle framing, wheel/distance/turn/IMU/jog/servo/return passed");
     return 0;
 }

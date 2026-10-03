@@ -52,6 +52,7 @@ try {
     }
     Invoke-HostPythonCase 'vision camera main loop' 'tests/test_vision_control_main.py'
     Invoke-HostPythonCase 'full binary packet replay' 'tests/test_vision_binary_replay.py'
+    Invoke-HostPythonCase 'receive-only vision IRQ/stop contract' 'tests/test_vision_diag_contract.py'
 
     $mission = Get-Content 'App/mission.c' -Raw -Encoding utf8
     $test = Get-Content 'App/test.c' -Raw -Encoding utf8

@@ -15,4 +15,8 @@ void mission_trial_get_qr(int32_t out[3]);
 /* RAM-only. cls=-1: sign only; sign=0: retain sign; cx=-1: retain cx.
  * Nonzero sign must be +1/-1, cx must be measured on the actual 480px image. */
 int mission_trial_set_alignment(int cls, int cx, int sign);
+/* RAM-only entry-to-common-bucket leg, 1..2449 wheel-command mm;
+ * the bucket-based second leg is 2450-first, not a ball search limit.
+ * Unset after init; writes are rejected while the trial is running. */
+int mission_trial_set_first_leg(uint16_t mm);
 #endif

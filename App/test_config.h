@@ -10,7 +10,7 @@
 #define T_IDLE_MS    20u
 #define T_V_MAX      600
 #define T_D_MAX      20000
-#define T_MODE_MAX   32
+#define T_MODE_MAX   33
 #define T_JOG_MAX_STEPS 50u
 #define T_JOG_RETURN_WAIT_MS 2000u
 #define T_SERVO_RETURN_WAIT_MS 2000u

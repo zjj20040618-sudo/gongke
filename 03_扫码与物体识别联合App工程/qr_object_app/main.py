@@ -31,7 +31,7 @@ def main():
         cached_qrs, cached_qr_left = [], 0
         modes.enter(config.START_MODE)
         print("[APP] ready IDLE; model=9541 classes=10; UART controls recognition")
-        print("[UART] sends QR-selected objects plus black_barrel=9 every OBJECT frame; MCU parser upgrade required")
+        print("[UART] sends QR-selected objects plus black_barrel=9 every OBJECT frame; paired MCU FW=20261004-VISION-DIAG33")
         for class_id, name in enumerate(config.CLASS_NAMES_CN):
             print("[CLASS] {} {} ({})".format(class_id, name, class_name(class_id)))
 
