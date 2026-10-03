@@ -12,6 +12,8 @@ static int aborted, leg_number, qr_on_leg, delivered;
 static int direction_bad, nav_calls, nav_ok, nav_angle;
 static int straight_calls, straight_ok;
 static float straight_d, straight_v, prepare_fore_shift;
+static int strafe_calls;
+static float strafe_d, strafe_v;
 
 uint32_t HAL_GetTick(void) { return tick_ms; }
 void osDelay(uint32_t ms)
@@ -25,7 +27,6 @@ void run_reset(void) { aborted = 0; }
 int run_aborted(void) { return aborted; }
 void run_abort(void) { aborted = 1; }
 void proto_send_scene(ProtoScene scene) { (void)scene; }
-int step_vision_scene(ProtoScene scene) { (void)scene; return !aborted; }
 void motion_brake(void) { vx = vy = 0.0f; }
 void motion_vel_set(float x, float y, float w)
 {
@@ -65,7 +66,8 @@ int step_straight(float d, float v, uint32_t to)
 }
 int step_strafe(float d, float v, uint32_t to)
 {
-    (void)d; (void)v; (void)to;
+    (void)to;
+    strafe_calls++; strafe_d = d; strafe_v = v;
     return 1;
 }
 int step_nav_leg(float turn, float d, float v, uint32_t to)
@@ -95,6 +97,11 @@ const char *motion_profile_config_missing(void) { return 0; }
 const char *steps_config_missing(void) { return 0; }
 const char *task_eod_config_missing(void) { return 0; }
 const char *task_rescue_config_missing(void) { return 0; }
+/* No-action link stubs for the independent32 branch; legacy route tests
+ * below exercise only the unchanged formal helpers. */
+const char *mission_trial_config_missing(void) { return "TRIAL_TEST_NOT_CONFIGURED"; }
+int mission_trial_run(void) { return 0; }
+void mission_trial_get_qr(int32_t out[3]) { out[0] = out[1] = out[2] = 0; }
 
 static void reset_fixture(int qr_leg)
 {
@@ -102,6 +109,7 @@ static void reset_fixture(int qr_leg)
     tick_ms = 0u; aborted = leg_number = delivered = direction_bad = 0;
     nav_calls = 0; nav_angle = 0; nav_ok = 1;
     straight_calls = 0; straight_ok = 1;
+    strafe_calls = 0; strafe_d = strafe_v = 0.0f;
     straight_d = straight_v = prepare_fore_shift = 0.0f;
     qr_on_leg = qr_leg;
     mission_init();
@@ -134,7 +142,21 @@ int main(void)
         vx != 0.0f || vy != 0.0f || nav_calls != 0 || mission_qr_ready()) return 1;
     reset_fixture(1);
     if (qr_travel_legs(0.0f, 30.0f, 100.0f, 200.0f) || leg_number != 0 ||
-        mission_start() || strcmp(mission_config_missing(), "QR_START_LEFT_MM") != 0) return 1;
+        mission_start() || strcmp(mission_config_missing(), "R_PRE_CROSS_FWD_MM") != 0 ||
+        QR_START_LEFT_MM != 500u || QR_STR_V_MMS != 100 ||
+        QR_BACK_MM != 600u || QR_BACK_V_MMS != 100 ||
+        R_CROSS_EXIT_LEFT_MM != 730.0f || R_CROSS_EXIT_FWD_MM != 830.0f ||
+        ROUTE_FWD_V_MMS != 100.0f || ROUTE_STRAFE_V_MMS != 100.0f) return 1;
+    reset_fixture(0);
+    if (!route_strafe(-R_CROSS_EXIT_LEFT_MM, -ROUTE_STRAFE_V_MMS) ||
+        strafe_calls != 1 || strafe_d != -730.0f || strafe_v != -100.0f ||
+        straight_calls != 0 || nav_calls != 0) return 1;
+    if (!route_straight(R_CROSS_EXIT_FWD_MM, ROUTE_FWD_V_MMS) ||
+        straight_calls != 1 || straight_d != 830.0f || straight_v != 100.0f) return 1;
+    reset_fixture(0); run_abort();
+    if (route_strafe(-R_CROSS_EXIT_LEFT_MM, -ROUTE_STRAFE_V_MMS) || strafe_calls != 0 ||
+        route_straight(R_CROSS_EXIT_FWD_MM, ROUTE_FWD_V_MMS) || straight_calls != 0) return 1;
+    puts("updated cross-exit legs: left -730/-100 then forward 830/100, abort blocks commands; unknown approach remains gated");
     reset_fixture(1);
     if (!route_pre_cross_turn() || nav_calls != 1 || nav_angle != -90) return 1;
     nav_ok = 0;

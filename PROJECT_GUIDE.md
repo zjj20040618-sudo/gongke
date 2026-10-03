@@ -1,25 +1,82 @@
 # 反恐电控工程导览与调参索引
 
-更新：2026-10-02。当前共用工作工程为 `C:/Users/15119/gongkesai/gongke`（GitHub `zjj20040618-sudo/gongke`）；不要与桌面交接包或旧 `jiejie` 仓库混编。Keil 从 [MDK-ARM/jiejie.uvprojx](MDK-ARM/jiejie.uvprojx) 打开，工程名不代表仍使用旧仓库。
+更新：2026-10-04。当前共用工作工程为 `C:/Users/15119/gongkesai/gongke`（GitHub `zjj20040618-sudo/gongke`）；不要与桌面交接包或旧 `jiejie` 仓库混编。Keil 从 [MDK-ARM/jiejie.uvprojx](MDK-ARM/jiejie.uvprojx) 打开，工程名不代表仍使用旧仓库。
 
-当前源码固件号 `20261002-AUTO-PARAM`（统一定义在`App/robot.h`）；在路线准备版`9f4d664`上增加每轮自动参数快照，用户不必再手发param。**当前入口以 [ROUTE_NIGHT_PLAN.md](ROUTE_NIGHT_PLAN.md) 为准**；软件修改、复核结果与最新构建见 [ROUTE_SAFETY_AUDIT.md](ROUTE_SAFETY_AUDIT.md)。下文各阶段的固件号、“当前”“未提交”均指该阶段历史，不覆盖本段；实际共享版本以Git提交编号为准，未烧录/实机验收。
-
-双向协议与队友操作见 [VISION_CONTROL_PROTOCOL.md](VISION_CONTROL_PROTOCOL.md)，旧结果body和类别映射见 [VISION_INTEGRATION.md](VISION_INTEGRATION.md)。18组协议回放、2组相机主循环检查本轮再次通过；今晚路线版的最新日志/HEX校验值见安全检查记录，双向协议文档的校验值仍对应上一版。主机与编译证据不是整机验收。
-
-## 今晚调试代码怎么找
-
-| 功能 | 文件与入口 |
-|---|---|
-| 蓝牙选择、g停/回程、30左90/31越障/32正式180、r1～r11 | `App/test.c`；限制/日志周期在`App/test_config.h` |
-| 实际轮速小数目标、速度环 | `App/motion.c::motion_ik_rpm` → `App/control.c::ctrl_set_speed`；TRC的tgt与rpm分别是目标与估计 |
-| 正式与独立越障共享状态 | `App/auto_steps.c::cross_begin/cross_tick`；xrise/xflat是RAM种子，未标定 |
-| 右90、通用左90/180的不同参数组 | `App/turn_profile.h`；没有统一套用快180候选 |
-| 正式段长/任务出口剩余距离 | `App/mission.c`；r段命令不自动写这些值，闸门保持关闭 |
-| 日志离线解码与分轮分析 | `tests/analyze_route_log.py`；实测记录用`tests/route_measurements_template.csv` |
-| 每轮自动参数包 | `App/test.c::auto_param_snapshot`；有效开始/回程时一次入队，完整包以PARAM_START/END界定，不在停车路径发送 |
-| 陀螺仪漂移/比例/动态误差的区分 | [IMU_TURN_CALIBRATION.md](IMU_TURN_CALIBRATION.md)，不先猜90→92 |
+视觉接收侧新增二进制适配；完整接口与未完成项见 [VISION_INTEGRATION.md](VISION_INTEGRATION.md)。下面的 2026-09-30 编译/ASCII 检查条目是历史记录，不是新协议的整机验收。
 
 这是一张**找代码的地图**，不是“全部参数已经调好”的证明。`TODO`、`0` 和标注为“种子”的值都要按实车测试填写。当前正式整场有配置闸门，不能因工程能编译就直接上车跑。
+
+## 2026年10月4日 无机械臂单向联调
+
+新增独立蓝牙模式32，源码固件号 `20261004-NOARM-SINGLEPASS32`。31仍只走原10段路线；20、22、30及31的整数轮速和旧调试动作不改。下面10月3日的HEX和版本编号属于旧候选，不能当作32已烧录。
+
+32流程见 [App/mission_trial.c](App/mission_trial.c)，距离和角度统一取 [App/mission_trial_plan.c](App/mission_trial_plan.c)。左移500后停车扫码至少10秒，完整合法QR锁存后才继续：后600→左95→前750整条越障路→左730→前830→右85→任务走廊2450→右85→救援走廊2125，普通行走v100，像素对位限速12～80mm/s。750含物理障碍道路，不另外加一次越障距离；本入口不使用未标定的姿态越障判据，也不插入尚未定时的倒退靠障碍方案。
+
+任务走廊单向前进，按QR选球：对齐→停10秒→顺时针180→桶对齐→停10秒→顺时针180回来；之后单向经过反恐区，QR指定靶对齐后激光亮2秒，再走剩余距离。人质区按QR选目标，对齐后停10秒，再走2125段的剩余量。三个10秒仅替代机械动作，32不调用步进或舵机动作。相机、机械臂朝车身左侧，画面cx修正使用车身前后轴；本轮没有纵深粗调参数，不假报抓取站距已标定。
+
+道路账本每1ms按连续IMU航向投影编码器增量，停车、对位、制动和转身期间也计入。桶侧180姿态的前后位移按原走廊方向带符号扣算，不回扫描起点，不从停点重走2450/2125。普通移动保持路线原航向，小数轮速只在32平移/对位入口使用；转身保留成功180的整数轮速保持参数。前进的小左补偿使用原RAM `fff`（默认0.0125），不套给倒退、左移或像素对位。上述仍是轮式里程估计，不证明实车位置或车身投影不出线。
+
+启动前在BOOT设置一次RAM：`vsg1`表示cx偏大时向车头修正，`vsg2`表示向车尾修正；`bcx数值`、`tcx数值`、`hcx数值`、`kcx数值`分别指定球、靶、人质、桶的实测目标cx（当前480像素图像，0～479）。这些默认未确认，不自动猜中心；没有机械臂时可标联调参考点，但不能当作最终夹爪工作点。`trial`只读查看。发`32`选择，再`g`开跑；g自动回传版本、参数和配方，每秒报告阶段/进度，对齐还报告cx、误差和实际前后指令。再g或a/0中止并关激光，不续跑或自动倒车；联调整链终端后重新测试须重启。
+
+视觉需部署本轮恢复的IDLE/QR/OBJECT命令确认版本，见 [VISION_CONTROL_PROTOCOL.md](VISION_CONTROL_PROTOCOL.md)。电控筛选QR对应类别/标签，视觉OBJECT仍可同时识别多类。当前仓库模型没有桶映射、class0/2两种人质尚未实物确认；不能新增猜测ID冒充接通。视觉发旧无请求编号数据或未实现桶识别，不具备完整32联调条件。新入口不调用旧往返补扫或桶扫描归位，没看到目标不追加兜底；路段走完的`ROUTE_END`不等于任务完成，`hits`仅记录本轮视觉/占位链：球桶链1、靶激光2、人质占位4，均满足为7。
+
+实际验证和候选HEX位置见 [CONTROL_TUNING_TODO.md](CONTROL_TUNING_TODO.md)。未烧录、未做实车联调，不能以主机模拟或编译替代现场验收。
+
+## 2026-10-03 步进与夹爪队友交接
+
+接线、24～29蓝牙操作、测量顺序和一次性回包表见 [ACTUATOR_TEAMMATE_HANDOFF.md](ACTUATOR_TEAMMATE_HANDOFF.md)。队友按它辨认两轴方向，标定STEP与实体位移、夹爪脉宽、抓球放桶/抓人质两套固定动作。新增“出发前不外伸、出发后展开”要区分收拢S与任务起点O；当前上电1400µs和缺少原点反馈不保证该要求成立，展开节点及参数仍待确认。本次仅文档准备，未修改固件或发布新HEX。
+
+## 2026-10-03 左95/右85、d830（当前）
+
+当前用户定值为左95°、右85°；确认左移730后的原直走780加50改830。当前源码固件号 `20261003-ROUTE31-L95R85-D830`，蓝牙20=+85、30=-95，22=+180不变。两侧目标在 `App/test_config.h::T_TURN_RIGHT_TARGET_DEG/T_TURN_LEFT_TARGET_DEG` 分别配置；起跑comp=-5/+5以及SEQ/REC实际目标同步，不共用一个95常量。
+
+31完整配方：左500→后600→左95→前750→左730→前830→右85→前2450→右85→前2125，仍全v100、无QR/任务。`mission.c::R_CROSS_EXIT_FWD_MM`也同步830；正式任务转角仍名义90、全场闸门未打开。首段左移右歪3°尚待蓝牙日志定位，不通过改变转角掩盖；横移PID/前馈、轮位/极性未改。独立候选/构建见 [CONTROL_TUNING_TODO.md](CONTROL_TUNING_TODO.md)，下面双95方案被新口径替代，未发布HEX。
+
+已编译的本版工程为 `C:/Users/15119/gongkesai/backups/route31_l95r85_d830_candidate_20261003_092529/MDK-ARM/jiejie.uvprojx`，HEX在该候选 `MDK-ARM/jiejie/jiejie.hex`，SHA256 `A629E85D77DB672401BD82BA275CAB9D296CB2DE533A52A73F840FF312037DA4`。主机回归及Keil全量0 Error / 0 Warning通过，相关源码/AXF标识核对一致。常用工程路径HEX仍是旧095B...版本，不是本版；本轮未烧录/推送，旧候选保留。
+
+## 2026-10-03 左移歪头诊断与双95°（中途被替代）
+
+用户确认第一段左移d500后车头右偏约3°，要求转角候选改95。源码ID `20261003-ROUTE31-TURN95`，`App/test_config.h::T_TURN90_COMP_DEG=5`：模式20+95、30-95，31三处转身同步，180、d600/v100和其余数值不动；起跑/SEQ/REC均显示实际目标。这是相对于名义90的总5°补偿，不是92+5；正式任务不套本候选。
+
+左移右歪并非新fff混入：模式17 v100 ff=0，航向/轮速/轮位保持旧版。纠偏符号按源码向左，实际效果/运动中还是停车后才偏要看本轮蓝牙包。旧到距后不继续摆正而下段清零继承偏角，本轮只记录诊断，未无依据改PID或增加自动动作；95°不能修复第一段左移本身。独立工程/HEX及构建结果见 [CONTROL_TUNING_TODO.md](CONTROL_TUNING_TODO.md)，下节为前版历史。
+
+## 2026-10-03 路线转弯92°（前一阶段）
+
+用户要求当前90°转弯增加2°：`App/test_config.h::T_TURN90_COMP_DEG=2`，模式20=+92、30=-92，31第3/7/9步分别左92/右92/右92。转向目标、惯性回调、角限和蓝牙角度显示统一按该命令；名义90几何及正式未放行任务不套候选值，22始终180不变。固件ID `20261003-ROUTE31-TURN92`，第二段d600/v100、其余距离/速度、fff补偿不变。新版构建交付见 [CONTROL_TUNING_TODO.md](CONTROL_TUNING_TODO.md)；下文均为前版记录，不升级成实体角度验收。
+
+当前独立工程 `C:/Users/15119/gongkesai/backups/route31_turn92_candidate_20261003_090109/MDK-ARM/jiejie.uvprojx`，对应HEX在该候选 `MDK-ARM/jiejie/jiejie.hex`；Keil全量0 Error / 0 Warning，SHA256 `7060091098EF953451AB904E6EA7336783C6AE5998D5AFC75F611DAEA2B531B2`。主机回归、候选与源码哈希一致性和AXF版本检查通过；未自动烧录/推送，旧版保留。
+
+## 2026-10-03 第二段d600（前一阶段）
+
+用户把第二段改为沿车尾后退d600，v100不变。源码 `App/mission.c::QR_BACK_MM=600`、`App/route_test_plan.h` 第二项600同步，固件ID `20261003-ROUTE31-BACK600`；其它9步、前进小补偿和共用转向保持参数不动。下文旧550及候选HEX为前版记录，新编译工程/HEX见 [CONTROL_TUNING_TODO.md](CONTROL_TUNING_TODO.md)。
+
+补偿方向已按当前轮位/IK核查：直走的左向小横移是对角“左后+右前”略快，不是整侧右轮加快；整侧右轮略快会让车头左转。保持原fff正值向左的定义，实体接线改变时仍需核对轮位。
+
+本次d600独立工程 `C:/Users/15119/gongkesai/backups/route31_back600_candidate_20261003_085030/MDK-ARM/jiejie.uvprojx`；该候选HEX全量0 Error / 0 Warning，SHA256 `A569390BB8E63CBE5886A096E12FC0B75350383B316ACD1FE4CC04A04D1C61F5`，已核对AXF标识及源码。常用工程HEX目前仍是前一补偿版095B...而非本次d600，务必区分；未自动烧录/推送，下面旧DA4...输出状态是当时检查记录。
+
+## 2026-10-03 路线31小补偿与共用转向保持（前一阶段）
+
+源码固件号 `20261003-ROUTE31-FFF-TURN`。在下面初版31配方上只添加前进小补偿：`App/test_config.h::T_FORWARD_FF_SEED=0.0125`，模式15 v100/v200向车头左侧给额定vy；31的四段前进都启用，后退和横移不套。蓝牙 `fff0` 关闭、`fff0.0125` 恢复，上电恢复默认，无Flash save；开跑自动参数包包含fff。整数轮速量化使v100实下发29/28/29/28，不能把名义12.5mm/m当实体保证。正式直走暂不套用此候选。
+
+转向实际核对结果：20/22/30原本已经同算法，同KP/限速/容差/超调回调/静置判据；统一到 `App/turn_profile.h::TURN_HOLD_*` 并将±90最长修正预算与成功180同为12s，180参数保持。目标仍±90和+180，不用猜测92°补偿；完成仍须容差≤0.3°且静置700ms稳定。正式-90/±180旧分支本轮未改；下面历史记载不代表已经全面集成。
+
+主机补偿与同误差转向回放、完整10段路线和120组停止检查通过；新独立工程/HEX及最终构建结果登记在 [CONTROL_TUNING_TODO.md](CONTROL_TUNING_TODO.md)。无需重新输入每段v/d，烧录新版后仍 `31→g` 起跑、再g取消，实体效果等本次试跑。
+
+新版独立工程 `C:/Users/15119/gongkesai/backups/route31_ff_turn_candidate_20261003_083831/MDK-ARM/jiejie.uvprojx`，HEX在该候选的 `MDK-ARM/jiejie/jiejie.hex`；Keil全量0 Error / 0 Warning，SHA256 `095B1A0C2E1627DB964273D0E87AEC865446FC779F5EA82867F21352D93A6011`。旧常用HEX和下节初版31候选均保留，不自动烧录/推送。
+
+## 2026-10-03 只走路线模式31（初版，已由上节更新）
+
+本轮随后新增“只走路线”模式31，当前源码ID `20261003-BASE-ROUTE31`。蓝牙 `31→g` 顺序执行 `App/route_test_plan.h` 的10步配方：左500→后550→左90→前750（含整条障碍路）→左730→前780→右90→前2450→右90→前2125，所有平移v100。复用既有单段速度/航向/定距/转向控制；节点准备单独非阻塞，g/a/0取消全链，不续跑/倒回。不会扫码、开激光、执行任务、爪或步进，亦未开启正式闸门。750/2450/2125整段记录与正式任务间各子段不能混算；正式子段仍待联调。开跑自动发diag/param，进度SEQ、结果REC、`route`查询都走ASCII蓝牙。全套主机回归及120组停止检查通过，后续构建/烧录以实际结果为准。
+
+独立工程：`C:/Users/15119/gongkesai/backups/route31_candidate_20261003_082509/MDK-ARM/jiejie.uvprojx`；对应已编HEX在其 `MDK-ARM/jiejie/jiejie.hex`，日志 `MDK-ARM/rebuild_route31_candidate.txt` 全量0 Error / 0 Warning，SHA256 `4EB82DF0D270E0FAFFD1014552A5813EB5CFFB59D2346C81278277B333B64F66`。已核验AXF固件标识与配方标签；常用工程路径HEX仍是旧稳定版 `DA4DA13A6B8466FF9DCC16E462DB29362896CCCD7A7BDE14F158EE1DFADBB109`，不要在它上面盲发31。未自动烧录/推送，整段实车验收待用户这次试跑；停止后要人工回到起点再重选31，g不恢复中断位置。
+
+## 2026-10-03 稳定回滚基线与左90°候选（前一阶段）
+
+用户已选择完整恢复 `aadf028`（2026-10-02 02:16）并把编码器接回旧位置；不混入10月3日的大改。当前仅新增实测登记 `QR_START_LEFT_MM=500`、`QR_STR_V_MMS=100`、`QR_BACK_MM=550`、`QR_BACK_V_MMS=100`、`R_CROSS_EXIT_LEFT_MM=730`、`R_CROSS_EXIT_FWD_MM=780`、普通路线直走/横移速度100，以及 `test.c/test_config.h` 的模式30左90°入口。速度100的实测范围限本轮已报路段，后续任务间同速仍待验证；`d750` 的越障路起止口径待确认，尚未拆填接近/越障/剩余距离。`turn_profile.h`、轮位/极性、速度环和直走控制律不变；没有重开自动编码器停机保护，也没有推送。本次数值登记后主机回归通过，未为新增数值重编HEX；下面候选快照只有当时的500/550和左90°入口，不含随后登记的730/780。
+
+当前源码固件号 `20261003-BASE-LEFT90`。模式30目标-90°，镜像复用20控制并反向微调超转；等待阶段g取消未来回调。主机回归通过，左转实体效果仍待测；正式负90°函数仍是旧通用控制，未把候选参数套进整场。测试方式是 **候选烧录后** `30 → g`，运行中g停止，到位后g清态但不转回；r3仍只前进、不左转或越障。
+
+为了不打断用户当前直走测试，候选工程在 `C:/Users/15119/gongkesai/backups/left90_candidate_20261003_075345` 单独编译：`MDK-ARM/rebuild_left90_candidate.txt` 全量0 Error / 0 Warning；候选 `MDK-ARM/jiejie/jiejie.hex` SHA256 `7DA5235688CF3DEE7229B72B287C32D0357504692E01778C47E952B81EF5146A`。常用工程 `MDK-ARM/jiejie/jiejie.hex` 没覆盖，仍是回滚基线SHA256 `DA4DA13A6B8466FF9DCC16E462DB29362896CCCD7A7BDE14F158EE1DFADBB109`，不能在旧HEX上使用30。未烧录，四个正式标定闸门仍0。下面各节是历史阶段记录，以本节和 [当前逐段实测](CONTROL_TUNING_TODO.md) 为准。
 
 ## 2026-10-01 出发方向纠正（本地未发布）
 
@@ -91,18 +148,6 @@
 - Keil全量重编 `MDK-ARM/rebuild_left_route_gstop_2026-10-02.txt`：0 Error / 0 Warning；HEX SHA-256：`DA4DA13A6B8466FF9DCC16E462DB29362896CCCD7A7BDE14F158EE1DFADBB109`。日志/HEX为本机构建输出，不提交仓库。四个 `CAL_*_READY=0`、`BENCH_AUTO=0` 和未测距离/速度仍保持；链接器可裁掉被配置闸门阻断的正式路径，编译不等于整场能跑。
 - 相机自动切模式、桶/另外两类人质映射、真实串口、工作点、机械行程和实机路线仍看 `VISION_CONTROL_TODO.md` / `CONTROL_TUNING_TODO.md`，不能表述成仅剩填数值。
 
-## 2026-10-02 本地更新：行走g启动→g暂停→g编码器回程
-
-用户明确选择按本轮已走编码器距离返回、自动停，途中也可g暂停。本轮只改 `App/test.c` / `test_config.h` 的行走调试、固件号和回归，正式整场/视觉/机构流程不改，四个标定闸门及 `BENCH_AUTO=0` 不变。
-
-- 适用：行走1～6、落地定距15～18，以及选择这些模式的r1/r2/r3。1～4出程仍持续走、5/6出程仍按时长结束，不用它们标定距离；15～18出程仍按d定距。它们的回程统一用编码器本轮起点，不用d或等时长倒车。单轮、转向探针、编码器/IMU观测、步进与舵机不套这条回程。
-- 第一g启动；第二g刹停，等编码器连续250ms不再改变后回传 `phase=OUT` 并留在DONE。停稳前再g只回BRAKING，不排队反走；自动到达d/时长也进入这同一等待回程状态，下一g即返回。
-- 第三g反向返回本轮编码器轴起点，使用本轮出程速度；修改v/d不会覆盖这个起点/速度。前进→后退、后退→前进、左移→右移、右移→左移，车身不自转。回程g暂停并保留剩余距离，再g续返；编码器到起点/跨过起点后刹停并等待250ms，结束本轮。0.5mm轴容差只是轮式判据，不是物理精度保证。
-- a/0在行走任意阶段只刹停、取消本轮回程，不自动倒车。重新选号会丢弃旧起点；再次开跑重新建本轮起点。不手挪/转动车、不改接线/姿态/编码器计数后再用旧起点返回；回程前确认空间无障碍。
-- 暂停不清编码器或本段航向，保留制动余动和原锁向基准；回程保持该航向。新一轮启动才按停稳/本段航向处理。实际回程方向选择补偿：右移用rff、左移用lff（v300），前进用fff（v200），后退不自动套fff；不把左移系数强套到右移。旧1～6回程不套定距模式前馈。
-- `REC test=` 出/返共享同一轮号，新增 `phase=OUT/RETURN`；`enc_mm` 和 `brake_mm` 始终相对本轮原起点，RETURN结束时表示残差而非回程总长。回程 `cmd_mm` 是第三g当时的有符号返回请求，TRC的 `axis_mm` 也相对原起点。回程IMU无效不继续驱动/不假报返回成功。
-- 主机回归通过：10个行走模式的正负方向/非零起点/制动余动/暂停续返/速度快照，自动结束、5/6实际距离而非时间、方向前馈、IMU错误、a/0取消、r1～3和零距离；整场、机构、视觉和路线既有回归继续通过。主机仍报告旧cmd_reset未用局部变量警告，Keil全量日志 `MDK-ARM/rebuild_walk_g_return_2026-10-02.txt` 为0 Error / 0 Warning；HEX SHA-256 `6CC58638CDB44D80BEAE1053572A45DF52C5579BC252F679F6A956B00C8204F0`。未提交推送、未烧录/实车验证，编码器回程不能消除打滑和横向串动。
-
 ## 从哪儿开始读
 
 ```text
@@ -127,7 +172,7 @@ App/robot.c               初始化、三路串口分流、蓝牙服务
 
 | 文件 | 职责 | 要找的参数/入口 |
 | --- | --- | --- |
-| [robot.c](App/robot.c) / [robot.h](App/robot.h) | 全系统初始化；USART2 视觉、USART3 蓝牙、UART4 IMU 接收分流；周期任务入口与诊断回传 | `robot.h::ROBOT_FW_BUILD_ID`、`robot_init()`、`robot_diag_report()`；固件号需随发布版本更新 |
+| [robot.c](App/robot.c) / [robot.h](App/robot.h) | 全系统初始化；USART2 视觉、USART3 蓝牙、UART4 IMU 接收分流；周期任务入口与诊断回传 | `FW_BUILD_ID`、`robot_init()`、`robot_diag_report()`；固件号需随发布版本人工更新 |
 | [mission.c](App/mission.c) / [mission.h](App/mission.h) | 正式整场顺序、QR 三目标校验、路线腿和启动闸门 | `QR_*`、`R_*`、`ROUTE_FWD_V_MMS`、`ROUTE_STRAFE_V_MMS`、`CROSS_*`、`CAL_*_READY`；`mission_config_missing()` 会指出缺项 |
 | [task_eod.c](App/task_eod.c) | 排爆：对球、预降、伸爪抓球、抬升、两次 180°、对桶放球、双轴按步数回起点 | `EOD_BALL_PRELOWER_STEPS`、`EOD_BALL_EXTEND_STEPS`、`EOD_LIFT_STEPS`、`EOD_LOWER_STEPS`（全待实测） |
 | [task_anti.c](App/task_anti.c) | 反恐：对选定颜色靶、用节点停稳判据确认、激光射击 | `LASER_ON_MS`；停稳时序复用 `steps.c::step_prepare_leg()`，站位在 `steps.c` |

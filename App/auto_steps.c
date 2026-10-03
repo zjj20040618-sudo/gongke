@@ -1,159 +1,112 @@
+/* auto_steps.c -- 提前写好、不依赖实测数的步骤(2026-09-09 起累积)。
+ * 头文件 auto_steps.h；加入工程编译即可调用。现有 steps.c 保持不动。
+ * 原则：现在能写的都先写；只留"要实测才填"的常量为宏/入参，台上改一个数。
+ */
 #include "auto_steps.h"
-#include "main.h"
-#include "cmsis_os.h"
-#include "motion.h"
-#include "imu.h"
-#include "steps.h"
+#include "main.h"       /* HAL_GetTick */
+#include "cmsis_os.h"   /* osDelay */
+#include "motion.h"     /* motion_vel_set / motion_brake */
+#include "imu.h"        /* imu_yaw_deg / imu_pitch_deg / imu_ok */
+#include "steps.h"      /* run_aborted */
 
-/* Pitch peak-to-peak removes the fixed installation offset, not the need to
- * measure geometry or exit position. A chassis stuck at constant tilt can look
- * flat. DONE is a posture criterion, NOT proof the rear wheels cleared all
- * boards. Timestamp the window: both BT 20ms and mission 5ms ticks use 1s. */
-#define X_CTRL_MS    5u
-#define X_SAMPLE_MS  10u
-#define X_WIN_MS     1000u
-#define X_WIN_N      100u
-#define X_W_MAX      2.0f
-#define X_V_MAX      600.0f
-static float s_rise_deg = 2.0f, s_flat_deg = 0.5f; /* uncalibrated RAM seeds */
-static float s_pitch[X_WIN_N];
-static uint32_t s_sample_ms[X_WIN_N];
-static uint8_t s_next, s_count;
-static uint32_t s_start_ms, s_first_sample_ms, s_last_sample_ms, s_deadline_ms;
-static float s_vx, s_vy, s_heading0;
-static CrossSnapshot s_state;
+/* ==================== 越障(2026-09-12 重写) ====================
+ * 障碍：3 条 300×60×10 雪弗板、间隔 50（沿行进方向：板60 / 隙50 / 板60 / 隙50 / 板60）。
+ * 车头碰到第一条板 → 车尾离开第三条板，总行程 ≈ 280mm + 轴距(≈200mm) ≈ **480mm**。
+ * ⚠️ 旧版"定速走 1500ms"(=225mm) 只够一半 → 会被卡在坎中间。
+ *
+ * 结束判据（2026-09-12 用户方案 + 查证后的完善）：**只看姿态的变化量**，不数次数、不用零点。
+ *   阶段A 确认上坎：滑动窗内 pitch 峰峰值 > X_RISE_DEG
+ *   阶段B 判定过完：滑动窗内 pitch 峰峰值 < X_FLAT_DEG  → 停
+ *   兜底：总时长 > run_ms → 停(失败)
+ *
+ * 为什么用"窗口变化量"而不是"回到水平0"（三重好处）：
+ *   ① 不用标定零点（不用知道"平地 pitch=几"）
+ *   ② 不受陀螺零漂影响（就算慢漂，短窗内变化量仍小）
+ *   ③ 不受动态误差影响（过坎时加速度计混入运动加速度→绝对值会偏，但"变不动了"仍成立）
+ * 为什么不会在"间隙里"误判（间隙期 pitch 也会短暂回平）：
+ *   间隙里那次"平"只持续 50mm/车速 ≈ 0.33s，而**窗口 1s > 0.33s**
+ *   → 窗口里必然还含着上坎/下坎的变化 → 峰峰值不会小 ✓
+ * 为什么会有 2.9° 这个量级：坎高 10mm、轴距 200mm → atan(10/200) ≈ 2.9°。
+ *   （参考：文献里坡道检测用 |pitch|>10° 确认、<5° 判完；我们坎矮，按比例缩小。）
+ * 不依赖里程 = 不怕坎面打滑（旧方案用里程判结束，会被空转多记骗到）。
+ */
+#define X_CTRL_MS      5u      /* 控制节拍,与 steps 层一致 */
+#define X_SAMPLE_MS    10u     /* 姿态采样节拍(100Hz,够用又省) */
+#define X_WIN_N        100u    /* 窗口样本数 = 100 × 10ms = 1s */
+#define X_RISE_DEG     2.0f    /* TODO 实测:上坎时窗口峰峰值应 > 这个(理论上限 ~2.9°) */
+#define X_FLAT_DEG     0.5f    /* TODO 实测:过完后窗口峰峰值应 < 这个 */
 
+/* 姿态滑动窗(环形缓冲),测"窗口内峰峰值"用 */
+static float    s_pwin[X_WIN_N];
+static uint8_t  s_pi;        /* 写指针 */
+static uint8_t  s_pfill;     /* 1 = 窗口已填满 */
+static uint32_t s_smp_t0;    /* 上次采样时刻 */
+
+/* 窗口内 pitch 峰峰值(窗口未填满时只算已填的部分;全空返回 0) */
+static float pitch_pp(void)
+{
+    uint8_t n = s_pfill ? X_WIN_N : s_pi;
+    if (n == 0u) return 0.0f;
+    float mn = s_pwin[0], mx = s_pwin[0];
+    for (uint8_t i = 1u; i < n; i++) {
+        if (s_pwin[i] < mn) mn = s_pwin[i];
+        if (s_pwin[i] > mx) mx = s_pwin[i];
+    }
+    return mx - mn;
+}
+
+/* 角度差归一到 [-180,180) */
 static float wrap180(float a)
 {
-    while (a > 180.0f) a -= 360.0f;
+    while (a >  180.0f) a -= 360.0f;
     while (a < -180.0f) a += 360.0f;
     return a;
 }
-static CrossStatus finish(CrossStatus status)
-{
-    motion_brake();
-    s_state.elapsed_ms = (uint32_t)(HAL_GetTick() - s_start_ms);
-    s_state.status = status;
-    return status;
-}
-static float pitch_pp(uint32_t now)
-{
-    float mn = 0.0f, mx = 0.0f;
-    uint8_t have = 0u;
-    for (uint8_t i = 0u; i < s_count; ++i) {
-        if ((uint32_t)(now - s_sample_ms[i]) >= X_WIN_MS) continue;
-        if (!have) { mn = mx = s_pitch[i]; have = 1u; }
-        else {
-            if (s_pitch[i] < mn) mn = s_pitch[i];
-            if (s_pitch[i] > mx) mx = s_pitch[i];
-        }
-    }
-    return have ? mx - mn : 0.0f;
-}
 
-int cross_begin(float vx_mms, float vy_mms, uint32_t run_ms)
-{
-    if (s_state.status == CROSS_RUNNING) return 0;
-    s_state = (CrossSnapshot){0};
-    s_start_ms = HAL_GetTick();
-    s_count = s_next = 0u;
-    s_first_sample_ms = s_last_sample_ms = s_start_ms;
-    motion_brake();
-    if (run_aborted()) { finish(CROSS_ABORT); return 0; }
-    /* Positive range tests also reject NaN/infinity. */
-    if (!(vx_mms >= -X_V_MAX && vx_mms <= X_V_MAX &&
-          vy_mms >= -X_V_MAX && vy_mms <= X_V_MAX) ||
-        (vx_mms == 0.0f && vy_mms == 0.0f)) {
-        finish(CROSS_BAD_CONFIG); return 0;
-    }
-    if (!run_ms) { finish(CROSS_TIMEOUT); return 0; }
-    if (!imu_ok()) { finish(CROSS_IMUERR); return 0; }
-    s_vx = vx_mms; s_vy = vy_mms; s_deadline_ms = run_ms;
-    s_heading0 = imu_yaw_deg();
-    s_state.yaw_deg = s_heading0;
-    s_state.pitch_deg = imu_pitch_deg();
-    s_state.status = CROSS_RUNNING;
-    return 1;
-}
-
-CrossStatus cross_tick(void)
-{
-    float w;
-    uint32_t now;
-    if (s_state.status != CROSS_RUNNING) return s_state.status;
-    now = HAL_GetTick();
-    s_state.elapsed_ms = (uint32_t)(now - s_start_ms);
-    /* Every stop condition precedes this tick's motor command. */
-    if (run_aborted()) return finish(CROSS_ABORT);
-    if (s_state.elapsed_ms >= s_deadline_ms) return finish(CROSS_TIMEOUT);
-    if (!imu_ok()) return finish(CROSS_IMUERR);
-    s_state.yaw_deg = imu_yaw_deg();
-    s_state.yaw_error_deg = wrap180(s_heading0 - s_state.yaw_deg);
-    s_state.pitch_deg = imu_pitch_deg();
-
-    if (s_count == 0u || (uint32_t)(now - s_last_sample_ms) >= X_SAMPLE_MS) {
-        /* An unobserved >=1s interval cannot count as a stable window.
-         * imu_ok checks valid-frame age; samples need not be unique frames. */
-        if (s_count && (uint32_t)(now - s_last_sample_ms) >= X_WIN_MS) {
-            s_count = s_next = 0u;
-            s_state.window_full = s_state.rise_seen = 0u;
-        }
-        if (s_count == 0u) s_first_sample_ms = now;
-        s_pitch[s_next] = s_state.pitch_deg;
-        s_sample_ms[s_next] = now;
-        s_next = (uint8_t)((s_next + 1u) % X_WIN_N);
-        if (s_count < X_WIN_N) s_count++;
-        s_last_sample_ms = now;
-        s_state.window_full = (uint8_t)((uint32_t)(now - s_first_sample_ms) >= X_WIN_MS);
-        s_state.pp_deg = pitch_pp(now);
-        if (!s_state.rise_seen) {
-            if (s_state.pp_deg > s_rise_deg) s_state.rise_seen = 1u;
-        } else if (s_state.window_full && s_state.pp_deg < s_flat_deg) {
-            return finish(CROSS_DONE);
-        }
-    }
-    w = step_heading_kp_deg() * s_state.yaw_error_deg * 0.0174533f;
-    if (w > X_W_MAX) w = X_W_MAX;
-    if (w < -X_W_MAX) w = -X_W_MAX;
-    motion_vel_set(s_vx, s_vy, w);
-    return CROSS_RUNNING;
-}
-
-void cross_cancel(void)
-{
-    if (s_state.status == CROSS_RUNNING) (void)finish(CROSS_ABORT);
-    else motion_brake();
-}
-CrossStatus cross_status(void) { return s_state.status; }
-void cross_get(CrossSnapshot *out) { if (out) *out = s_state; }
-const char *cross_status_name(CrossStatus status)
-{
-    switch (status) {
-    case CROSS_IDLE: return "IDLE";
-    case CROSS_RUNNING: return "RUNNING";
-    case CROSS_DONE: return "DONE";
-    case CROSS_ABORT: return "ABORT";
-    case CROSS_IMUERR: return "IMUERR";
-    case CROSS_TIMEOUT: return "TIMEOUT";
-    case CROSS_BAD_CONFIG: return "BAD_CONFIG";
-    default: return "UNKNOWN";
-    }
-}
-int cross_tune_set(float rise_deg, float flat_deg)
-{
-    if (s_state.status == CROSS_RUNNING) return 0;
-    if (!(flat_deg >= 0.01f && flat_deg < rise_deg && rise_deg <= 20.0f)) return 0;
-    s_rise_deg = rise_deg; s_flat_deg = flat_deg;
-    return 1;
-}
-void cross_tune_get(float *rise_deg, float *flat_deg)
-{
-    if (rise_deg) *rise_deg = s_rise_deg;
-    if (flat_deg) *flat_deg = s_flat_deg;
-}
+/* 越障：定速直冲 + yaw 锁向 + 姿态判据结束。
+ * 参数：vx 前进 mm/s(可负=后退)、vy 横移 mm/s(一般0)、run_ms = 兜底超时(防卡死)。
+ * 返回：1=判定过完  0=被中止、IMU失效或物理安全超时。
+ * ⚠️ 坎上**别停别降速**（坎面本身滑，靠动量冲），所以全程匀速，只在末端判到"过完"才刹。 */
 int step_cross_obstacle(float vx_mms, float vy_mms, uint32_t run_ms)
 {
-    if (!cross_begin(vx_mms, vy_mms, run_ms)) return 0;
-    while (cross_tick() == CROSS_RUNNING) osDelay(X_CTRL_MS);
-    return cross_status() == CROSS_DONE;
+    float heading0;
+    if (!imu_ok()) { motion_brake(); return 0; }
+    heading0 = imu_yaw_deg();                 /* 进坎记录目标朝向 */
+
+    s_pi = 0u; s_pfill = 0u; s_smp_t0 = 0u;   /* 清窗 */
+    int rise = 0;                             /* 阶段标志:0=还没确认上坎 */
+    uint32_t t0 = HAL_GetTick();
+
+    while (1) {
+        uint32_t now = HAL_GetTick();
+        /* 急停/防跑飞必须先于本拍速度命令；否则已中止仍会多发一次驱动。 */
+        if (run_aborted()) { motion_brake(); return 0; }
+        if ((uint32_t)(now - t0) >= run_ms) { motion_brake(); return 0; }
+        if (!imu_ok()) { motion_brake(); return 0; }
+
+        /* 每拍带 yaw 锁向开走(定速) */
+        float w = 0.0f;
+        float e = wrap180(heading0 - imu_yaw_deg());
+        w = step_heading_kp_deg() * e * 0.0174533f; /* 共用 RAM ykp；deg→rad */
+        motion_vel_set(vx_mms, vy_mms, w);
+
+        /* 姿态采样(每 X_SAMPLE_MS 存一个 pitch) */
+        if (s_smp_t0 == 0u || (uint32_t)(now - s_smp_t0) >= X_SAMPLE_MS) {
+            s_smp_t0 = now;
+            s_pwin[s_pi] = imu_pitch_deg();
+            s_pi = (uint8_t)((s_pi + 1u) % X_WIN_N);
+            if (s_pi == 0u) s_pfill = 1u;
+        }
+
+        float pp = pitch_pp();
+
+        if (!rise) {
+            if (pp > X_RISE_DEG) rise = 1;            /* 阶段A:确认已上坎 */
+        } else if (pp < X_FLAT_DEG) {                 /* 阶段B:窗口内 1s 都平 → 过完 */
+            motion_brake();
+            return 1;
+        }
+
+        osDelay(X_CTRL_MS);
+    }
 }

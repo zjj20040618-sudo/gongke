@@ -461,6 +461,16 @@
               <FilePath>../App/mission.c</FilePath>
             </File>
             <File>
+              <FileName>mission_trial.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/mission_trial.c</FilePath>
+            </File>
+            <File>
+              <FileName>mission_trial_plan.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/mission_trial_plan.c</FilePath>
+            </File>
+            <File>
               <FileName>proto.c</FileName>
               <FileType>1</FileType>
               <FilePath>../App/proto.c</FilePath>

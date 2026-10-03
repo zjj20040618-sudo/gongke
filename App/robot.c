@@ -6,6 +6,7 @@
 #include "proto.h"
 #include "steps.h"
 #include "mission.h"
+#include "mission_trial.h"
 #include "imu.h"
 #include "control.h"
 #include "motion.h"
@@ -17,12 +18,14 @@ static uint8_t s_rx2, s_rx3, s_rx4;   /* 2=视觉(USART2 PD5/6) 3=蓝牙(USART3 
 
 /* BT 输入环形缓冲(huart3,ISR 写 / robot_bt_service 读) */
 #define BT_RX_N 64u
+#define FW_BUILD_ID "20261004-NOARM-SINGLEPASS32"
 static volatile uint8_t s_bt[BT_RX_N];
 static volatile uint8_t s_bt_wr, s_bt_rd;
 static volatile uint32_t s_bt_drop;
 static volatile uint32_t s_uart_err[3];      /* 0=视觉USART2,1=蓝牙USART3,2=IMU UART4 */
 static volatile uint32_t s_uart_last_err[3]; /* 最近一次 HAL_UART_ERROR_* 位图 */
 static volatile uint32_t s_uart_arm_fail[3]; /* Receive_IT 首挂/重挂失败次数 */
+static uint32_t s_trial_log_t0;
 
 static void uart_rx_arm(UART_HandleTypeDef *huart, uint8_t *rx, int ix)
 {
@@ -58,9 +61,12 @@ static void uart2_tx(const char *s)
     if (!s) return;
     HAL_UART_Transmit(&huart2, (uint8_t *)s, (uint16_t)strlen(s), 20u);
 }
+
+/* Binary scene commands are serviced only from DefaultTask, not UART ISR. */
 static void uart2_binary_tx(const uint8_t *data, uint16_t length)
 {
-    if (data && length) HAL_UART_Transmit(&huart2, (uint8_t *)data, length, 20u);
+    if (!data || !length) return;
+    HAL_UART_Transmit(&huart2, (uint8_t *)data, length, 20u);
 }
 
 /* 开机一次性初始化:底层→控制→运动→臂→IMU→协议→任务→调试,再挂三个串口 RX */
@@ -78,16 +84,17 @@ void robot_init(void)
     proto_set_binary_tx(uart2_binary_tx);
     proto_set_on_frame(steps_feed_frame);   /* MaixCam 帧 → steps 暂存,wait_* 消费 */
     mission_init();
+    mission_trial_init();
     test_init();
-    proto_send_scene(SCENE_IDLE); /* no camera reports accepted before a requested stage */
 
     s_bt_wr = s_bt_rd = 0;
     s_bt_drop = 0u;
+    s_trial_log_t0 = 0u;
     for (int i = 0; i < 3; ++i) {
         s_uart_err[i] = 0u; s_uart_last_err[i] = 0u; s_uart_arm_fail[i] = 0u;
     }
     uart_rx_ensure_all();                           /* 三路首次挂接；失败由 DefaultTask 重试 */
-    bp_debug_send("\r\nREADY FW=" ROBOT_FW_BUILD_ID " SEND ? OR diag\r\n");
+    bp_debug_send("\r\nREADY FW=" FW_BUILD_ID " SEND ? OR diag\r\n");
 }
 
 /* 三个 FreeRTOS 线程各自的入口:1ms 控制环 / 整场脚本 / IMU 解析(周期见 freertos.c) */
@@ -95,6 +102,7 @@ void robot_control_tick_1ms(void)
 {
     ctrl_tick_1ms();
     motion_pose_update(); /* 航向/里程状态必须随控制周期更新，日志与后续定位才不是陈旧值 */
+    mission_trial_tick_1ms(); /* Active local road ledger only; no extra motor command. */
 }
 void robot_mission_main(void)      { mission_main(); }
 void robot_imu_tick(void)          { imu_tick_parse(); }
@@ -103,6 +111,20 @@ void robot_imu_tick(void)          { imu_tick_parse(); }
 void robot_log_tick(void)
 {
     if (mission_state() == MS_BOOT) return;   /* bench:静默,别刷屏盖掉测试应答(VOFA 曲线也要独享调试口) */
+    if (mission_is_trial()) {
+        uint32_t now = HAL_GetTick();
+        float done, total;
+        static char trial_log[128];
+        if ((uint32_t)(now - s_trial_log_t0) < 1000u) return;
+        s_trial_log_t0 = now;
+        mission_trial_get_progress(&done, &total);
+        snprintf(trial_log, sizeof trial_log,
+                 "TRIAL32 state=%s phase=%s road_mm=%.1f total_mm=%.1f remaining_mm=%.1f\r\n",
+                 mission_state_str(mission_state()), mission_trial_phase(),
+                 done, total, total - done);
+        bp_debug_send(trial_log);
+        return;
+    }
     int32_t d[3];
     mission_get_qr(d);
     char buf[112];
@@ -127,8 +149,8 @@ void robot_bt_service(void)
         test_feed(c);
     }
     uart_rx_ensure_all();
+    proto_service(); /* DefaultTask owns binary request TX and handshake retry. */
     test_poll();
-    proto_service(); /* sole binary TX owner; never blocks inside RX callback */
 }
 
 /* UART RX 完成回调：按句柄分发（唯一强定义，CubeMX 没生成过） */
@@ -179,7 +201,7 @@ void robot_diag_report(void)
     proto_stats_get(&ps);
     robot_get_stack_watermarks(sw);
     snprintf(b, sizeof b, "\r\nDIAG FW=%s IMU=%s age=%lums\r\n",
-             ROBOT_FW_BUILD_ID, imu_ok() ? "OK" : "BAD",
+             FW_BUILD_ID, imu_ok() ? "OK" : "BAD",
              (unsigned long)(age == UINT32_MAX ? 0xFFFFFFFFu : age));
     bp_debug_send(b);
     snprintf(b, sizeof b,

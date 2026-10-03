@@ -35,8 +35,9 @@ float motion_linear_profile_step(MotionRamp *r, float cruise_mms,
 
 void     motion_init(void);
 void     motion_ik(float vx, float vy, float w, int16_t rpm[4]); /* 体坐标速度 → 四轮 rpm */
-void     motion_ik_rpm(float vx, float vy, float w, float rpm[4]); /* 保留小数的控制输出 */
 void     motion_vel_set(float vx, float vy, float w);             /* 直接按体坐标速度走 */
+void     motion_ik_precise(float vx, float vy, float w, float rpm[4]); /* 独立小数 IK；旧 IK 保持整数截断 */
+void     motion_vel_set_precise(float vx, float vy, float w);    /* 仅显式选择的新调用者保留小数轮速 */
 void     motion_brake(void);
 void     motion_pose_update(void);          /* 1ms 更新 IMU 航向；x/y 积分待轮位/符号台校后启用 */
 const Pose *motion_pose(void);

@@ -12,7 +12,7 @@ static float    s_ki = 0.004f;      /* 消静差，太大易振荡 */
 static float    s_lp_alpha = 0.2f;  /* 0~1，小=更平滑 */
 static uint16_t s_dead_min = 25u;   /* 静摩擦最小 duty */
 
-static float    s_target[MOTOR_NUM];
+static float    s_target[MOTOR_NUM]; /* 旧入口保存同值整数；precise 入口保留小数 */
 static int32_t  s_acc[MOTOR_NUM];
 static uint32_t s_n[MOTOR_NUM];
 static int16_t  s_rpm_est[MOTOR_NUM];
@@ -48,7 +48,12 @@ void ctrl_init(void)
     ctrl_stop_all();
 }
 
-void ctrl_set_speed(int m, float rpm)
+void ctrl_set_speed(int m, int16_t rpm)
+{
+    ctrl_set_speed_precise(m, (float)rpm);
+}
+
+void ctrl_set_speed_precise(int m, float rpm)
 {
     if (m < 0 || m >= MOTOR_NUM) return;
     s_target[m] = rpm;
@@ -203,11 +208,6 @@ void ctrl_get_rpm_est_all(int16_t out[4])
 void ctrl_get_rpm_fast_all(float out[4])
 {
     for (int m = 0; m < MOTOR_NUM; m++) out[m] = s_rpm_lp[m];
-}
-
-void ctrl_get_target_rpm_all(float out[4])
-{
-    for (int m = 0; m < MOTOR_NUM; m++) out[m] = s_target[m];
 }
 
 /* 每轮累计编码器计数(带符号;自上次 reset 起,模式7-10 raw readout 用) */

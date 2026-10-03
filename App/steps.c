@@ -62,6 +62,12 @@ static int take_frame(ProtoType type, ProtoFrame *out)
     return got;
 }
 
+void step_object_select(int cls, int label) { select_object(cls, label); }
+int step_object_take(ProtoFrame *out)
+{
+    return out ? take_frame(PF_OBJ, out) : 0;
+}
+
 /* 整场中止标三连:run_abort() 置位 / run_aborted() 阻塞步每 ~5ms 轮询、见标即退 /
  * run_reset() 只能在初始化或接受启动请求前清中止标与暂存帧；g 后立即 a 的中止
  * 不得被 MissionTask 醒来时重置。整场运行中BT再次'g'或'a'均中止，不自动续跑。 */
@@ -71,24 +77,27 @@ void run_reset(void)
     select_object(-1, -1);
 }
 int  run_aborted(void) { return s_abort; }
-void run_abort(void)   { s_abort = 1; proto_send_scene(SCENE_IDLE); }
+void run_abort(void)   { s_abort = 1; }
 
 int step_vision_scene(ProtoScene scene)
 {
-    uint32_t pm;
+    if (s_abort) return 0;
     motion_brake();
-    pm = __get_PRIMASK();
-    __disable_irq();
-    if (s_abort) { __set_PRIMASK(pm); return 0; }
+    {
+        uint32_t pm = __get_PRIMASK();
+        __disable_irq();
+        s_qr_pending = s_obj_pending = 0;
+        s_obj_want_cls = s_obj_want_label = -1;
+        __set_PRIMASK(pm);
+    }
     proto_send_scene(scene);
-    s_qr_pending = s_obj_pending = 0;
-    __set_PRIMASK(pm);
     while (!s_abort) {
         int status = proto_scene_status();
-        if (status < 0) { run_abort(); return 0; }
         if (status > 0) return 1;
-        osDelay(5); /* no timeout pretending success; g/a can interrupt */
+        if (status < 0) { run_abort(); break; }
+        osDelay(5);
     }
+    proto_send_scene(SCENE_IDLE);
     return 0;
 }
 
@@ -545,7 +554,12 @@ int step_nav_leg(float turn_deg, float dist_mm, float v_mms, uint32_t to)
 }
 
 /* ---- 原地旋转(麦轮绕自身中心自转,EOD 抓球放桶转 180° 用):转的判据 = IMU yaw ---- */
-/* ROT_* lives in turn_profile.h; bench30/32 now use these same constants. */
+#define ROT_SPIN_RADS  2.0f   /* 最大角速度 rad/s，待实测 */
+#define ROT_MIN_RADS   0.12f  /* 克服静摩擦的最小角速度，待实测 */
+#define ROT_KP_RADS_DEG 0.02f /* 航向误差(deg)→角速度(rad/s)，待实测 */
+#define ROT_TOL_DEG    1.0f   /* 用户 2026-09-24：停稳后误差必须≤1° */
+#define ROT_SETTLE_MS  700u   /* 抱闸后稳定观察；若惯性越界则继续修正 */
+#define ROT_STILL_DEG  0.2f   /* 观察窗内若仍变化>0.2°，重新计稳定时间 */
 
 /* Only +90 deg uses the on-ground validated mode-20 profile. The caller
  * prepares/stops/zeros the leg first; continuous heading avoids wraparound.

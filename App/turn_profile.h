@@ -1,25 +1,29 @@
 #ifndef APP_TURN_PROFILE_H
 #define APP_TURN_PROFILE_H
 
-/* Right +90 deg: mode 20 on-ground validation, 2026-09-25, four DONE runs.
- * Keep test and mission on one profile; other turn angles are not validated. */
-#define TURN90_MAX_MS          7000u
-#define TURN90_SETTLE_MS       700u
-#define TURN90_TARGET_DEG      90.0f
-#define TURN90_TOL_DEG         0.3f
-#define TURN90_LIMIT_DEG       15.0f
-#define TURN90_KP_RADS_DEG     0.15f
-#define TURN90_MAX_W_RADS      2.0f
-#define TURN90_MIN_W_RADS      0.18f
-#define TURN90_STILL_DEG       0.2f
+/* Shared bench hold profile: mode20 +90, mode22 +180, mode30 -90.
+ * 2026-10-03: preserve the successful mode22 gains/speed/tolerance/settle;
+ * give +/-90 the same 12s correction budget, not a guessed angle offset.
+ * Host equivalence is not physical acceptance of a new angle/load.
+ * TURN90 aliases keep the existing formal +90 caller source-compatible;
+ * formal -90/180 still use their legacy controller, outside route31. */
+#define TURN_HOLD_MAX_MS       12000u
+#define TURN_HOLD_SETTLE_MS    700u
+#define TURN_HOLD_TOL_DEG      0.3f
+#define TURN_HOLD_LIMIT_DEG    15.0f
+#define TURN_HOLD_KP_RADS_DEG  0.15f
+#define TURN_HOLD_MAX_W_RADS   2.0f
+#define TURN_HOLD_MIN_W_RADS   0.18f
+#define TURN_HOLD_STILL_DEG    0.2f
 
-/* Existing formal non-right90 profile. Shared with bench30/32 for comparison;
- * these values are unchanged and remain pending ground calibration. */
-#define ROT_SPIN_RADS          2.0f
-#define ROT_MIN_RADS           0.12f
-#define ROT_KP_RADS_DEG        0.02f
-#define ROT_TOL_DEG            1.0f
-#define ROT_SETTLE_MS          700u
-#define ROT_STILL_DEG          0.2f
+#define TURN90_MAX_MS          TURN_HOLD_MAX_MS
+#define TURN90_SETTLE_MS       TURN_HOLD_SETTLE_MS
+#define TURN90_TARGET_DEG      90.0f
+#define TURN90_TOL_DEG         TURN_HOLD_TOL_DEG
+#define TURN90_LIMIT_DEG       TURN_HOLD_LIMIT_DEG
+#define TURN90_KP_RADS_DEG     TURN_HOLD_KP_RADS_DEG
+#define TURN90_MAX_W_RADS      TURN_HOLD_MAX_W_RADS
+#define TURN90_MIN_W_RADS      TURN_HOLD_MIN_W_RADS
+#define TURN90_STILL_DEG       TURN_HOLD_STILL_DEG
 
 #endif

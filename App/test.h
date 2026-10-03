@@ -13,5 +13,6 @@
 void test_init(void);           /* 清行缓冲/复位测试态(robot_init 调) */
 void test_feed(uint8_t c);      /* 每字节喂入(BT RX 轮询里调,g/a 也走这,统一成行) */
 void test_poll(void);           /* 每周期调:收不完整的行按"空闲成行"关线 + 执行命令 */
+float test_forward_ff_ratio(void); /* Current RAM fff; +left, no mutation or save. */
 
 #endif /* APP_TEST_H */
