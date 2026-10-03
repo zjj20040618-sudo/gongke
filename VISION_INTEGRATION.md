@@ -27,8 +27,8 @@
 
 下面01/51是目标与QR的内层body定义。受电控控制的运行使用62封装请求号及内层body，配合60命令、61确认；不发送嵌套AA55/CRC。旧01/51裸帧仅用于独立兼容回放，不能用于32自动联调，外层格式见控制协议。
 
-- 目标 body：`type:u8=01, seq:u16, count:u8, img_w:u16, img_h:u16, capture_ms:u16, inference_ms:u16, vision_ms:u16`，随后每目标 `class:u8, score:u16, cx:u16, cy:u16, w:u16, h:u16`。当前上限 10 目标，整帧长度 `18+11*count`。
-- QR body：`type:u8=51, seq:u16, count:u8`，每 QR 是 `UTF8长度:u8 + payload + cx:u16, cy:u16, w:u16, h:u16`。电控仅接受一个 QR，payload 必须恰好为三个 `1..3` 的 ASCII 数字，依次是球色、靶色、人质形状；缺项、多项或非法字符不会标记 QR 成功。合法三位码整帧 20 字节。
+- 目标 body：`type:u8=01, seq:u16, count:u8, img_w:u16, img_h:u16, capture_ms:u16, inference_ms:u16, vision_ms:u16`，随后每目标 `class:u8, score:u16, cx:u16, cy:u16, w:u16, h:u16`。上限10目标，旧裸帧长度`18+11*count`；正式62封装整帧`23+11*count`。
+- QR body：`type:u8=51, seq:u16, count:u8`，每QR是`UTF8长度:u8 + payload + cx:u16, cy:u16, w:u16, h:u16`。电控仅接受一个QR，payload恰好为三个`1..3` ASCII数字，依次球色、靶色、人质形状；缺项/多项/非法字符不算成功。合法三位码旧裸帧20字节，正式62封装整帧25字节。
 - 二进制分片接收，100 ms 的不完整帧字节间隔用于丢弃残帧，不是任务超时。CRC、长度、类别、置信度范围及目标几何字段检查完成后才交业务层。
 - 连续重复 seq 不重复消费；允许 seq 从 65535 回到 0。这不是可靠传输/重发协议，也不能识别所有乱序或重启情形。
 - score 的 `0..1000` 转为旧业务 `0..100`。本次没有新增质量阈值；视觉当前检测阈值是 0.35。
