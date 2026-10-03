@@ -69,6 +69,8 @@
 
 根目录 [VISION_CONTROL_PROTOCOL.md](../../VISION_CONTROL_PROTOCOL.md) 和 [VISION_INTEGRATION.md](../../VISION_INTEGRATION.md) 已同步十类接收映射；字节格式仍按原协议，工作点与实物识别证据仍须联调。
 
+视觉向电控的当前输出与交接见 [VISION_TO_CONTROL.md](../../VISION_TO_CONTROL.md)，每次视觉更新或协议核对后同步更新并推送。电控反馈写入其维护的 `CONTROL_TO_VISION.md`；该文件创建前读取现有 [VISION_TEAM_HANDOFF.md](../../VISION_TEAM_HANDOFF.md)。执行约定见 [AGENTS.md](../../AGENTS.md)。
+
 ## 6. 文件与验证
 
 `main.py` 是主循环，`mode_controller.py` 管理模式/模型，`task_selection.py` 锁任务和筛坐标；`object_detector.py` 做十类检测，`ui.py` 画框。

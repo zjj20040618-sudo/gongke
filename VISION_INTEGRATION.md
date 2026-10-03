@@ -2,6 +2,8 @@
 
 ## 当前结论
 
+视觉最新输出及核对记录见 [VISION_TO_CONTROL.md](VISION_TO_CONTROL.md)，电控反馈写入其维护的 `CONTROL_TO_VISION.md`；创建前参考 [VISION_TEAM_HANDOFF.md](VISION_TEAM_HANDOFF.md)。共同验收仍使用原VC编号。
+
 电控 USART2 与视觉使用 `AA 55` 二进制帧；USART3 蓝牙仍收发 ASCII。已审核采用视觉9541十类模型版本及QR选目标逻辑；电控配套接收ID0腰鼓、ID2圆锥、ID9黑桶，其余类别编号和线格式不变。两种人质使用队友训练别名，仍须用赛题实物验证，不等于几何名称通用等价。
 
 这是双端软件实现，不是整机验收。当前独立模式32调用模式确认链，旧正式任务闸门仍关闭，上电自动运动仍禁用；未新增烧录、实体UART或抓放测试。完整控制协议及32实际调用点见 [VISION_CONTROL_PROTOCOL.md](VISION_CONTROL_PROTOCOL.md)。

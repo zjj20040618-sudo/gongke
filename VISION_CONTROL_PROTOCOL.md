@@ -4,6 +4,8 @@
 
 ## 给视觉队友：拉取后要做什么
 
+双向交接入口：视觉维护 [VISION_TO_CONTROL.md](VISION_TO_CONTROL.md)；电控维护 `CONTROL_TO_VISION.md`（创建前使用现有 [VISION_TEAM_HANDOFF.md](VISION_TEAM_HANDOFF.md)）。每次协作读取对方文件，再对照实际源码，规则见 [AGENTS.md](AGENTS.md)。
+
 1. 拉取共用仓库 `main`，更新完整 `03_扫码与物体识别联合App工程/qr_object_app/`，不要只复制旧 `main.py`。采用队友9541十类模型、首码锁存和逐帧选定三任务＋桶逻辑；现有模式控制/请求号/CRC格式不变。
 2. 相机运行 `main.py` 后默认 **IDLE 待机**。电控通过 UART 请求 QR 或 OBJECT，相机在主循环完成切换后回 ACK，然后持续发本轮的新结果；正式联调不需要按 USER。
 3. 现场确认 UART：电控 PD5/TX→相机 A18/RX；相机 A19/TX→电控 PD6/RX；115200、8N1、共地。针脚与电平仍须按实际板型核对，不能仅凭 Pro 注释认定设备。

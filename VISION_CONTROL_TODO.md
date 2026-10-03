@@ -2,7 +2,7 @@
 
 更新：2026-10-04。当前源码固件号 `20261004-VISION-DIAG33`；31只走路线，32单向联调QR及视觉任务（R1后等合法QR，抓放以10秒停车替代），33只静止收数，不调用旧往返补扫。旧正式闸门仍关闭，未烧录/实机验收；提交以Git历史为准，`e2c5326` 是历史审核基准，不是已核对的设备版本。
 
-目的：双方只在这一份文件更新待办、问题和验收结果。模式命令与请求关联见 [VISION_CONTROL_PROTOCOL.md](VISION_CONTROL_PROTOCOL.md)，目标字段/映射见 [VISION_INTEGRATION.md](VISION_INTEGRATION.md)，协作及框架审核边界见 [COLLABORATION.md](COLLABORATION.md)，不再另开一份平行清单。
+目的：双方只在这一份文件更新总待办、问题和验收结果。视觉当前输出与交接见 [VISION_TO_CONTROL.md](VISION_TO_CONTROL.md)，电控反馈由其维护 `CONTROL_TO_VISION.md`（待电控侧创建）；方向文件复用本表VC编号，不另开平行总清单。模式命令与请求关联见 [VISION_CONTROL_PROTOCOL.md](VISION_CONTROL_PROTOCOL.md)，目标字段/映射见 [VISION_INTEGRATION.md](VISION_INTEGRATION.md)，协作及框架审核边界见 [COLLABORATION.md](COLLABORATION.md)。
 
 队友接手单纯电控调参/机械行程时，使用 [CONTROL_TUNING_TODO.md](CONTROL_TUNING_TODO.md) 的 CT 编号；本文件只维护视觉/双端接口的 VC 编号。双方直接读取和更新仓库文件，不依赖用户转发聊天。
 
@@ -53,7 +53,7 @@ P0：自动任务放行前必须解决；P1：完成前项后做集成收尾。�
 
 ### VC-04：部署已实现的模式命令，再验证真实链路
 
-- 最少需要自动 QR/OBJECT 切换；不要求相机为了电控的四个对象类别各建一个模式。球/靶/人质可以在同一个 OBJECT 模式输出，由电控按类别/标签筛选；桶是否需要独立模式，由识别方案决定。
+- 已采用自动 QR/OBJECT 切换；球/靶/人质/黑桶在同一个OBJECT模式输出，由电控按类别/标签筛选，不为桶另建算法模式。
 - 已实现60请求、61实际模式ACK、62请求关联结果，视觉主循环有UART RX，电控通过DefaultTask服务重发；格式与时序以控制协议为准，不再按早期no-op说明接线。
 - 32左移后请求QR，进入球/靶/人质阶段分别请求OBJECT；完成或中止请求IDLE。球转180后找桶仍在同一OBJECT会话，只清槽换类别，不能宣称已经为桶建新请求；旧正式任务保持回滚调用和关闭闸门，不套用历史版本的调用表。
 - 视觉部署完整App后采集ACK/请求编号/首帧、错误确认、停机及重启记录。若桶需另一个算法模式或新类别，先说明输出和调用影响，再配套改两端。USER仅在UART接管前可用于单项台架测试，不能替代自动链验收。
