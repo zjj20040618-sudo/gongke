@@ -3,10 +3,11 @@ from maix import image
 import config
 from utils import class_name
 
-def draw_header(img, mode, fps, work_ms, uart_ms):
-    title = "QR SCAN" if mode == config.MODE_QR else "OBJECT YOLO26"
+def draw_header(img, mode, fps, work_ms, uart_ms, remote_owned=False):
+    title = "QR SCAN" if mode == config.MODE_QR else "OBJ10 YOLO26"
     img.draw_string(8, 8, "{} {}x{} FPS:{:.1f}".format(title, img.width(), img.height(), fps), image.COLOR_GREEN, scale=config.STATUS_TEXT_SCALE)
-    img.draw_string(8, 40, "WORK:{}ms UART:{}ms | USER:SWITCH".format(work_ms, uart_ms), image.COLOR_YELLOW, scale=config.STATUS_TEXT_SCALE)
+    owner = "UART:CTRL" if remote_owned else "USER:SWITCH"
+    img.draw_string(8, 40, "WORK:{}ms UART:{}ms {}".format(work_ms, uart_ms, owner), image.COLOR_YELLOW, scale=config.STATUS_TEXT_SCALE)
 
 def draw_objects(img, objects):
     for obj in objects:

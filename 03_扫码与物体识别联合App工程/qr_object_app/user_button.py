@@ -7,11 +7,12 @@ class UserButton:
         self._pressed_at = None
         self._last_release = -100000
         self._toggle_requested = False
+        self._exit_requested = False
         try:
             # MaixPy默认把USER/OK键当作退出键，必须移除默认监听器。
             key.rm_default_listener()
             self._key = key.Key(callback=self._on_key, long_press_time=config.KEY_LONG_PRESS_MS)
-            print("[KEY] USER short press: switch QR <-> OBJECT")
+            print("[KEY] standalone USER: short switches, hold 1.5s exits; ignored after UART control")
         except Exception as exc:
             self._key = None
             print("[KEY] init failed; mode switch disabled:", exc)
@@ -27,12 +28,15 @@ class UserButton:
             self._pressed_at = now
         elif int(state) == int(getattr(key.State, "KEY_LONG_PRESSED", -1)):
             self._pressed_at = None
+            self._exit_requested = True
         elif int(state) == int(key.State.KEY_RELEASED):
             if self._pressed_at is None:
                 return
             held_ms = now - self._pressed_at
             self._pressed_at = None
-            if held_ms < config.KEY_LONG_PRESS_MS and now - self._last_release >= config.KEY_DEBOUNCE_MS:
+            if held_ms >= config.KEY_LONG_PRESS_MS:
+                self._exit_requested = True
+            elif now - self._last_release >= config.KEY_DEBOUNCE_MS:
                 self._last_release = now
                 self._toggle_requested = True
 
@@ -41,6 +45,11 @@ class UserButton:
             return False
         self._toggle_requested = False
         return True
+
+    def take_exit_request(self):
+        requested = self._exit_requested
+        self._exit_requested = False
+        return requested
 
     def close(self):
         self._key = None
