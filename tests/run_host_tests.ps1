@@ -3,10 +3,13 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $compiler = 'D:\mingw64\bin\gcc.exe'
 if (-not (Test-Path -LiteralPath $compiler)) { throw "GCC not found: $compiler" }
+$hostPython = 'D:\mingw64\bin\python.exe'
+if (-not (Test-Path -LiteralPath $hostPython)) { throw "Python not found: $hostPython" }
+$hostBuildId = [Guid]::NewGuid().ToString('N')
 
 function Invoke-HostCase {
     param([string]$Name, [string[]]$Sources, [string[]]$Includes, [string[]]$ExtraFlags = @())
-    $output = Join-Path ([IO.Path]::GetTempPath()) "$Name.exe"
+    $output = Join-Path ([IO.Path]::GetTempPath()) "$Name-$hostBuildId.exe"
     $arguments = @('-std=c11', '-Wall', '-Wextra', '-Werror')
     foreach ($include in $Includes) { $arguments += "-I$include" }
     $arguments += $Sources
@@ -18,6 +21,12 @@ function Invoke-HostCase {
     if ($LASTEXITCODE -ne 0) { throw "$Name failed" }
 }
 
+function Invoke-HostPythonCase {
+    param([string]$Name, [string]$Script)
+    & $hostPython -B $Script
+    if ($LASTEXITCODE -ne 0) { throw "$Name failed" }
+}
+
 Push-Location $projectRoot
 try {
     Invoke-HostCase 'eod_arm_task_flow_test' @('tests/arm_task_flow_test.c', 'App/task_eod.c', 'App/task_rescue.c') @('App')
@@ -26,7 +35,12 @@ try {
     Invoke-HostCase 'eod_mission_start_abort_test' @('tests/mission_start_abort_test.c') @('tests/stubs', 'App')
     # Real legacy test.c has an unrelated unused cmd_reset local; report it without changing that code.
     Invoke-HostCase 'eod_g_command_stop_test' @('tests/g_command_stop_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    # Real IK/ctrl target plumbing: keep the legacy unused pose local warning visible.
+    Invoke-HostCase 'eod_forward_ff_ik_test' @('tests/forward_ff_ik_test.c', 'App/motion.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_precise_velocity_test' @('tests/precise_velocity_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-lm')
     Invoke-HostCase 'eod_mission_departure_route_test' @('tests/mission_departure_route_test.c') @('tests/stubs', 'App') @('-lm')
+    Invoke-HostCase 'eod_mission_trial_plan_test' @('tests/mission_trial_plan_test.c', 'App/mission_trial_plan.c') @('App') @('-lm')
+    Invoke-HostCase 'eod_mission_trial_flow_test' @('tests/mission_trial_flow_test.c', 'App/mission_trial.c', 'App/mission_trial_plan.c') @('tests/stubs', 'App') @('-lm')
     Invoke-HostCase 'eod_proto_frame_test' @('tests/proto_frame_test.c', 'App/proto.c') @('tests/stubs', 'App')
     Invoke-HostCase 'eod_vision_target_slot_test' @('tests/vision_target_slot_test.c') @('tests/stubs', 'App') @('-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_vision_scene_wait_test' @('tests/vision_scene_wait_test.c') @('tests/stubs', 'App') @('-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
@@ -36,6 +50,8 @@ try {
     foreach ($pixelSign in @(1, -1)) {
         Invoke-HostCase "eod_align_left_axis_$pixelSign" @('tests/align_boundary_test.c') @('tests/stubs', 'App') @("-DVISION_CX_FWD_SIGN=$pixelSign", '-DSWEEP_FWD_MMS=100.0f', '-DSWEEP_BALL_DELTA_MM=10.0f', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     }
+    Invoke-HostPythonCase 'vision camera main loop' 'tests/test_vision_control_main.py'
+    Invoke-HostPythonCase 'full binary packet replay' 'tests/test_vision_binary_replay.py'
 
     $mission = Get-Content 'App/mission.c' -Raw -Encoding utf8
     $test = Get-Content 'App/test.c' -Raw -Encoding utf8
@@ -62,6 +78,13 @@ try {
         throw 'g-stop source contract: pending/running mission stop must precede bench selection/gate; never reset abort'
     }
     Write-Output 'g-stop source contract: stop precedes mode/BOOT guards; abort is never cleared'
+
+    # The checks above deliberately cover the complete start/abort dispatcher.
+    # The legacy route contracts below start after the independent mode32 branch;
+    # its earlier DONE must not be mistaken for the formal route's terminal state.
+    $formalStart = $main.IndexOf('s_qr_ok = 0;')
+    if ($formalStart -lt 0) { throw 'Formal route source contract: entry not found' }
+    $main = $main.Substring($formalStart)
 
     $qrGate = $main.IndexOf('if (!s_qr_ok) goto failed;')
     $leftTurn = $main.IndexOf('if (!route_pre_cross_turn()) goto failed;')

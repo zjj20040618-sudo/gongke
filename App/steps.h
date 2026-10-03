@@ -15,7 +15,9 @@ void run_abort(void);       /* 请求外部安全停机:正在等待的步骤尽
 /* ---- 通用等待 ---- */
 void wait_ms(uint32_t ms);                 /* 睡 ms(让出 CPU,期间可被中止) */
 int  wait_qr(int32_t d[3], uint32_t to);   /* 等二维码帧,存 d1/d2/d3;to==0→不限时;超时/中止→0 */
-int  step_vision_scene(ProtoScene scene); /* brake, clear slots, request; await ACK + fresh frame */
+int  step_vision_scene(ProtoScene scene); /* stopped command/ACK/fresh-result handshake */
+void step_object_select(int cls, int label); /* new phase: clear slot and filter ISR inputs */
+int  step_object_take(ProtoFrame *out);      /* consume the latest matching fresh object */
 
 /* ---- 视觉对准（两步，2026-09-13 实现）----
  * 左侧相机阶段1：用目标像素高估距离，再左平移靠近/右平移离开（最多3次）。

@@ -9,6 +9,7 @@
 #include "imu.h"
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 static uint32_t now_ms;
 static float first_heading;
@@ -17,8 +18,6 @@ static unsigned heading_reads;
 static float first_w;
 static unsigned drive_calls;
 static unsigned brake_calls;
-void proto_send_scene(ProtoScene scene) { (void)scene; }
-int proto_scene_status(void) { return 1; }
 
 uint32_t HAL_GetTick(void) { return now_ms; }
 void osDelay(uint32_t ms) { now_ms += ms; }
@@ -54,6 +53,18 @@ void arm_stepper_step(int axis) { (void)axis; }
 void arm_claw_open(void) { }
 void arm_claw_close(void) { }
 void bp_laser_set(int on) { (void)on; }
+/* Rotation-only cases must never enter the recognition handshake. */
+void proto_send_scene(ProtoScene scene)
+{
+    (void)scene;
+    fputs("legacy rotation unexpectedly requested a vision scene\n", stderr);
+    abort();
+}
+int proto_scene_status(void)
+{
+    fputs("legacy rotation unexpectedly polled a vision scene\n", stderr);
+    abort();
+}
 
 static int check(int deg, float start, float first_sample, int expected_sign)
 {

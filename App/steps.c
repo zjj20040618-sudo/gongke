@@ -62,6 +62,12 @@ static int take_frame(ProtoType type, ProtoFrame *out)
     return got;
 }
 
+void step_object_select(int cls, int label) { select_object(cls, label); }
+int step_object_take(ProtoFrame *out)
+{
+    return out ? take_frame(PF_OBJ, out) : 0;
+}
+
 /* 整场中止标三连:run_abort() 置位 / run_aborted() 阻塞步每 ~5ms 轮询、见标即退 /
  * run_reset() 只能在初始化或接受启动请求前清中止标与暂存帧；g 后立即 a 的中止
  * 不得被 MissionTask 醒来时重置。整场运行中BT再次'g'或'a'均中止，不自动续跑。 */
@@ -71,24 +77,27 @@ void run_reset(void)
     select_object(-1, -1);
 }
 int  run_aborted(void) { return s_abort; }
-void run_abort(void)   { s_abort = 1; proto_send_scene(SCENE_IDLE); }
+void run_abort(void)   { s_abort = 1; }
 
 int step_vision_scene(ProtoScene scene)
 {
-    uint32_t pm;
+    if (s_abort) return 0;
     motion_brake();
-    pm = __get_PRIMASK();
-    __disable_irq();
-    if (s_abort) { __set_PRIMASK(pm); return 0; }
+    {
+        uint32_t pm = __get_PRIMASK();
+        __disable_irq();
+        s_qr_pending = s_obj_pending = 0;
+        s_obj_want_cls = s_obj_want_label = -1;
+        __set_PRIMASK(pm);
+    }
     proto_send_scene(scene);
-    s_qr_pending = s_obj_pending = 0;
-    __set_PRIMASK(pm);
     while (!s_abort) {
         int status = proto_scene_status();
-        if (status < 0) { run_abort(); return 0; }
         if (status > 0) return 1;
-        osDelay(5); /* no timeout pretending success; g/a can interrupt */
+        if (status < 0) { run_abort(); break; }
+        osDelay(5);
     }
+    proto_send_scene(SCENE_IDLE);
     return 0;
 }
 

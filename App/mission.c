@@ -1,4 +1,5 @@
 #include "mission.h"
+#include "mission_trial.h"
 #include "robot_tasks.h"
 #include "steps.h"
 #include "auto_steps.h"  /* step_cross_obstacle */
@@ -29,22 +30,22 @@
  * 终点 b1 之间前后补扫：后退扫到→继续到 b1；前进扫到→先到 b0，再完整倒退到 b1。
  * 相机朝向改变后的实际扫码可见范围仍待联调；不据此假报已扫码或中途改节点。
  * 几何、CPR/轮位全待实测；参数为 0 时必须拒绝启动，不能假报到位。 */
-#define QR_START_LEFT_MM 0u    /* TODO 实测：出发→倒退起点的左平移距离；旧直走d520不直接沿用 */
-#define QR_BACK_MM       0u    /* TODO 实测：倒退起点b0→第三段起点b1；旧左移d560不直接沿用 */
-#define QR_BACK_V_MMS    0     /* TODO 实测：倒退及前后补扫速度 mm/s */
-#define QR_STR_V_MMS     0     /* TODO 实测：第一段左平移速度 mm/s */
+#define QR_START_LEFT_MM 500u  /* 2026-10-03 用户实测：r1/v100/d500 到第一段终点，稳定；d为轮式命令值 */
+#define QR_BACK_MM       600u  /* 2026-10-03 用户更新：r2/v100/d600；沿车尾倒退，d为轮式命令值 */
+#define QR_BACK_V_MMS    100   /* 2026-10-03 用户确认：第二段倒退 v100 mm/s；补扫同段沿用，尚未实测补扫 */
+#define QR_STR_V_MMS     100   /* 2026-10-03 用户确认：第一段左平移 v100 mm/s；不推广到其它横移段 */
 
 /* ===== 与赛道一致的路线段 =====
  * 2026-10-01/02已逐段确认左装机构路线，救援前右90°后直走进区、抓后继续直走返回。
- * 所有必须上车确定的距离/速度先置 0。
+ * 未测距离/速度先置 0；已登记参数的本轮实测范围见各定义注释。
  * QR 的 0 值会阻止整场启动；后段 0 值仍为待实测占位，不能视作已验证到位。
  * 横移距离正=右、负=左；旋转正负最终按 IMU/底盘方向台校。 */
-#define ROUTE_FWD_V_MMS             0.0f /* TODO 实测：普通路线直行速度，独立于横移 */
-#define ROUTE_STRAFE_V_MMS          0.0f /* TODO 实测：普通路线横移速度，独立于直行 */
+#define ROUTE_FWD_V_MMS           100.0f /* 2026-10-03：本轮第三段/出口直走v100；后续任务间同速仍待验证 */
+#define ROUTE_STRAFE_V_MMS        100.0f /* 2026-10-03：本轮越障路末端左移v100；不代表其它横移已实测 */
 #define R_PRE_CROSS_FWD_MM          0.0f /* TODO 实测：第三段起点→减速带前安全起冲点 */
 #define R_CROSS_REST_FWD_MM         0.0f /* TODO 实测：越障结束→第三段直线末端 */
-#define R_CROSS_EXIT_LEFT_MM        0.0f /* TODO 实测：到第三段末端后左横移 */
-#define R_CROSS_EXIT_FWD_MM         0.0f /* TODO 实测：横移后向前到排爆高度 */
+#define R_CROSS_EXIT_LEFT_MM      730.0f /* 2026-10-03 用户实测：走完越障路后左移d730/v100，d为命令值 */
+#define R_CROSS_EXIT_FWD_MM       830.0f /* 2026-10-03 用户更新：左移730后直走780+50=d830/v100 */
 #define R_EOD_ENTRY_RIGHT_TURN_DEG 90.0f /* 用户2026-10-02：原地右90°，准备进入任务区；不是右横移 */
 #define R_EOD_ENTRY_FWD_MM          0.0f /* TODO 实测：右90°后沿新车头直走进入任务区的距离 */
 #define R_EOD_TO_ANTI_FWD_MM        0.0f /* TODO 实测：排爆转回原朝向后，排爆入口→反恐入口的前后里程差 */
@@ -66,6 +67,7 @@
 
 static volatile MissionState s_state = MS_BOOT;
 static volatile int  s_start_req;   /* mission_start() 置位 */
+static volatile int  s_trial_mode;  /* 32 owns the request and remains latched at terminal */
 static volatile int  s_qr_ok;       /* 三个任务目标已同时校验并锁存；越障只在此后放行 */
 static int32_t s_qr[3];
 static volatile uint32_t s_qr_invalid;
@@ -91,6 +93,7 @@ void mission_init(void)
     run_reset();   /* 仅初始化时清旧中止/视觉帧；启动请求之后绝不清急停 */
     s_state = MS_BOOT;
     s_start_req = 0;
+    s_trial_mode = 0;
     s_qr_ok = 0;
     s_qr[0] = s_qr[1] = s_qr[2] = 0;
     s_qr_invalid = 0u;
@@ -142,10 +145,32 @@ int mission_start(void)
     s_start_req = 1;
     return 1;
 }
+int mission_start_trial(void)
+{
+    if (s_state != MS_BOOT || s_start_req || mission_trial_config_missing()) return 0;
+    run_reset();   /* Only before accepting the request; never reset after g/a/0. */
+    s_trial_mode = 1;
+    s_start_req = 2;
+    return 1;
+}
+int mission_is_trial(void) { return s_trial_mode; }
 MissionState mission_state(void) { return s_state; }
 const char  *mission_state_str(MissionState s) { return (s < MS_COUNT) ? s_name[s] : "?"; }
-void mission_get_qr(int32_t out[3]) { out[0] = s_qr[0]; out[1] = s_qr[1]; out[2] = s_qr[2]; }
-int mission_qr_ready(void) { return s_qr_ok; }
+void mission_get_qr(int32_t out[3])
+{
+    if (s_trial_mode) { mission_trial_get_qr(out); return; }
+    out[0] = s_qr[0]; out[1] = s_qr[1]; out[2] = s_qr[2];
+}
+int mission_qr_ready(void)
+{
+    if (s_trial_mode) {
+        int32_t d[3];
+        mission_trial_get_qr(d);
+        return d[0] >= 1 && d[0] <= 3 && d[1] >= 1 && d[1] <= 3 &&
+               d[2] >= 1 && d[2] <= 3;
+    }
+    return s_qr_ok;
+}
 uint32_t mission_qr_invalid_count(void) { return s_qr_invalid; }
 
 /* 内部切状态(只设 s_state) */
@@ -276,12 +301,21 @@ static int route_straight_to(float target_odo_mm, float speed_mms)
 void mission_main(void)
 {
     float eod_entry_fwd_odo, anti_entry_fwd_odo, rescue_entry_fwd_odo;
+    int request_kind;
 
     /* BOOT:等启动指令(BT 'g')。此后不得再清 run_abort 标志：
      * g 后立即再g或a可能先于本任务苏醒到达，清标志会吞掉这次急停。 */
     while (!s_start_req) osDelay(10);
+    request_kind = s_start_req;
     s_start_req = 0;
     if (run_aborted()) goto failed;
+    if (request_kind == 2) {
+        /* Run in MissionTask, never inside the Bluetooth service thread. */
+        to_state(MS_READ_QR);
+        if (!mission_trial_run()) goto failed;
+        to_state(run_aborted() ? MS_ABORT : MS_DONE);
+        goto terminal;
+    }
     s_qr_ok = 0;
     s_qr[0] = s_qr[1] = s_qr[2] = 0;
     s_qr_invalid = 0u;
@@ -292,12 +326,11 @@ void mission_main(void)
     /* ① QR 获取：左平移→倒退到第三段起点；无效则在倒退段两端前后有界补扫。
      * 节点按最新口径停车确认/清本段航向/等待；未标定路线直接 ABORT。 */
     to_state(MS_READ_QR);
-    if (!step_vision_scene(SCENE_QR)) goto failed;
+    proto_send_scene(SCENE_QR);   /* 让视觉切 QR 上报;MaixCam 常开也照吃 */
     if (!qr_travel()) { to_state(MS_ABORT); motion_brake(); goto terminal; }
 
     /* 防御性二次门：只有三个任务目标已同时解码并锁存，才允许切到越障。 */
     if (!s_qr_ok) goto failed;
-    proto_send_scene(SCENE_IDLE);
 
     /* ② 第三段前车身左转90°，再沿新车头前进到减速带前安全起冲点，再越障。
      * 倒退端点不等于越障入口；距离须按车中心/车头安全间隙实测。
@@ -356,6 +389,5 @@ failed:
     to_state(MS_ABORT);
 terminal:
     motion_brake();
-    proto_send_scene(SCENE_IDLE); /* stop immediately; camera ACK never delays braking */
     for (;;) osDelay(200);   /* 终端驻留:停着等人工复位/重启 */
 }

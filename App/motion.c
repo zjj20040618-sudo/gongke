@@ -123,6 +123,30 @@ void motion_vel_set(float vx, float vy, float w)
     for (int i = 0; i < MOTOR_NUM; i++) ctrl_set_speed(i, rpm[i]);
 }
 
+/* 新调用者独立选择的小数轮速路径；上面的旧 IK/下发保留原整数行为。
+ * 轮序、符号、几何和 CPR 均沿用原路径，不在此更改实测参数。 */
+void motion_ik_precise(float vx, float vy, float w, float rpm[4])
+{
+    static const int8_t sgn[4][3] = {
+        {  1, -1,  1 },   /* m0 = 左后 */
+        {  1,  1, -1 },   /* m1 = 右后 */
+        {  1, -1, -1 },   /* m2 = 右前 */
+        {  1,  1,  1 },   /* m3 = 左前 */
+    };
+    for (int i = 0; i < MOTOR_NUM; i++) {
+        float lin = sgn[i][0] * vx + sgn[i][1] * vy + sgn[i][2] * M_A_HALF_MM * w;
+        float rps = lin / (M_WHEEL_R_MM * 2.0f * 3.14159f);
+        rpm[i] = rps * M_GEAR_RATIO * 60.0f;
+    }
+}
+
+void motion_vel_set_precise(float vx, float vy, float w)
+{
+    float rpm[4];
+    motion_ik_precise(vx, vy, w, rpm);
+    for (int i = 0; i < MOTOR_NUM; i++) ctrl_set_speed_precise(i, rpm[i]);
+}
+
 /* 刹停全轮(即 ctrl_stop_all):步骤收尾/超时/中止的统一停车出口 */
 void motion_brake(void)
 {

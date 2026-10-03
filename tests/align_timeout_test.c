@@ -8,11 +8,10 @@
 #include "imu.h"
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 static uint32_t now_ms;
 static unsigned brake_calls;
-void proto_send_scene(ProtoScene scene) { (void)scene; }
-int proto_scene_status(void) { return 1; }
 
 uint32_t HAL_GetTick(void) { return now_ms; }
 void osDelay(uint32_t ms) { now_ms += ms; }
@@ -35,6 +34,19 @@ void arm_stepper_step(int axis) { (void)axis; }
 void arm_claw_open(void) { }
 void arm_claw_close(void) { }
 void bp_laser_set(int on) { (void)on; }
+/* These legacy alignment cases never request a new recognition scene.
+ * Satisfy the newly linked handshake without making a wait falsely succeed. */
+void proto_send_scene(ProtoScene scene)
+{
+    (void)scene;
+    fputs("legacy alignment unexpectedly requested a vision scene\n", stderr);
+    abort();
+}
+int proto_scene_status(void)
+{
+    fputs("legacy alignment unexpectedly polled a vision scene\n", stderr);
+    abort();
+}
 
 int main(void)
 {

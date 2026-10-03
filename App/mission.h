@@ -26,6 +26,8 @@ typedef enum {
 
 void        mission_init(void);                    /* 开机置 BOOT 待命(robot_init 调) */
 int         mission_start(void);                   /* 参数齐才请求开跑；成功=1，缺参数=0 */
+int         mission_start_trial(void);             /* 独立模式32请求；仅无臂联调参数闸门 */
+int         mission_is_trial(void);                /* 32请求/运行/终端均为1，不能据此重启 */
 const char *mission_config_missing(void);          /* 首个未标定关键参数名；齐全返回 NULL */
 void        mission_main(void);                    /* 阻塞式整场;MissionTask 调 */
 MissionState mission_state(void);

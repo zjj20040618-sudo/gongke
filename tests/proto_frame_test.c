@@ -33,7 +33,7 @@ int main(void)
     proto_set_binary_mode(1);
     proto_send_scene(SCENE_QR);
     proto_send_ping();
-    if (transmissions != 2u) return 1; /* binary commands never use ASCII TX */
+    if (transmissions != 2u) return 1; /* no invented binary commands */
     proto_set_binary_mode(0);
 
     feed("QR,1,2,3\r\n");

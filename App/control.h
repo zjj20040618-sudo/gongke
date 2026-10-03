@@ -20,6 +20,7 @@ typedef struct {
 
 void     ctrl_init(void);
 void     ctrl_set_speed(int m, int16_t rpm);   /* 命令轮 m 目标转速(带符号 rpm)→闭环 */
+void     ctrl_set_speed_precise(int m, float rpm); /* 独立小数目标入口；旧接口仍只传整数 rpm */
 void     ctrl_set_duty_open(int m, int16_t duty); /* 开环直通 duty(±199,验单路驱动/方向) */
 void     ctrl_tick_1ms(void);                  /* 1ms：读编码器→PID→写 PWM */
 void     ctrl_stop_all(void);                  /* 四轮刹车，并清 PI 历史量 */
