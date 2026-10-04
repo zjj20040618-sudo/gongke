@@ -1,3 +1,10 @@
+/*
+ * 初学者导读：排爆：按 QR 指定球色抓球、转身对桶放球，然后收回并转回。
+ * 这里按顺序调用 steps.c；任一步失败就返回 TASK_ABORT，让 mission 停止。
+ * TASK_OK=0、TASK_ABORT=1 是任务返回约定；步骤函数多数用 1 成功、0 失败。
+ * if (!step_xxx(...)) 的 ! 是逻辑非：步骤返回0时进入失败分支。
+ */
+
 #include "robot_tasks.h"
 #include "steps.h"
 #include "proto.h"
@@ -26,6 +33,12 @@ const char *task_eod_config_missing(void)
  * 抓球/放桶两次都走这一对。
  * 任务区间导航(驶入带、区与区间)由 mission 顶层负责,路点待实测。 */
 
+/**
+ * @brief 执行本文件负责的任务步骤，失败立即交还顶层处理。
+ * @param ball_color 球色标签LAB_R/LAB_G/LAB_B。
+ * @retval TASK_OK（0）=步骤链完成，TASK_ABORT（1）=步骤失败或中止。
+ * @note 软件步骤完成不等于实物抓取/命中效果已经验收。
+ */
 int task_eod_run(int ball_color)
 {
     float bucket_scan_origin;

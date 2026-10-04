@@ -1,3 +1,9 @@
+/*
+ * 初学者导读：三个任务的接口。注意 TASK_OK 是0，不能用 if (!task_xxx_run(...)) 判断失败。
+ * .h 相当于接口清单，供 #include 引入；函数实现通常在同名.c中。
+ * #ifndef / #define / #endif 是头文件保护，防止同一编译单元重复包含定义。
+ */
+
 #ifndef APP_ROBOT_TASKS_H
 #define APP_ROBOT_TASKS_H
 

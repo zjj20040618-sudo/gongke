@@ -1,3 +1,9 @@
+/*
+ * 初学者导读：模块入口声明。先看 Src/main.c 调初始化，再看 Src/freertos.c 怎样周期调用这些函数。
+ * .h 相当于接口清单，供 #include 引入；函数实现通常在同名.c中。
+ * #ifndef / #define / #endif 是头文件保护，防止同一编译单元重复包含定义。
+ */
+
 #ifndef APP_ROBOT_H
 #define APP_ROBOT_H
 

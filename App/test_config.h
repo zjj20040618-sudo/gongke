@@ -1,3 +1,9 @@
+/*
+ * 初学者导读：台架默认值和限制。#define 在编译前做替换；蓝牙改RAM并不会修改这里的源码。
+ * .h 相当于接口清单，供 #include 引入；函数实现通常在同名.c中。
+ * #ifndef / #define / #endif 是头文件保护，防止同一编译单元重复包含定义。
+ */
+
 #ifndef APP_TEST_CONFIG_H
 #define APP_TEST_CONFIG_H
 
@@ -29,6 +35,7 @@
 #define T_TURN_SETTLE_MS TURN90_SETTLE_MS
 #define T_TURN90_RIGHT_COMP_DEG (-5.0f)
 #define T_TURN90_LEFT_COMP_DEG 5.0f
+/* 右转目标90+(-5)=85°；左转目标-(90+5)=-95°，这是两个独立补偿值。 */
 #define T_TURN_RIGHT_TARGET_DEG (TURN90_TARGET_DEG + T_TURN90_RIGHT_COMP_DEG)
 #define T_TURN_LEFT_TARGET_DEG (-(TURN90_TARGET_DEG + T_TURN90_LEFT_COMP_DEG))
 #define T_TURN_TOL_DEG TURN90_TOL_DEG

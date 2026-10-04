@@ -1,3 +1,12 @@
+/*
+ * 初学者导读：IMU 测量车身姿态，串口每次只送来一个字节，要自己拼成完整帧。
+ * yaw 是车头左右朝向，pitch 是车头抬起/低下，roll 是车身左右倾斜，角度单位为度。
+ * 状态机就是“记住目前收到第几部分”，下一字节按这个状态解释。
+ * uint8_t/uint16_t/uint32_t 分别是无符号 8/16/32 位整数；int16_t 可以表示负数。
+ * 原始协议把角度放大 100 倍存成整数，除以 100.0f 才还原为小数角度。
+ * 普通 yaw 在一圈处回绕，连续 heading 会累加增量，适合转身和道路进度计算。
+ */
+
 #include "imu.h"
 #include "main.h"
 
@@ -45,6 +54,7 @@ static void imu_frame(uint8_t cmd, uint8_t len, const uint8_t *d)
     else if (len == 18u){ p = 12u; r = 14u; y = 16u; }   /* 模式0 全数据:姿态在尾 */
     else return;                                          /* 非姿态帧(0xF0 ACK 等)忽略 */
 
+    /* d+y移动到yaw字段首字节；数组/指针加法按元素走，这里uint8_t每个元素1字节。 */
     s_yaw   = le_u16(d + y) / 100.0f;    /* uint16 0~360,0/360 回绕 */
     s_pitch = le_i16(d + p) / 100.0f;    /* int16 ±180 */
     s_roll  = le_i16(d + r) / 100.0f;
@@ -52,6 +62,7 @@ static void imu_frame(uint8_t cmd, uint8_t len, const uint8_t *d)
     /* 连续航向:每帧按跨绕±180 取增量累加,不回绕(0→359 只算 -1°) */
     if (!s_yaw_have_last) { s_yaw_last = s_yaw; s_heading_cont = s_yaw; s_yaw_have_last = 1u; }
     else {
+        /* 例如359°到0°，原差为-359°；加360后是+1°，避免误以为倒转一整圈。 */
         float ddeg = s_yaw - s_yaw_last;
         while (ddeg >  180.0f) ddeg -= 360.0f;
         while (ddeg < -180.0f) ddeg += 360.0f;
@@ -75,6 +86,12 @@ void imu_init(void)
 }
 
 /* UART4 逐字节喂入(ISR 回调里被调):字节式状态机拼帧,收满验 CS 后分派 */
+/**
+ * @brief 接收一个字节，根据当前状态找帧头、收数据和验校验和。
+ * @param ch 刚收到的8位字节，不是整条字符串。
+ * @retval 无。
+ * @note s_st在多次调用之间保存进度；校验通过才更新姿态。
+ */
 void imu_feed(uint8_t ch)
 {
     s_last_ms = HAL_GetTick();       /* 任意字节都算链路活着 */
@@ -104,6 +121,7 @@ void imu_feed(uint8_t ch)
         else { s_ix = 0u;              s_st = IMU_ST_DATA; }
         break;
     case IMU_ST_DATA:                /* DATA[LEN] */
+        /* 后置++先用当前下标存字节，再把s_ix加1；与++s_ix的先加后用不同。 */
         s_buf[s_ix++] = ch;
         s_sum = (uint8_t)(s_sum + ch);
         if (s_ix >= s_len) s_st = IMU_ST_CS;
@@ -130,11 +148,17 @@ void imu_tick_parse(void)
 /* 读当前航向角(度 0..360;IMU 没接/没解析出前恒 0,上层要等 imu_ok 才信) */
 float imu_yaw_deg(void)   { return s_yaw; }
 float imu_heading_deg(void) { return s_heading_cont; }   /* 连续航向(度,跨绕已解) */
+/**
+ * @brief 把当前有效连续航向记为本段软件零点。
+ * @retval 1=已记录，0=没有足够新的有效姿态。
+ * @note 相当于记下起始角度供后续相减，不给传感器发清零指令，也不改变全局heading。
+ */
 uint8_t imu_zero_leg_heading(void)
 {
     uint32_t pm = __get_PRIMASK();
     uint8_t ok;
     __disable_irq();
+    /* &&是逻辑与：既解析成功过，又没过有效期，才允许把当前角度记作本段零点。 */
     ok = s_valid && (uint32_t)(HAL_GetTick() - s_valid_ms) < IMU_LINK_TIMEOUT_MS;
     if (ok) s_leg_heading_zero = s_heading_cont;
     __set_PRIMASK(pm);

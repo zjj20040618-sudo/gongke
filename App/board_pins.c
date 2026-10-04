@@ -1,3 +1,12 @@
+/*
+ * 初学者导读：电机、编码器、激光与蓝牙发送的硬件适配层。
+ * HAL 是 STM32 的库函数；例如 HAL_GPIO_WritePin 把某个引脚输出置高或置低。
+ * htim1 等“句柄”是保存外设信息的结构体；&htim1 取地址，传给库函数操作该外设。
+ * s_pw[m] 保存定时器结构体的指针，s_pw_ch[m] 保存对应通道，配合表示一路 PWM。
+ * GPIOB 是 B 组端口，GPIO_PIN_13 是第 13 号引脚的位掩码，合起来才表示 PB13。
+ * 这里的轮序、方向修正表按现有源码保留；注释不会代替实物接线核验。
+ */
+
 #include "board_pins.h"
 #include "main.h"       /* HAL 全部已启用(hal_conf)；含 TIM/UART/GPIO 宏 */
 #include "tim.h"        /* htim1/2/3/4/8/12 */
@@ -59,6 +68,14 @@ static void set_in(int m, int in1_high)
 }
 
 /* 设某轮转动:PWM 占空比 duty(限幅)+ 方向(dir 符号 → IN1);duty=0 只置方向不转 */
+/**
+ * @brief 给指定轮写PWM比较值，并按方向表设置IN1/IN2。
+ * @param m 轮号0..3。
+ * @param dir 非负取软件正向，负数取反向；最后应用现有方向修正表。
+ * @param duty PWM比较计数；取绝对值并限制到0..MOTOR_PWM_PERIOD。
+ * @retval 无。
+ * @note duty不是rpm；例如比较值约为周期计数一半时，对应约50%占空比。
+ */
 void bp_motor_set(int m, int dir, int duty)
 {
     if (m < 0 || m >= MOTOR_NUM) return;
@@ -87,11 +104,18 @@ void bp_motor_brake(int m)
 }
 
 /* 读某轮本周期编码器脉冲增量(自上次读;自动处理 32/16 位计数回绕) */
+/**
+ * @brief 读取距上次调用增加的计数，并更新本轮读取基线。
+ * @param m 轮号0..3。
+ * @retval 带方向修正的编码器增量；非法轮号返回0。
+ * @note 调用一次就消费本段增量，不能为看日志额外调用，否则会影响1ms控制层的读取。
+ */
 int32_t bp_enc_delta(int m)
 {
     if (m < 0 || m >= MOTOR_NUM) return 0;
     uint32_t cur = __HAL_TIM_GET_COUNTER(s_enc[m]);
     int32_t  d;
+    /* 计数器到最大值会回到0；按硬件位宽做差再转有符号数，可恢复跨界的小增量。 */
     if (s_enc_bits[m] == 32) d = (int32_t)(cur - (uint32_t)s_enc_last[m]);
     else                     d = (int16_t)((uint16_t)cur - (uint16_t)s_enc_last[m]);
     s_enc_last[m] = (int32_t)cur;
@@ -143,6 +167,12 @@ static void bt_tx_start(void)
         s_bt_tx_active = chunk;
 }
 
+/**
+ * @brief 把一整条字符串复制进蓝牙发送队列，由中断分批送出。
+ * @param s 以结束符结尾的字符串；空指针或空串直接返回。
+ * @retval 无。
+ * @note 调用返回不表示线缆已经发送完；队列空间不足会丢整条并增加诊断计数。
+ */
 void bp_debug_send(const char *s)
 {
     size_t len;
@@ -152,8 +182,10 @@ void bp_debug_send(const char *s)
     len = strlen(s);
     if (len == 0u) return;
 
+    /* 先保存原中断开关，再短暂关中断保护队列；结束时只恢复原来允许的状态。 */
     primask = __get_PRIMASK();
     __disable_irq();
+    /* 队列长度2048是2的幂，&2047能把下标限制在0..2047，实现尾部回到开头。 */
     used = (uint16_t)((s_bt_tx_wr - s_bt_tx_rd) & (BT_TX_N - 1u));
     free_bytes = (uint16_t)(BT_TX_N - 1u - used);
     if (len > free_bytes) {

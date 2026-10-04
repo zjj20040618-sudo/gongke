@@ -1,3 +1,13 @@
+/*
+ * 初学者导读：顶层流程表，负责“下一步做哪个任务”，具体运动交给步骤层。
+ * mission_start 只登记启动请求，真正跑路线的是 MissionTask 中的 mission_main。
+ * 默认正式流程：左移、倒退读 QR、左转、越障、排爆、反恐、救援、返回。
+ * 正式路线/机构参数仍有未标定项，CAL_* 确认闸门保持 0；不能为试跑直接改成 1。
+ * 请求类型 2 单独进入模式32联调；模式31和33由 test.c 的独立状态机处理。
+ * goto failed 跳到本函数失败出口，统一停车；不是调用另一个函数。
+ * 状态枚举 MS_* 是给数字起名字，例如 MS_BOOT 表示上电待命。
+ */
+
 #include "mission.h"
 #include "mission_trial.h"
 #include "robot_tasks.h"
@@ -138,6 +148,11 @@ const char *mission_config_missing(void)
     return 0;
 }
 
+/**
+ * @brief 检查正式流程配置后，锁存一次启动申请。
+ * @retval 1=申请被接受，0=状态不允许、已有申请或配置缺失。
+ * @note 这是排队，不是整场已完成；接受前清旧中止，接受后不得再次清掉新停止请求。
+ */
 int mission_start(void)
 {
     if (s_state != MS_BOOT || s_start_req || mission_config_missing()) return 0;
@@ -190,6 +205,7 @@ static int qr_decode_targets(const int32_t d[3], MissionTargets *out)
     decoded.ball_color = (int)d[0] - 1;
     decoded.target_color = (int)d[1] - 1;
     decoded.hostage_shape = (int)d[2] + 2;
+    /* 整份结构体一次复制，避免只更新球色却保留旧靶色/形状的半套任务。 */
     *out = decoded;
     return 1;
 }
@@ -298,6 +314,11 @@ static int route_straight_to(float target_odo_mm, float speed_mms)
     return step_straight(remain, (remain > 0.0f) ? speed_mms : -speed_mms, 0);
 }
 
+/**
+ * @brief 在MissionTask等待启动，然后执行正式流程或独立模式32。
+ * @retval 无。
+ * @note 运行到终态会停车并长期等待人工复位；参数闸门原样保留，不会因补注释开放正式整场。
+ */
 void mission_main(void)
 {
     float eod_entry_fwd_odo, anti_entry_fwd_odo, rescue_entry_fwd_odo;
@@ -306,6 +327,7 @@ void mission_main(void)
     /* BOOT:等启动指令(BT 'g')。此后不得再清 run_abort 标志：
      * g 后立即再g或a可能先于本任务苏醒到达，清标志会吞掉这次急停。 */
     while (!s_start_req) osDelay(10);
+    /* 取出申请类型，再清“有申请”标志；这里不清中止，启动后立即停止仍必须生效。 */
     request_kind = s_start_req;
     s_start_req = 0;
     if (run_aborted()) goto failed;
@@ -385,6 +407,7 @@ void mission_main(void)
 
     to_state(run_aborted() ? MS_ABORT : MS_DONE);
     goto terminal;
+/* failed/terminal是同一函数内的标签，前面的goto跳到这里统一处理。 */
 failed:
     to_state(MS_ABORT);
 terminal:

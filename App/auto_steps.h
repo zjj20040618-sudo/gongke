@@ -1,3 +1,9 @@
+/*
+ * 初学者导读：越障接口。返回1仅表示当前姿态算法判定通过，实物通过效果仍须验证。
+ * .h 相当于接口清单，供 #include 引入；函数实现通常在同名.c中。
+ * #ifndef / #define / #endif 是头文件保护，防止同一编译单元重复包含定义。
+ */
+
 #ifndef AUTO_STEPS_H
 #define AUTO_STEPS_H
 

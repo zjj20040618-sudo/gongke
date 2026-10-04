@@ -1,3 +1,10 @@
+/*
+ * 初学者导读：反恐：按 QR 指定靶色找靶、对准、停稳，再发激光命令。
+ * 这里按顺序调用 steps.c；任一步失败就返回 TASK_ABORT，让 mission 停止。
+ * TASK_OK=0、TASK_ABORT=1 是任务返回约定；步骤函数多数用 1 成功、0 失败。
+ * if (!step_xxx(...)) 的 ! 是逻辑非：步骤返回0时进入失败分支。
+ */
+
 #include "robot_tasks.h"
 #include "steps.h"
 #include "proto.h"
@@ -8,6 +15,12 @@
 
 #define LASER_ON_MS       2000u   /* 触发保持(靶面自动评分) */
 
+/**
+ * @brief 执行本文件负责的任务步骤，失败立即交还顶层处理。
+ * @param target_color 靶色标签LAB_R/LAB_G/LAB_B。
+ * @retval TASK_OK（0）=步骤链完成，TASK_ABORT（1）=步骤失败或中止。
+ * @note 软件步骤完成不等于实物抓取/命中效果已经验收。
+ */
 int task_anti_run(int target_color)
 {
     if (run_aborted()) return TASK_ABORT;

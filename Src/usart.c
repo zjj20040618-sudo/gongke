@@ -22,6 +22,14 @@
 
 /* USER CODE BEGIN 0 */
 
+/*
+ * 初学者导读：串口初始化只规定通信参数，接收字节后的业务处理在 App/robot.c。
+ * UART4=IMU、USART2=视觉：115200；USART3=蓝牙：9600，单位是每秒传输位数。
+ * 句柄 huartX 保存 Instance（用哪个串口）与 Init（波特率、数据位等）信息。
+ * 8N1 表示8数据位、无奇偶校验、1停止位；两端参数必须相符才能正常通信。
+ * MspInit 负责该外设需要的时钟、引脚复用与中断配置；不是另一个业务任务。
+ */
+
 /* USER CODE END 0 */
 
 UART_HandleTypeDef huart4;
@@ -37,6 +45,7 @@ void MX_UART4_Init(void)
   /* USER CODE END UART4_Init 0 */
 
   /* USER CODE BEGIN UART4_Init 1 */
+  /* 句柄.Init是内嵌配置结构体：用点号逐项填写，HAL_UART_Init(&句柄)按这些值写寄存器。 */
 
   /* USER CODE END UART4_Init 1 */
   huart4.Instance = UART4;
@@ -66,6 +75,7 @@ void MX_USART2_UART_Init(void)
   /* USER CODE END USART2_Init 0 */
 
   /* USER CODE BEGIN USART2_Init 1 */
+  /* 句柄.Init是内嵌配置结构体：用点号逐项填写，HAL_UART_Init(&句柄)按这些值写寄存器。 */
 
   /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
@@ -95,6 +105,7 @@ void MX_USART3_UART_Init(void)
   /* USER CODE END USART3_Init 0 */
 
   /* USER CODE BEGIN USART3_Init 1 */
+  /* 句柄.Init是内嵌配置结构体：用点号逐项填写，HAL_UART_Init(&句柄)按这些值写寄存器。 */
 
   /* USER CODE END USART3_Init 1 */
   huart3.Instance = USART3;

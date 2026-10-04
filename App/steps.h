@@ -1,3 +1,9 @@
+/*
+ * 初学者导读：动作积木接口。每个声明以分号结束，具体执行代码在 steps.c 的同名函数里。
+ * .h 相当于接口清单，供 #include 引入；函数实现通常在同名.c中。
+ * #ifndef / #define / #endif 是头文件保护，防止同一编译单元重复包含定义。
+ */
+
 #ifndef APP_STEPS_H
 #define APP_STEPS_H
 

@@ -1,3 +1,13 @@
+/*
+ * 初学者导读：这是“接线员”，把各模块连在一起，不在这里写完整比赛流程。
+ * 上电：Src/main.c 调 robot_init；运行：Src/freertos.c 的任务反复调 robot_*。
+ * ControlTask 每 1ms 更新轮速；DefaultTask 每约 20ms 处理蓝牙和视觉请求发送。
+ * 串口中断是“收到字节就临时插入的一小段处理”：只解析/缓存，不等动作完成。
+ * USART2 收视觉，USART3 收蓝牙，UART4 收 IMU（测车身姿态的传感器）。
+ * static 全局变量只在本文件可见，但值会一直保存；不是每次调用都重新创建。
+ * volatile 提醒编译器值可能被中断或其他任务改变；它本身不等于加锁。
+ */
+
 #include "robot.h"
 #include "main.h"
 #include "usart.h"
@@ -27,6 +37,13 @@ static volatile uint32_t s_uart_last_err[3]; /* 最近一次 HAL_UART_ERROR_* �
 static volatile uint32_t s_uart_arm_fail[3]; /* Receive_IT 首挂/重挂失败次数 */
 static uint32_t s_trial_log_t0;
 
+/**
+ * @brief 申请下一次单字节中断接收，让HAL把收到的字节写到指定地址。
+ * @param huart 串口句柄指针，例如 &huart2。
+ * @param rx 接收变量的地址，例如 &s_rx2；其存储需在接收完成前一直有效。
+ * @param ix 诊断数组下标：0视觉、1蓝牙、2IMU。
+ * @retval 无。
+ */
 static void uart_rx_arm(UART_HandleTypeDef *huart, uint8_t *rx, int ix)
 {
     HAL_StatusTypeDef st;
@@ -77,6 +94,11 @@ static void robot_vision_frame(const ProtoFrame *f)
 }
 
 /* 开机一次性初始化:底层→控制→运动→臂→IMU→协议→任务→调试,再挂三个串口 RX */
+/**
+ * @brief 上电时初始化业务模块，并申请三个串口的第一次字节接收。
+ * @retval 无。
+ * @note 在调度器启动前调用一次；proto_set_* 传函数地址注册回调，注册本身不会执行函数。
+ */
 void robot_init(void)
 {
     bp_init();
@@ -105,6 +127,11 @@ void robot_init(void)
 }
 
 /* 三个 FreeRTOS 线程各自的入口:1ms 控制环 / 整场脚本 / IMU 解析(周期见 freertos.c) */
+/**
+ * @brief 由ControlTask调用，依次更新轮速、航向与模式32道路账本。
+ * @retval 无。
+ * @note 这里的1ms是任务计划周期；不是每次函数运行内部自行等待1ms。
+ */
 void robot_control_tick_1ms(void)
 {
     ctrl_tick_1ms();
@@ -145,6 +172,11 @@ void robot_log_tick(void)
 }
 
 /* 蓝牙命令服务:把 BT 环里的字节喂给 test 行解析器并周期推进(BT 遥控/调试) */
+/**
+ * @brief 消费蓝牙接收队列，再服务视觉发送和测试状态机。
+ * @retval 无。
+ * @note 发送/打印在任务上下文处理，避免长时间占用接收中断。
+ */
 void robot_bt_service(void)
 {
     /* BT 文本命令 → test 行解析器(命令集见 fw/bluetooth-test.md)。
@@ -161,6 +193,12 @@ void robot_bt_service(void)
 }
 
 /* UART RX 完成回调：按句柄分发（唯一强定义，CubeMX 没生成过） */
+/**
+ * @brief HAL收满当前申请的1字节后调用，按串口分发这一个字节。
+ * @param huart 发生接收完成事件的串口句柄地址。
+ * @retval 无。
+ * @note 比较 huart == &huart2 是比较地址；在这里不能等待整段运动结束。
+ */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     if (huart == &huart2) {                                   /* 视觉 USART2 → proto */

@@ -1,3 +1,9 @@
+/*
+ * 初学者导读：轮速控制接口。CtrlTune 把四个参数装进同一个结构体，便于一次读写。
+ * .h 相当于接口清单，供 #include 引入；函数实现通常在同名.c中。
+ * #ifndef / #define / #endif 是头文件保护，防止同一编译单元重复包含定义。
+ */
+
 #ifndef APP_CONTROL_H
 #define APP_CONTROL_H
 
@@ -8,11 +14,12 @@
  * 放头文件是为了 motion.c 也能用它做「计数 → mm」换算（里程）。 */
 #define CTRL_ENCODER_CPR  1560u
 
+/* typedef给结构体起类型名。CtrlTune t定义一份数据，t.kp取成员，&t取整份地址。 */
 typedef struct {
-    float kp;
-    float ki;
-    float lp_alpha;
-    uint16_t dead_min;
+    float kp; /* P增益，目标转速误差越大，直接修正越大 */
+    float ki; /* I增益，累积误差的权重 */
+    float lp_alpha; /* 低通权重，新读数占多少；范围检查见ctrl_tune_set */
+    uint16_t dead_min; /* 非零PWM最低计数补偿，用于克服静摩擦 */
 } CtrlTune;
 
 /* 1ms 轮速控制层。ControlTask(High) 每 1ms 调 ctrl_tick_1ms()。

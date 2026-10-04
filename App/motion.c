@@ -1,3 +1,13 @@
+/*
+ * 初学者导读：把“车想怎么走”换成“四只轮各转多快”。
+ * vx 为车头方向速度（正=前进），vy 为右侧速度（正=右移），单位 mm/s。
+ * w 为车身自转角速度，正=顺时针，单位 rad/s；弧度与角度换算：180°=π rad。
+ * motion_ik 是运动学逆解（IK）：输入车身速度，输出四轮 rpm；不负责发 PWM。
+ * motion_vel_set 再把四轮目标交给 control.c，随后由 1ms 轮速环执行。
+ * 后缀 precise 的入口保留小数轮速；旧入口转成 int16_t 时会截掉小数。
+ * 轮式里程是根据轮子转动推算的距离，轮子打滑时不等于车实际走过的距离。
+ */
+
 #include "motion.h"
 #include "board_pins.h"
 #include "control.h"
@@ -26,12 +36,21 @@ void motion_init(void)
 void motion_ramp_init(MotionRamp *r, float acc, float dec)
 {
     if (!r) return;
+    /* r是结构体地址，r->cur修改调用者那份状态；0.0f的f表示float常量。 */
     r->cur = 0.0f;
     r->acc = acc;
     r->dec = (dec > 0.0f) ? dec : acc;   /* dec≤0 → 回落也用 acc */
 }
 
 /* 朝 target 逼近一步:单步最多走 lim·dt(升速=acc、降速=dec),到位即 clamp。dt 单位 s。 */
+/**
+ * @brief 按本次经过的时间，让输出速度逐步接近目标。
+ * @param r 斜坡状态地址；函数会更新 r->cur。
+ * @param target 想达到的速度，单位与cur一致。
+ * @param dt_s 这一步的时间间隔，单位秒。
+ * @retval 更新后的输出速度；r为空时返回0。
+ * @note 例如加速度100mm/s²、间隔0.005s，本次速度变化最多0.5mm/s；换向先减到0。
+ */
 float motion_ramp_step(MotionRamp *r, float target, float dt_s)
 {
     float err, lim, max_d;
@@ -53,6 +72,7 @@ float motion_ramp_step(MotionRamp *r, float target, float dt_s)
 
 void motion_profile_get(MotionProfileTune *out)
 {
+    /* *out表示地址处的整个结构体；赋值复制数据，不是把两个指针绑定在一起。 */
     if (out) *out = s_profile;
 }
 
@@ -79,6 +99,15 @@ void motion_linear_ramp_init(MotionRamp *r)
 
 /* 普通定距腿：起点由 ramp 限加速度，终点按 v²=2as 限制可停车速度。
  * acc/dec 未设置时保持恒速，供模式15..18先采原始响应；正式 mission 由闸门阻止。 */
+/**
+ * @brief 根据巡航速度、剩余距离和斜坡参数计算本拍平移速度。
+ * @param r 保存上拍速度的斜坡状态。
+ * @param cruise_mms 带方向的巡航速度mm/s。
+ * @param remaining_mm 距离终点剩余的带符号里程mm。
+ * @param dt_s 本次推进的时间间隔，秒。
+ * @retval 本拍应给运动层的速度mm/s。
+ * @note 未标定acc/dec时保持巡航值；sqrtf(2*a*s)来自v²=2as，用来提前限制停车速度。
+ */
 float motion_linear_profile_step(MotionRamp *r, float cruise_mms,
                                  float remaining_mm, float dt_s)
 {
@@ -98,6 +127,15 @@ float motion_linear_profile_step(MotionRamp *r, float cruise_mms,
  * w 正向定义为车身顺时针：与 2026-09-24 手转 IMU yaw 正向一致。
  * 轮位按 2026-09-25 后轮单轮复核：m0左后、m1右后、m2右前、m3左前。
  * 后轮正向极性已在 board_pins.c 同步修正；横移仍须整车实测。 */
+/**
+ * @brief 把车身前后、左右和自转速度分解成四轮目标转速。
+ * @param vx 前后速度mm/s，正=前进。
+ * @param vy 横移速度mm/s，正=右移。
+ * @param w 自转角速度rad/s，正=顺时针。
+ * @param rpm 输出数组，调用者必须提供至少4个int16_t元素。
+ * @retval 无。
+ * @note 数组作为参数会传首元素地址，写rpm[i]会修改调用者数组；本函数不直接驱动电机。
+ */
 void motion_ik(float vx, float vy, float w, int16_t rpm[4])
 {
     static const int8_t sgn[4][3] = {   /* [轮][vx, vy, w] 系数 */
@@ -108,6 +146,7 @@ void motion_ik(float vx, float vy, float w, int16_t rpm[4])
     };                    /* 右侧 m1/m2 同号自转；左侧 m0/m3 反号；
                            * 横移对角 m0/m2 与 m1/m3 分别同号。 */
     for (int i = 0; i < MOTOR_NUM; i++) {
+        /* 三种运动对第i只轮的贡献相加；二维数组每行对应一只轮的符号表。 */
         float lin = sgn[i][0] * vx + sgn[i][1] * vy + sgn[i][2] * M_A_HALF_MM * w;
         float rps = lin / (M_WHEEL_R_MM * 2.0f * 3.14159f);      /* 轮转/s */
         rpm[i] = (int16_t)(rps * M_GEAR_RATIO * 60.0f);          /* 轴端 rpm */
@@ -125,6 +164,14 @@ void motion_vel_set(float vx, float vy, float w)
 
 /* 新调用者独立选择的小数轮速路径；上面的旧 IK/下发保留原整数行为。
  * 轮序、符号、几何和 CPR 均沿用原路径，不在此更改实测参数。 */
+/**
+ * @brief 同样计算四轮目标，输出float数组以保留小数修正。
+ * @param vx 前进方向速度mm/s。
+ * @param vy 向右横移速度mm/s。
+ * @param w 顺时针角速度rad/s。
+ * @param rpm 输出4个float转速，单位rpm。
+ * @retval 无。
+ */
 void motion_ik_precise(float vx, float vy, float w, float rpm[4])
 {
     static const int8_t sgn[4][3] = {
@@ -134,6 +181,7 @@ void motion_ik_precise(float vx, float vy, float w, float rpm[4])
         {  1,  1,  1 },   /* m3 = 左前 */
     };
     for (int i = 0; i < MOTOR_NUM; i++) {
+        /* 三种运动对第i只轮的贡献相加；二维数组每行对应一只轮的符号表。 */
         float lin = sgn[i][0] * vx + sgn[i][1] * vy + sgn[i][2] * M_A_HALF_MM * w;
         float rps = lin / (M_WHEEL_R_MM * 2.0f * 3.14159f);
         rpm[i] = rps * M_GEAR_RATIO * 60.0f;
@@ -155,7 +203,12 @@ void motion_brake(void)
 
 static Pose s_pose = { 0.0f, 0.0f, 0.0f };
 
-/* 读里程位姿指针(x,y,th;里程未接前恒零点,日志/判段用) */
+/* 读位姿结构体地址：当前x/y仍为0，th由IMU更新；不是完整的平面定位。 */
+/**
+ * @brief 返回本文件长期保存的位姿结构体地址。
+ * @retval const Pose *：只读指针，可读取 p->th 等成员。
+ * @note 不是返回局部变量地址；当前x/y积分未启用，不能把它当作完整定位结果。
+ */
 const Pose *motion_pose(void)
 {
     return &s_pose;
@@ -198,6 +251,7 @@ void motion_pose_update(void)
 {
     uint32_t now = HAL_GetTick();
     if (s_first) { s_first = 0; s_last_ms = now; return; }
+    /* HAL_GetTick给毫秒，除1000转为秒；速度乘秒才得到毫米位移。 */
     float dt = (float)(int32_t)(now - s_last_ms) / 1000.0f;
     s_last_ms = now;
     if (dt <= 0.0f || dt > POSE_DT_GUARD_S) dt = POSE_DT_FALLBACK;
@@ -207,7 +261,7 @@ void motion_pose_update(void)
     float rpm[4];
     ctrl_get_rpm_fast_all(rpm);
 
-    /* 轮线速度 mm/s:rpm(电机轴)÷减速比 → 轮转/s ×2πR */
+    /* 轮线速度mm/s：当前CPR已含减速比，rpm是轮端转速，M_GEAR_RATIO=1；再除60乘轮周长。 */
     float u[4];
     for (int i = 0; i < MOTOR_NUM; i++)
         u[i] = rpm[i] / M_GEAR_RATIO / 60.0f * 2.0f * M_PI_F * M_WHEEL_R_MM;

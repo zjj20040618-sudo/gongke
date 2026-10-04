@@ -1,3 +1,13 @@
+/*
+ * 初学者导读：比赛动作积木。mission 和 task_* 调这里完成走路、找目标、对准、抓放。
+ * 多数步骤是阻塞式：调用者要等成功、失败或中止后才继续下一行。
+ * 等待里用 osDelay 让出 CPU，所以轮速任务和蓝牙任务仍能运行。
+ * 本文件大多数 int 返回值为 1=成功、0=失败；task_*.c 的 TASK_OK 却是 0，要区分。
+ * to 是超时毫秒数，传 0 通常表示不主动限时，不表示跳过动作或立即返回。
+ * run_abort 只锁存中止请求；动作循环反复检查并退出，停车还需调用 motion_brake。
+ * 相机朝左：图像 cx 偏差通过车身前后运动修正，不能机械地理解成车左右平移。
+ */
+
 #include "steps.h"
 #include "main.h"       /* HAL_GetTick */
 #include "cmsis_os.h"   /* osDelay */
@@ -27,6 +37,12 @@ static void select_object(int cls, int label)
 }
 
 /* 视觉帧写入口(RxCplt 回调里被调):把整帧压进单槽并置 pending(关中断防与 take_frame 竞争) */
+/**
+ * @brief 把本轮需要的QR或目标结构体复制到缓存槽。
+ * @param f 完整帧的只读地址；函数复制内容，不长期保存这个指针。
+ * @retval 无。
+ * @note s_frame=*f 是整份结构体复制；多个同类帧只留下最新一份，不是无限排队。
+ */
 void steps_feed_frame(const ProtoFrame *f)
 {
     uint32_t pm = __get_PRIMASK();
@@ -58,6 +74,7 @@ static int take_frame(ProtoType type, ProtoFrame *out)
     } else if (type == PF_OBJ && s_obj_pending) {
         *out = s_obj_frame; s_obj_pending = 0; got = 1;
     }
+    /* 恢复进入前的中断状态；不能无条件开中断，否则会破坏外层已有的保护区。 */
     __set_PRIMASK(pm);
     return got;
 }
@@ -79,6 +96,12 @@ void run_reset(void)
 int  run_aborted(void) { return s_abort; }
 void run_abort(void)   { s_abort = 1; }
 
+/**
+ * @brief 停车、清旧缓存、请求视觉模式，然后等待本轮握手完成。
+ * @param scene 本次要请求的视觉场景。
+ * @retval 1=当前握手已就绪，0=中止或视觉切换失败。
+ * @note 循环的osDelay允许DefaultTask真正发请求和处理停止命令。
+ */
 int step_vision_scene(ProtoScene scene)
 {
     if (s_abort) return 0;
@@ -110,6 +133,13 @@ void wait_ms(uint32_t ms)
 }
 
 /* 等一帧 PF_QR,读到把 a/b/c 写进 d 回 1;to 超时或被中止回 0(to==0 无限等) */
+/**
+ * @brief 等待一条QR消息，把三项值写到输出数组。
+ * @param d 至少3个int32_t元素的输出数组；为空时不写。
+ * @param to 超时毫秒，0表示不限时。
+ * @retval 1=取得QR帧，0=超时或中止。
+ * @note 取得帧不等于三个任务值都合法；mission或模式32还要检查每项为1..3。
+ */
 int wait_qr(int32_t d[3], uint32_t to)   /* to==0 → 不限时:读到 / 被中止才回 */
 {
     uint32_t t0 = HAL_GetTick();
@@ -190,6 +220,14 @@ static int align_depth_move(float error_mm, uint32_t to)
     return step_strafe(dist_mm, (dist_mm > 0.0f) ? X_DEPTH_V : -X_DEPTH_V, to);
 }
 
+/**
+ * @brief 按已标定的站距/图像工作点对准指定目标。
+ * @param cls 电控类别0球、1靶、2人质、3桶。
+ * @param label 颜色或形状标签；负数表示不筛标签。
+ * @param to 超时毫秒，0表示不限时。
+ * @retval 1=连续匹配帧达到容差，0=配置未确认、超时、传感器失效或中止。
+ * @note 先可选纵深粗调，再用cx闭环前后修正；此判据不直接证明夹爪可抓或激光命中。
+ */
 int step_align(int cls, int label, uint32_t to)
 {
     /* 目标该落在画面哪个 cx —— 直接取标定值（**不是**画面中心，也不用知道画面宽） */
@@ -377,6 +415,11 @@ static float s_orth_kp = 0.0f;      /* RAM-only 正交串动增益；0=台校前
 /* 节点准备：不是给传感器发硬清零命令，而是记录当前连续航向作本段零点。
  * 不能清 ctrl_enc_total 或 imu_heading_deg：那会破坏累计位置/全局航向。
  * 编码器无变化只证明轮子没继续转；打滑、编码器掉线不能靠此判出，需上车核验。 */
+/**
+ * @brief 刹车、观察编码器静止、记录本段航向零点，再等待稳定。
+ * @retval 1=准备完成且IMU有效，0=中止或没有有效IMU。
+ * @note 任何轮计数变化就重新计250ms静止窗，随后等750ms；计数静止并非车体绝对静止证明。
+ */
 int step_prepare_leg(void)
 {
     int32_t last[4];
@@ -390,6 +433,7 @@ int step_prepare_leg(void)
             if (now != last[i]) changed = 1;
             last[i] = now;
         }
+        /* 轮子还在转就重启静止计时；不是从发刹车命令起盲等250ms。 */
         if (changed) still_from = HAL_GetTick();
         if ((uint32_t)(HAL_GetTick() - still_from) >= NAV_STILL_MS) break;
         osDelay(5);
@@ -456,6 +500,13 @@ float step_orth_hold_cmd(int lateral_motion, float orth_reference_mm)
  * 里程用 motion_odo_mm()（四轮平均）—— ⚠️ 打滑时不准（正常直道还行）。
  * 每拍记进段时的朝向当基准、按 yaw 误差微调 w 防歪（打滑不骗 IMU）。
  * to==0 不限时；被 run_abort 中止回 0。 */
+/**
+ * @brief 按编码器里程直行，同时保持航向并修正横向串动。
+ * @param dist_mm 带符号距离mm：正前进、负后退。
+ * @param v_mms 带符号速度mm/s，必须和距离同号。
+ * @param to 超时毫秒，0表示不限时。
+ * @retval 1=里程到点（零距离时未中止也返回1），0=失败或中止。
+ */
 int step_straight(float dist_mm, float v_mms, uint32_t to)
 {
     MotionRamp ramp;
@@ -492,6 +543,13 @@ int step_straight(float dist_mm, float v_mms, uint32_t to)
 /* 定距横移：车头方向不变，正距离=右移、负距离=左移。
  * 按四轮编码器的横向投影判本段位移；不依赖尚未放开的 pose x/y。
  * 打滑、轮位/方向/CPR 未台校会带来误差，不等于绝对位置确认。 */
+/**
+ * @brief 保持车头方向，用横向轮式里程执行左右平移。
+ * @param dist_mm 带符号距离mm：正右移、负左移。
+ * @param v_mms 带符号横移速度mm/s，必须和距离同号。
+ * @param to 超时毫秒，0表示不限时。
+ * @retval 1=里程到点（零距离时未中止也返回1），0=失败或中止。
+ */
 int step_strafe(float dist_mm, float v_mms, uint32_t to)
 {
     MotionRamp ramp;
@@ -622,6 +680,13 @@ static int step_rotate_right90_validated(uint32_t to)
  * 非 +90 分支也用连续航向的相对增量；±180°若用 0..360 yaw 的最短角差，
  * 起转前仅 -1° 的噪声就可能把 +180°判成 -179°，从第一拍反向转。
  * 每拍按剩余误差重算正负方向；即使过冲也会反向收敛。 */
+/**
+ * @brief 根据连续IMU航向执行相对转身，并观察停后稳定。
+ * @param deg 相对角度，正顺时针、负逆时针；0不转。
+ * @param to 外部超时毫秒，0不设置此外部时限。
+ * @retval 1=稳定到位或零角度，0=失败或中止。
+ * @note +90分支单独复用既有转身参数；连续增量避免把+180误判成反向-180。
+ */
 int step_rotate_deg(int deg, uint32_t to)
 {
     if (s_abort) return 0;
@@ -716,6 +781,15 @@ int step_arm_prepare(const char *task, const char *stage)
     return 1;
 }
 
+/**
+ * @brief 统一记录机械动作阶段并调用传入的动作函数。
+ * @param task 任务名称字符串，例如EOD。
+ * @param stage 阶段名称字符串，例如BALL_LIFT。
+ * @param steps 本阶段要发的步数，0会拒绝。
+ * @param action 函数指针，形如 int step_arm_lift(uint32_t steps)。
+ * @retval 1=动作函数报告命令完成，0=拒绝或中止。
+ * @note action(steps)相当于调用注册的具体函数；完成只证明脉冲命令发送，不证明机械到位。
+ */
 int step_arm_run(const char *task, const char *stage, uint32_t steps,
                  int (*action)(uint32_t))
 {
@@ -724,6 +798,7 @@ int step_arm_run(const char *task, const char *stage, uint32_t steps,
         return 0;
     }
     arm_stage_report(task, stage, "START", steps);
+    /* action指向step_grasp/step_arm_lift等函数，按本阶段传入的步数执行。 */
     if (!action(steps)) {
         arm_stage_report(task, stage, "STOP_POS_UNCERTAIN", steps);
         return 0;
@@ -756,6 +831,7 @@ static int stepper_move_safe(int axis, int dir, uint32_t steps)
             arm_pulse_report(axis, dir, steps, i, "STOP_PARTIAL");
             return 0;
         }
+        /* 一拍只发一个脉冲，下次前再查中止；20ms间隔让蓝牙任务有机会处理停止。 */
         arm_stepper_step(axis);
         osDelay(ARM_STEP_INTERVAL_MS);
     }
@@ -827,6 +903,12 @@ int step_arm_lower(uint32_t steps)
 
 /* ---- 激光触发 ---- */
 /* 激光开枪:点亮 hold_ms 后自动灭;期间被中止则不点亮直接失败 */
+/**
+ * @brief 点亮激光并等待指定时长，结束或中止后关闭激光。
+ * @param hold_ms 点亮持续时间，毫秒。
+ * @retval 1=等待正常结束，0=中止。
+ * @note wait_ms内部会看中止标志，因此无需盲等完整照射时长才停止。
+ */
 int step_fire(uint32_t hold_ms)
 {
     if (s_abort) return 0;

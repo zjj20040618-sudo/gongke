@@ -1,3 +1,9 @@
+/*
+ * 初学者导读：视觉消息的数据字典。先认 ProtoFrame 的字段，再读 proto.c 如何从字节填这些字段。
+ * .h 相当于接口清单，供 #include 引入；函数实现通常在同名.c中。
+ * #ifndef / #define / #endif 是头文件保护，防止同一编译单元重复包含定义。
+ */
+
 #ifndef PROTO_H
 #define PROTO_H
 
@@ -9,6 +15,7 @@
 #define PROTO_BINARY_MAX_LEN     280u /* legacy payload plus request envelope */
 #define PROTO_BINARY_GAP_MS      100u /* incomplete-frame gap, not mission timeout */
 
+/* typedef enum定义枚举类型：名字对应整数，便于switch/if辨认消息，而不是比较字符串。 */
 typedef enum {
     PF_NONE = 0,
     PF_READY, PF_PONG, PF_PING,          /* 无字段 */
@@ -29,6 +36,7 @@ enum { LAB_R = 0, LAB_G, LAB_B,          /* ball/target 颜色 */
  *   全场单只无色、无同类并列 → 对齐时不挑 label(step_align 传 -1),
  *   当前9541模型ID9映射为CLS_BUCKET/label0；实际桶口工作点仍须标定。 */
 
+/* 结构体是一次消息的数据包；f.cx用点号取成员，指针p则用p->cx。type决定哪些字段有效。 */
 typedef struct {
     ProtoType type;
     int a, b, c;        /* QR / ERR / SET */
@@ -50,6 +58,7 @@ typedef struct {
 
 void proto_init(void);
 void proto_set_binary_mode(int enabled); /* before arming RX; no autodetection */
+/* void (*tx)(...)：tx是函数指针，返回void，接收字符串；注册函数名而不是调用它的结果。 */
 void proto_set_tx(void (*tx)(const char *s));          /* 用户提供串口发送 */
 void proto_set_binary_tx(void (*tx)(const uint8_t *data, uint16_t length));
 void proto_set_on_frame(void (*cb)(const ProtoFrame *f));
