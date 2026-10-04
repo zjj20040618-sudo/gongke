@@ -31,7 +31,7 @@ def main():
         cached_qrs, cached_qr_left = [], 0
         modes.enter(config.START_MODE)
         print("[APP] ready IDLE; model=9541 classes=10; UART controls recognition")
-        print("[UART] sends QR-selected objects plus black_barrel=9 every OBJECT frame; paired MCU FW=20261004-VISION-DIAG33")
+        print("[UART] protocol=v2 QR status only; OBJECT class+center, target X only; MCU parser update required")
         for class_id, name in enumerate(config.CLASS_NAMES_CN):
             print("[CLASS] {} {} ({})".format(class_id, name, class_name(class_id)))
 
@@ -88,20 +88,20 @@ def main():
                     cached_qrs, cached_qr_left = qrs, config.QR_KEEP_FRAMES
                     for qr in qrs:
                         print("[QR] payload={} {} center=({}, {})".format(qr["payload"], qr["text"], qr["x"] + qr["w"] // 2, qr["y"] + qr["h"] // 2))
-                # 空二维码仍发本轮心跳；画框缓存绝不作为新扫码结果发送。
+                # 每帧只回有效任务码状态；任务码文字和二维码框仅供视觉端内部使用。
                 if serial is not None:
                     uart_started = time.ticks_ms()
-                    if send_packet(serial, control.result(build_qr_packet(sequence, qrs))):
+                    if send_packet(serial, control.result(build_qr_packet(sequence, task.payload is not None))):
                         sequence = (sequence + 1) & 0xFFFF
                     uart_ms = time.ticks_ms() - uart_started
             else:
                 objects, work_ms = modes.detector.detect(img)
                 selected_objects = task.select(objects)
                 vision_ms = time.ticks_ms() - loop_started
-                # 每帧发送任务指定的球/靶/人质，并持续附带黑桶；电控决定当前抓哪个。
+                # 每帧发送任务指定类别与中心坐标；靶子只带X，黑桶持续发送。
                 if serial is not None:
                     uart_started = time.ticks_ms()
-                    packet = build_object_packet(sequence, selected_objects, width, height, capture_ms, work_ms, vision_ms)
+                    packet = build_object_packet(sequence, selected_objects, width, height)
                     if send_packet(serial, control.result(packet)):
                         sequence = (sequence + 1) & 0xFFFF
                     uart_ms = time.ticks_ms() - uart_started

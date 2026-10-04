@@ -249,26 +249,33 @@ class AppTests(unittest.TestCase):
         self.assertFalse(button.take_toggle_request())
 
     def test_black_barrel_packet_and_crc(self):
-        packet = build_object_packet(65536, [raw_object()], 320, 320, 2, 50, 60)
+        packet = build_object_packet(65536, [raw_object()], 320, 320)
         self.assertEqual(packet[:2], b"\xaa\x55")
-        self.assertEqual(struct.unpack("<BHBHHHHH", packet[2:16]), (1, 0, 1, 320, 320, 2, 50, 60))
-        self.assertEqual(struct.unpack("<BHHHHH", packet[16:27]), (9, 820, 25, 40, 30, 40))
+        self.assertEqual(struct.unpack("<BHBHH", packet[2:10]), (2, 0, 1, 320, 320))
+        self.assertEqual(struct.unpack("<BHH", packet[10:15]), (9, 25, 40))
         self.assertEqual(struct.unpack("<H", packet[-2:])[0], crc16_ccitt(packet[2:-2]))
 
+    def test_target_packet_contains_center_x_without_y(self):
+        packet = build_object_packet(1, [raw_object(8)], 320, 320)
+        self.assertEqual(packet[2], 0x02)
+        self.assertEqual(struct.unpack("<BHBHH", packet[2:10]), (2, 1, 1, 320, 320))
+        self.assertEqual(struct.unpack("<BH", packet[10:13]), (8, 25))
+        self.assertEqual(len(packet), 15)
+
     def test_empty_detection_packet(self):
-        packet = build_object_packet(1, [], 320, 320, 1, 2, 3)
-        self.assertEqual(len(packet), 18)
+        packet = build_object_packet(1, [], 320, 320)
+        self.assertEqual(len(packet), 12)
         self.assertEqual(packet[5], 0)
 
     def test_crc_reference_vector(self):
         self.assertEqual(crc16_ccitt(b"123456789"), 0x29B1)
 
-    def test_qr_packet_payload_and_crc(self):
-        qrs = QrReader().decode(FakeImage())
-        packet = build_qr_packet(4, qrs)
-        self.assertEqual(packet[:7], b"\xaa\x55\x51\x04\x00\x01\x03")
-        self.assertEqual(packet[7:10], b"123")
+    def test_qr_packet_reports_status_without_payload_or_geometry(self):
+        packet = build_qr_packet(4, True)
+        self.assertEqual(packet[:6], b"\xaa\x55\x52\x04\x00\x01")
+        self.assertEqual(len(packet), 8)
         self.assertEqual(struct.unpack("<H", packet[-2:])[0], crc16_ccitt(packet[2:-2]))
+        self.assertEqual(build_qr_packet(5, False)[5], 0)
 
     def test_qr_roi_and_task_text(self):
         self.assertEqual(center_roi(FakeImage()), [400, 225, 800, 450])
@@ -389,9 +396,9 @@ class AppTests(unittest.TestCase):
         for packet in (sent[3], sent[5]):
             self.assertEqual(packet[2], 0x62)
             self.assertEqual(struct.unpack("<H", packet[3:5])[0], 2)
-            self.assertEqual(packet[7], 0x01)
+            self.assertEqual(packet[7], 0x02)
             self.assertEqual(packet[10], 2)
-            self.assertEqual({packet[21], packet[32]}, {9, 4})
+            self.assertEqual({packet[15], packet[20]}, {9, 4})
         self.assertEqual(len(sent), 7)
 
     def test_only_black_barrel_sends_class9_frame(self):
@@ -413,7 +420,7 @@ class AppTests(unittest.TestCase):
              patch.object(config, "DISPLAY_ENABLED", False), \
              patch.object(FakeModel, "detect", return_value=[raw_object(9)]):
             main.main()
-        self.assertEqual(sent, [build_ack_packet(7, 2), bind_result(build_object_packet(0, [raw_object(9)], 320, 320, 0, 0, 0), 7)])
+        self.assertEqual(sent, [build_ack_packet(7, 2), bind_result(build_object_packet(0, [raw_object(9)], 320, 320), 7)])
 
     def test_pack_manifest_includes_session_and_correct_model(self):
         build_spec = importlib.util.spec_from_file_location("build_packages", APP_DIR.parent / "build_packages.py")
@@ -507,14 +514,23 @@ class AppTests(unittest.TestCase):
              patch.object(config, "DISPLAY_ENABLED", False), \
              patch.object(FakeModel, "detect", return_value=[raw_object(i) for i in range(10)]):
             main.main()
+        def object_ids(packet):
+            ids = []
+            offset = 15
+            for _ in range(packet[10]):
+                class_id = packet[offset]
+                ids.append(class_id)
+                offset += 3 if class_id in (6, 7, 8) else 5
+            return tuple(ids)
+
         rows = []
         for packet in sent:
-            if packet[2] == 0x62 and packet[7] == 0x01:
+            if packet[2] == 0x62 and packet[7] == 0x02:
                 request = struct.unpack("<H", packet[3:5])[0]
-                rows.append((request, tuple(packet[21 + 11*i] for i in range(packet[10]))))
+                rows.append((request, object_ids(packet)))
         self.assertEqual(rows, [(2, (4, 8, 0, 9)), (4, (4, 8, 0, 9)), (6, (3, 8, 1, 9))])
-        qr_packets = [packet for packet in sent if packet[2] == 0x62 and packet[7] == 0x51]
-        self.assertEqual([packet[10] for packet in qr_packets], [1, 0, 1])  # 同轮另一个码不覆盖任务。
+        qr_packets = [packet for packet in sent if packet[2] == 0x62 and packet[7] == 0x52]
+        self.assertEqual([packet[10] for packet in qr_packets], [1, 1, 1])
 
 if __name__ == "__main__":
     unittest.main()

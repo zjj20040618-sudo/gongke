@@ -1,11 +1,11 @@
 id: qr_object_switch
 name: QR and Object Switch
 name[zh]: 扫码与物体识别切换
-version: 1.1.0
+version: 2.0.0
 icon: app.png
 author: Bellator
-desc: MCU controlled QR and YOLO26; QR-selected targets plus black barrel every detected frame
-desc[zh]: 电控请求扫码与十类识别，每帧发送任务指定目标及黑桶坐标
+desc: MCU mode control; QR scan status and compact YOLO26 class-center reports
+desc[zh]: 电控切换扫码与识别；扫码回状态，物体回类别ID与中心坐标
 exclude: [__pycache__, .backup, tests, dist]
 files:
   - app.yaml

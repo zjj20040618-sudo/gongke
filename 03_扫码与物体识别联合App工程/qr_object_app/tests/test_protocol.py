@@ -10,6 +10,6 @@ def check(packet, expected_type):
     assert packet[:2] == b"\xAA\x55" and packet[2] == expected_type
     assert struct.unpack("<H", packet[-2:])[0] == crc16_ccitt(packet[2:-2])
 
-check(build_object_packet(7, [Obj()], 480, 320, 8, 14, 25), 0x01)
-check(build_qr_packet(8, [{"payload": "123", "x": 100, "y": 50, "w": 20, "h": 30}]), 0x51)
+check(build_object_packet(7, [Obj()], 480, 320), 0x02)
+check(build_qr_packet(8, True), 0x52)
 print("PASS: object/QR headers and CRC")

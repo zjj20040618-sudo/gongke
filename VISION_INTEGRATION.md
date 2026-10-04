@@ -1,5 +1,7 @@
 # 视觉二进制对接（更新于2026-10-04）
 
+> **协议变更（2026-10-05）：** 以下旧 0x01/0x51目标/QR格式只作历史参考。视觉已切至内层 0x02/0x52：目标只含模型类别ID和中心坐标（靶只发X），QR只含“有效码已扫到”状态。0x60/0x61/0x62外层模式控制不变。电控 `App/proto.c` 当前仍是旧解析器，必须适配并烧录后才能联调；v2字段权威定义见 [VISION_TO_CONTROL.md](VISION_TO_CONTROL.md) 第4节。
+
 ## 当前结论
 
 视觉最新输出及核对记录见 [VISION_TO_CONTROL.md](VISION_TO_CONTROL.md)，电控反馈写入其维护的 `CONTROL_TO_VISION.md`；创建前参考 [VISION_TEAM_HANDOFF.md](VISION_TEAM_HANDOFF.md)。共同验收仍使用原VC编号。
