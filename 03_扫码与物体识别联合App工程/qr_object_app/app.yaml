@@ -4,17 +4,25 @@ name[zh]: 扫码与物体识别切换
 version: 1.1.0
 icon: app.png
 author: Bellator
-desc: MCU controlled QR and YOLO26; QR-selected targets plus black barrel every detected frame
+desc: >-
+  MCU controlled QR and YOLO26; QR-selected targets plus black barrel every
+  detected frame
 desc[zh]: 电控请求扫码与十类识别，每帧发送任务指定目标及黑桶坐标
-exclude: [__pycache__, .backup, tests, dist]
+exclude:
+  - __pycache__
+  - .backup
+  - tests
+  - dist
 files:
-  - app.yaml
   - app.png
+  - app.yaml
   - config.py
   - control_session.py
   - hardware.py
   - main.py
   - mode_controller.py
+  - model_9564.cvimodel
+  - model_9564.mud
   - object_detector.py
   - protocol.py
   - qr_reader.py
@@ -22,5 +30,3 @@ files:
   - ui.py
   - user_button.py
   - utils.py
-  - model_9564.mud
-  - model_9564.cvimodel

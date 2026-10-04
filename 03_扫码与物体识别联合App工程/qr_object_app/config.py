@@ -19,14 +19,12 @@ QR_MAX = 1
 # 仅屏幕二维码框保留这么多帧；不保留用于串口发送的旧识别结果。
 QR_KEEP_FRAMES = 15
 # 模型描述文件的名称；object_detector会以当前源码所在目录为基准寻找它。
-<<<<<<< HEAD
 MODEL_FILE = "model_9564.mud"
 # 置信度下限0.35；score是模型输出的分值，不等于实物识别正确率已达到35%。
 CONF_THRESHOLD = 0.35
 MAX_OBJECTS = 10
 # False表示关闭模型双缓冲；不要仅为提高速度就改成True，时序行为需另测。
 DUAL_BUFFER = False
-=======
 # tuple（元组）按模型类别ID顺序保存标签，索引0..9；中文表还会与模型真实标签核对。
 CLASS_NAMES = ("oblate", "cylinder", "truncated_cone", "blue_ball", "red_ball", "green_ball", "red_target", "blue_target", "green_target", "black_barrel")
 CLASS_NAMES_CN = ("扁圆物体", "圆柱体", "圆台体", "蓝球", "红球", "绿球", "红靶子", "蓝靶子", "绿靶子", "黑桶")
@@ -44,5 +42,5 @@ UART_RX_PIN = "A18"
 DISPLAY_ENABLED = True
 # 日志每多少个处理帧打印一次；两项SCALE控制文字大小，不改变串口包内容。
 PRINT_EVERY_N_FRAMES = 10
-STATUS_TEXT_SCALE = 3
-BOX_TEXT_SCALE = 3
+STATUS_TEXT_SCALE = 5
+BOX_TEXT_SCALE = 5
