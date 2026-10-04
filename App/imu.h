@@ -1,9 +1,3 @@
-/*
- * 初学者导读：姿态读取接口。先检查 imu_ok，再使用角度；yaw、连续heading和本段heading用途不同。
- * .h 相当于接口清单，供 #include 引入；函数实现通常在同名.c中。
- * #ifndef / #define / #endif 是头文件保护，防止同一编译单元重复包含定义。
- */
-
 #ifndef APP_IMU_H
 #define APP_IMU_H
 

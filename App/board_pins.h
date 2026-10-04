@@ -1,9 +1,3 @@
-/*
- * 初学者导读：硬件适配接口。m 是0..3轮号，duty 是PWM计数值，不能直接当作百分比或rpm。
- * .h 相当于接口清单，供 #include 引入；函数实现通常在同名.c中。
- * #ifndef / #define / #endif 是头文件保护，防止同一编译单元重复包含定义。
- */
-
 #ifndef APP_BOARD_PINS_H
 #define APP_BOARD_PINS_H
 
@@ -15,7 +9,7 @@
 #define BP_DIR_FWD  1
 #define BP_DIR_REV -1
 
-/* 电机/编码器接线集中在这里；arm.c等模块也会调用HAL。m=0..3是轮号。 */
+/* 底层唯一动 HAL 的地方。索引 m=0..3 是"轮号"，电机接线换序只改这里。 */
 
 void     bp_init(void);                              /* 启动编码器/PWM、开 STBY、激光灭 */
 void     bp_motor_set(int m, int dir, int duty);     /* dir=±1；duty 0..MOTOR_PWM_PERIOD */

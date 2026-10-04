@@ -1,13 +1,3 @@
-/*
- * 初学者导读：模式32的独立联调流程，复用底盘和视觉，不调用机械臂动作。
- * 左移500后停车读合法三位 QR，之后单向经过球/桶、靶、人质和道路终点。
- * 抓球、放桶、抓人质用停车等 10 秒占位；靶任务仍会发激光命令。
- * 道路账本持续记录前进/后退，包括停车余动、对位和转身，避免重复计算剩余距离。
- * s_heading 是计划保持的连续航向，不在每次停车后用偏掉的当前方向重新定目标。
- * 带外或未找到目标不虚构成功；ROUTE_END 是路线到终点，任务证据另看 hits 位标记。
- * 这套模式有独立的 RAM 标定项，不会替代正式任务的机械标定。
- */
-
 #include "mission_trial.h"
 #include "mission_trial_plan.h"
 #include "steps.h"
@@ -75,13 +65,6 @@ const char *mission_trial_config_missing(void)
     if (!s_first_leg_mm) return "b1d";
     return 0;
 }
-/**
- * @brief 在空闲时设置某类别cx工作点或像素修正方向。
- * @param cls 0..3选择类别，-1表示本次不改类别工作点。
- * @param cx 标定像素0..479，-1表示保留；仍须在真实图像宽度内。
- * @param sign +1朝车头修正，-1朝车尾修正，0保留方向。
- * @retval 1=接受设置，0=越界或模式32正在运行。
- */
 int mission_trial_set_alignment(int cls, int cx, int sign)
 {
     if (cls < -1 || cls > 3 || cx < -1 || cx >= 480
@@ -101,13 +84,6 @@ void mission_trial_get_qr(int32_t out[3])
 {
     if (out) { out[0] = s_qr[0]; out[1] = s_qr[1]; out[2] = s_qr[2]; }
 }
-/**
- * @brief 把当前账本进度和总长写到指定地址。
- * @param done 输出已走进度mm；空指针表示不读取该项。
- * @param total 输出道路总长mm；空指针表示不读取该项。
- * @retval 无。
- * @note 例如传 &done 和 &total；读取时短暂关中断，避免1ms任务更新到一半。
- */
 void mission_trial_get_progress(float *done, float *total)
 {
     uint32_t pm = __get_PRIMASK();
@@ -238,15 +214,6 @@ static int turn(float angle, const char *name)
     }
     motion_brake(); return 0;
 }
-/**
- * @brief 模式32使用RAM工作点对位，并可保存对位前道路停车锚点。
- * @param cls 要对齐的类别0..3。
- * @param label 目标标签，负数不筛标签。
- * @param name 日志阶段名称。
- * @param road_anchor 可选输出指针，记录停稳后的道路进度；为空时不记录。
- * @retval 1=连续5帧cx误差在8像素内，0=中止或IMU失效。
- * @note 超过300ms没有匹配帧就刹车并清连续计数；不会拿旧速度持续盲走。
- */
 static int align(int cls, int label, const char *name, float *road_anchor)
 {
     uint32_t last_frame;
@@ -320,14 +287,6 @@ static int return_forward_to(float road_anchor, const char *name)
 }
 /* A single continuous corridor, never a new full-length leg after parking.
  * 1=selected object found, 0=road end, -1=manual/sensor stop. */
-/**
- * @brief 沿当前道路单向前进，直到见到指定目标或道路走完。
- * @param cls 要找的类别；负数表示只走余程。
- * @param label 目标标签，负数不筛标签。
- * @param name 日志阶段名称。
- * @retval 1=看见指定目标，0=道路到头，-1=中止或传感器失效。
- * @note 这里是三种返回状态，不能用“非零都是成功”判断。
- */
 static int pass_until(int cls, int label, const char *name)
 {
     MotionRamp ramp;
@@ -366,11 +325,6 @@ static int read_qr(void)
     }
     return 0;
 }
-/**
- * @brief 执行模式32单向视觉联调路线，抓放用停车等待占位。
- * @retval 1=路线结束，0=配置/传感器问题或中止。
- * @note 路线结束不保证所有任务命中；hits中球桶/靶/人质分别占1、2、4三个bit。
- */
 int mission_trial_run(void)
 {
     static const char *const leg_name[7] = {
@@ -411,7 +365,6 @@ int mission_trial_run(void)
         phase("BUCKET_HOLD10S");
         if (!stopped_hold(MISSION_TRIAL_BUCKET_HOLD_MS)
             || !turn(180.0f, "BUCKET_TURN180_BACK")) goto stop;
-        /* 位标记：1=球桶链；|=只置这一bit，保留之前其它任务bit。 */
         s_hits |= 1u;
         if (!step_prepare_leg()) goto stop;
         s_bucket_anchor = 1u;
@@ -429,7 +382,6 @@ int mission_trial_run(void)
         if (!align(CLS_TARGET, (int)s_qr[1] - 1, "TARGET_ALIGN", &task_anchor)) goto stop;
         phase("TARGET_LASER");
         if (!step_fire(2000u)) goto stop;
-        /* 2是第二个bit，表示靶流程发过激光命令；不代表实物评分已成功。 */
         s_hits |= 2u;
         if (!return_forward_to(task_anchor, "TARGET_RETURN")) goto stop;
     }
@@ -443,7 +395,6 @@ int mission_trial_run(void)
         if (!align(CLS_HOSTAGE, (int)s_qr[2] + 2, "HOSTAGE_ALIGN", &task_anchor)) goto stop;
         phase("HOSTAGE_HOLD10S");
         if (!stopped_hold(MISSION_TRIAL_HOSTAGE_HOLD_MS)) goto stop;
-        /* 4是第三个bit；三个bit都置位时1|2|4=7，但抓放仍只是10秒占位。 */
         s_hits |= 4u;
         if (!return_forward_to(task_anchor, "HOSTAGE_RETURN")) goto stop;
     }

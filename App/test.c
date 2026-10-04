@@ -1,14 +1,3 @@
-/*
- * 初学者导读：蓝牙命令解释器和台架测试状态机。先读 test_feed、test_poll、run_cmd。
- * 收到字符先组成一行，例如 v100；run_cmd 再决定是设参数、选号还是启动/停止。
- * tick 每次只推进一点测试，随后立即返回；属于非阻塞状态机，蓝牙可继续接收停止命令。
- * 模式31=只走固定路线，32=无机械臂单向联调，33=停车收视觉诊断。
- * g 的用途由当前模式/状态决定，不能把所有模式理解成相同的三次按键循环。
- * strcmp(a,b)==0 才表示两串相等；strncmp 只比较前面指定数量的字符。
- * 字符串以 '\0' 结束；sizeof 数组得到容量，strlen 字符串得到结束符之前的实际长度。
- * 此处 RAM 参数断电会丢失；“设置参数”通常先改变量，按 g 才开始对应测试。
- */
-
 #include "test.h"
 #include "board_pins.h"    /* bp_debug_send, MOTOR_PWM_PERIOD */
 #include "control.h"       /* ctrl_set_speed */
@@ -50,7 +39,6 @@ static uint8_t   s_bench_boot_ok;
 #endif
 
 /* 一轮状态机 */
-/* 轮次状态记“准备/运行/完成/回程/刹车观察”；与s_msel的模式号是两套概念。 */
 enum { R_READY = 0, R_RUN, R_DONE, R_RET, R_BRAKE };
 #define R_FREE 0   /* s_msel=0:没进任何模式,空闲态 */
 
@@ -68,7 +56,6 @@ static const char *const s_mname[T_MODE_MAX + 1u] = {
     "vision_receive_only"
 };
 
-/* 命令最多T_LINE_MAX个字符，多出的1个位置留给字符串结束符。 */
 static char     s_line[T_LINE_MAX + 1u];
 static uint8_t  s_len;
 static uint8_t  s_over;
@@ -184,12 +171,6 @@ static void begin_recorded_test(void)
     s_active_test = s_test_seq;
 }
 
-/**
- * @brief 中断中缓存模式33需要的目标，供任务上下文报告。
- * @param f 已解析的只读视觉帧地址。
- * @retval 无。
- * @note sample=&数组元素取得该槽地址，sample->frame=*f复制内容；这里只缓存，不格式化或发串口。
- */
 void test_vision_feed_frame(const ProtoFrame *f)
 {
     ProtoStats stats;
@@ -209,7 +190,6 @@ void test_vision_feed_frame(const ProtoFrame *f)
         (f->cls == CLS_TARGET && f->label != s_vdiag_qr[1] - 1) ||
         (f->cls == CLS_HOSTAGE && f->label != s_vdiag_qr[2] + 2)) return;
     proto_stats_get(&stats);
-    /* &取类别缓存槽的地址；后面的->写入同一槽，*f复制临时消息而非保留其地址。 */
     sample = &s_vdiag_sample[f->cls];
     sample->frame = *f;
     sample->tick = HAL_GetTick();
@@ -217,11 +197,6 @@ void test_vision_feed_frame(const ProtoFrame *f)
     sample->seen++;
 }
 
-/**
- * @brief 停车并申请QR模式，开始模式33接收诊断。
- * @retval 无。
- * @note 不启动路线或机械臂；清上一轮缓存，避免旧坐标冒充新结果。
- */
 static void vision_diag_start(void)
 {
     uint32_t pm;
@@ -244,11 +219,6 @@ static void vision_diag_start(void)
     send(b);
 }
 
-/**
- * @brief 结束诊断、申请IDLE，并保持模式33被选中。
- * @retval 无。
- * @note 下一次g开始新的QR诊断，不能误启动默认整场。
- */
 static void vision_diag_stop(void)
 {
     uint32_t pm = __get_PRIMASK();
@@ -266,11 +236,6 @@ static void vision_diag_stop(void)
     send(b);
 }
 
-/**
- * @brief 输出每类最新缓存、帧龄和是否属于最新包。
- * @retval 无。
- * @note lastcx是最后见到的坐标；latest=0说明本次最新包未包含该目标，不应当作实时坐标。
- */
 static void vision_diag_report(void)
 {
     static VisionDiagSample snapshot[4];
@@ -280,7 +245,6 @@ static void vision_diag_report(void)
     ProtoStats stats;
     uint32_t now = HAL_GetTick(), pm = __get_PRIMASK();
     __disable_irq();
-    /* 短暂关中断复制快照，随后开中断再打印，避免格式化长字符串一直挡住接收。 */
     memcpy(snapshot, s_vdiag_sample, sizeof snapshot);
     proto_stats_get(&stats);
     __set_PRIMASK(pm);
@@ -313,11 +277,6 @@ static void vision_diag_report(void)
     }
 }
 
-/**
- * @brief 收到合法QR后申请OBJECT，并每秒报告一次快照。
- * @retval 无。
- * @note 握手成功和识别到指定目标是两个判据；失败状态不会当作切换成功。
- */
 static void vision_diag_poll(void)
 {
     if (s_vdiag_phase == VD_OFF) return;
@@ -610,12 +569,6 @@ void test_init(void)
 }
 
 /* BT 字节喂入(robot_bt_service 每轮从环里取出调):\r/\n 触发成行、超长丢、其余攒行记时间戳 */
-/**
- * @brief 接收一个蓝牙字符，攒成命令行。
- * @param c 收到的单个字节。
- * @retval 无。
- * @note 这里只接字符；遇行尾会提交命令，未带行尾的短命令由test_poll按空闲时间成行。
- */
 void test_feed(uint8_t c)
 {
     if (c == '\r' || c == '\n') { flush_line(); return; }
@@ -727,11 +680,6 @@ static void bench_auto_tick(void)
 }
 
 /* ===== 周期主体:关线成行 + 动作推进(每 ~20ms 一次) ===== */
-/**
- * @brief 周期提交空闲命令行，再推进诊断和台架测试。
- * @retval 无。
- * @note 先处理待提交停止命令，再推进模式33，避免新的诊断处理拖后停止。
- */
 void test_poll(void)
 {
     if (s_len != 0u && (uint32_t)(HAL_GetTick() - s_last) >= T_IDLE_MS)
@@ -745,11 +693,6 @@ void test_poll(void)
 }
 
 /* 把攒好的一行交给 run_cmd 执行并清空;超长行(s_over)直接丢不执行 */
-/**
- * @brief 给当前字符缓冲补结束符，执行整行命令并清缓冲。
- * @retval 无。
- * @note 字符数组必须有结束符才能被strcmp/strlen作为字符串使用。
- */
 static void flush_line(void)
 {
     if (s_len == 0u) { s_over = 0; return; }
@@ -759,11 +702,6 @@ static void flush_line(void)
 }
 
 /* ---- 每 20ms 的动作推进 ---- */
-/**
- * @brief 根据当前模式与轮次状态，推进本周期的测试。
- * @retval 无。
- * @note 例如步进每拍发一步、定距每拍检查里程；这里不等待整个测试做完。
- */
 static void tick(void)
 {
     if (s_round == R_RUN) {
@@ -1040,11 +978,6 @@ static void tick(void)
 }
 
 /* ---- g1:启动动作 ---- */
-/**
- * @brief 检查本模式参数并初始化一轮测试的起点和状态。
- * @retval 无。
- * @note 选模式通常只是准备；此函数才执行对应启动动作。
- */
 static void mode_start(void)
 {
     if (s_msel == ROUTE_TEST_MODE) {
@@ -1292,11 +1225,6 @@ static void route_seq_next(void)
     route_seq_prepare();              /* no synchronous wait; next poll serves g first */
 }
 
-/**
- * @brief 周期推进模式31的准备、停稳等待和当前路段。
- * @retval 无。
- * @note 准备也是非阻塞状态，所以段与段之间仍可以处理g/a/0停止。
- */
 static void route_seq_poll(void)
 {
     uint32_t now = HAL_GetTick();
@@ -1586,11 +1514,6 @@ static void cmd_reset(void)
 }
 
 /* 'g' 一键推一轮:READY→启动(g1)、RUN→暂停补终点动作(g2)、DONE→回原点(g3) */
-/**
- * @brief 按当前模式和轮次决定g是启动、暂停、清态还是取消回程。
- * @retval 无。
- * @note 31/33及有限步/舵机模式有独立分支；不能照旧三按键概括所有模式。
- */
 static void mode_g(void)
 {
     if (s_msel == VISION_DIAG_MODE) {
@@ -1619,11 +1542,6 @@ static void mode_g(void)
 
 /* ---- 全局键 ---- */
 /* 'a' 急停:跑整场→run_abort;回程中→刹停作废回程;调试中→同 0 收回;空闲仅回一句 */
-/**
- * @brief 按整场或台架状态处理停止请求。
- * @retval 无。
- * @note 正式整场先锁存run_abort再刹车；旧台架模式保留各自停止/回程约定，具体看分支。
- */
 static void cmd_abort(void)
 {
     if (s_go || mission_state() != MS_BOOT) { /* g/a共用：先锁中止，再刹车；不假报物理停稳 */
@@ -1663,13 +1581,6 @@ static void cmd_abort(void)
 }
 
 /* 数字选号进调试模式(1..33;仅 BOOT 空闲可,先刹掉当前动作再切,顺带清回程量) */
-/**
- * @brief 验证空闲和范围后选择测试模式，并清除上一轮状态。
- * @param m 要选的模式号1..33。
- * @param quiet 非零时抑制部分常规选号回包。
- * @retval 无。
- * @note 31等待g走路线；32等待g申请MissionTask；33等待g开始停车视觉诊断。
- */
 static void cmd_select(int32_t m, int quiet)
 {
     if (!bench_ok()) { send("ERR BENCH_LOCKED power_cycle_to_retest"); return; }
@@ -1830,12 +1741,6 @@ static void cmd_help(void)
 }
 
 /* 把纯数字字符串解析成 int32;必须消费到串尾,尾随垃圾=拒(回 0) */
-/**
- * @brief 把十进制数字字符串读成int32_t并检查格式。
- * @param p 指向数字文本。
- * @param v 输出数值的地址。
- * @retval 1=格式符合本函数规则，0=拒绝。
- */
 static int parse_num(const char *p, int32_t *v)
 {
     int neg = 0;
@@ -1852,13 +1757,6 @@ static int parse_num(const char *p, int32_t *v)
 }
 
 /* 小型十进制定点解析：支持可选负号和一个小数点，不接受指数/nan/尾随字符。 */
-/**
- * @brief 把带小数点的命令参数转换成float。
- * @param p 指向参数文本。
- * @param v 输出浮点数地址。
- * @retval 1=格式符合本函数规则，0=拒绝。
- * @note 这是本工程手写解析器，不是Python的float()；可用格式以实现为准。
- */
 static int parse_float(const char *p, float *v)
 {
     float x = 0.0f, scale = 0.1f;
@@ -1956,18 +1854,11 @@ static void cmd_imu(void)
 }
 
 /* BT 一行命令总路由:小写化后分发——?帮助 / g 开跑·走停 / a 作废 / d·v·p 设槽 / cc·co 爪 / 数字选号或0复位 */
-/**
- * @brief 把一行蓝牙文本转换成具体命令。
- * @param ln 以结束符结尾的命令字符串。
- * @retval 无。
- * @note 先拦截运行中不允许的写命令；之后按完整字符串、前缀、数字依次分发。
- */
 static void run_cmd(const char *ln)
 {
     char buf[T_LINE_MAX + 1u];
     size_t i;
     for (i = 0; ln[i] && i < T_LINE_MAX; i++) buf[i] = lc(ln[i]);
-    /* 末尾补结束符，否则strcmp等函数会越过有效字符继续读内存。 */
     buf[i] = '\0';
     if (i == 0u) return;
 
@@ -1995,7 +1886,6 @@ static void run_cmd(const char *ln)
     }
 
     if (strcmp(buf, "?") == 0) { cmd_help(); return; }
-    /* g先看整场有没有启动申请/运行，再看独立模式，顺序关乎启动后立即停止是否有效。 */
     if (strcmp(buf, "g") == 0) {
         const char *missing;
         /* 必须在选号和BOOT检查之前：首个g已接受但MissionTask尚未苏醒时也能停。
@@ -2166,7 +2056,6 @@ static void run_cmd(const char *ln)
         static const char *const key[] = { "dead", "ykp", "okp", "lff", "rff", "fff", "acc", "dec", "kp", "ki", "lp" };
         for (size_t k = 0; k < sizeof key / sizeof key[0]; ++k) {
             size_t n = strlen(key[k]);
-            /* 匹配前缀后，buf+n指向数值部分；例如ykp0.3跳过3字符，交给浮点解析。 */
             if (strncmp(buf, key[k], n) == 0) {
                 float val;
                 if (parse_float(buf + n, &val)) { cmd_tune(key[k], val); return; }

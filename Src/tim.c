@@ -22,16 +22,6 @@
 
 /* USER CODE BEGIN 0 */
 
-/*
- * 初学者导读：定时器可计时、产生PWM，也可读取编码器。本工程把不同定时器分工使用。
- * TIM1 CH1..4 驱动四路电机PWM；TIM2/3/4/8 用编码器模式读四轮计数。
- * TIM12 CH2 输出爪舵机PWM；通道是同一定时器下的不同输出接口。
- * Prescaler（PSC）分频，Period（ARR）决定计数周期：频率=定时器输入频率/(PSC+1)/(ARR+1)。
- * Pulse 是初始比较值（CCR）；运行时 App 用 SET_COMPARE 改它，才改变脉宽/占空比。
- * 配置完成不等于已经输出；Encoder_Start/PWM_Start 在 App 初始化时启动。
- * GPIO 的 AF（复用功能）把引脚交给定时器，不能只配置定时器却漏了引脚。
- */
-
 /* USER CODE END 0 */
 
 TIM_HandleTypeDef htim1;
@@ -54,7 +44,6 @@ void MX_TIM1_Init(void)
   TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
 
   /* USER CODE BEGIN TIM1_Init 1 */
-  /* 电机PWM：PSC=83、ARR=199；实际频率按当前APB2定时器输入时钟计算，不能把PSC当频率。 */
 
   /* USER CODE END TIM1_Init 1 */
   htim1.Instance = TIM1;
@@ -126,7 +115,6 @@ void MX_TIM2_Init(void)
   TIM_MasterConfigTypeDef sMasterConfig = {0};
 
   /* USER CODE BEGIN TIM2_Init 1 */
-  /* 第0轮编码器，32位计数；编码器模式由A/B两相信号推动计数，不按普通定时器周期估算转速。 */
 
   /* USER CODE END TIM2_Init 1 */
   htim2.Instance = TIM2;
@@ -171,7 +159,6 @@ void MX_TIM3_Init(void)
   TIM_MasterConfigTypeDef sMasterConfig = {0};
 
   /* USER CODE BEGIN TIM3_Init 1 */
-  /* 第1轮编码器，16位；App/board_pins.c按位宽处理计数回绕。 */
 
   /* USER CODE END TIM3_Init 1 */
   htim3.Instance = TIM3;
@@ -216,7 +203,6 @@ void MX_TIM4_Init(void)
   TIM_MasterConfigTypeDef sMasterConfig = {0};
 
   /* USER CODE BEGIN TIM4_Init 1 */
-  /* 第2轮编码器，16位；只配硬件计数，轮速计算在App/control.c。 */
 
   /* USER CODE END TIM4_Init 1 */
   htim4.Instance = TIM4;
@@ -261,7 +247,6 @@ void MX_TIM8_Init(void)
   TIM_MasterConfigTypeDef sMasterConfig = {0};
 
   /* USER CODE BEGIN TIM8_Init 1 */
-  /* 第3轮编码器，16位；四轮句柄按board_pins.c中的s_enc数组对应。 */
 
   /* USER CODE END TIM8_Init 1 */
   htim8.Instance = TIM8;
@@ -306,7 +291,6 @@ void MX_TIM12_Init(void)
   TIM_OC_InitTypeDef sConfigOC = {0};
 
   /* USER CODE BEGIN TIM12_Init 1 */
-  /* 爪舵机用CH2；PSC=167、ARR=9999，在当前时钟下每计数2us、周期20ms（50Hz）。 */
 
   /* USER CODE END TIM12_Init 1 */
   htim12.Instance = TIM12;

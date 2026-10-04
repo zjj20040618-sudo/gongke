@@ -1,9 +1,3 @@
-/*
- * 初学者导读：蓝牙接口。feed 收一个字节，poll 周期服务；两个函数配合才能处理完整命令。
- * .h 相当于接口清单，供 #include 引入；函数实现通常在同名.c中。
- * #ifndef / #define / #endif 是头文件保护，防止同一编译单元重复包含定义。
- */
-
 #ifndef APP_TEST_H
 #define APP_TEST_H
 

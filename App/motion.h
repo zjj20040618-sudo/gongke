@@ -1,9 +1,3 @@
-/*
- * 初学者导读：车身运动接口。车身速度、四轮转速、加减速参数和里程信息属于不同量，先核对单位。
- * .h 相当于接口清单，供 #include 引入；函数实现通常在同名.c中。
- * #ifndef / #define / #endif 是头文件保护，防止同一编译单元重复包含定义。
- */
-
 #ifndef APP_MOTION_H
 #define APP_MOTION_H
 
@@ -14,7 +8,7 @@
 typedef struct {
     float x;    /* mm，全局 X */
     float y;    /* mm，全局 Y */
-    float th;   /* rad；按motion.c约定，0朝全局+y，正向朝+x；当前由连续IMU航向更新 */
+    float th;   /* rad，车头朝向(相对全局 X 轴) */
 } Pose;
 
 /* 普通平移速度斜坡：调用方按固定周期推进，并结合剩余距离限制停车速度。

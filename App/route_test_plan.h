@@ -1,9 +1,3 @@
-/*
- * 初学者导读：模式31固定路线表。每一行是一段；仅有路线，没有QR识别或抓放任务。
- * .h 相当于接口清单，供 #include 引入；函数实现通常在同名.c中。
- * #ifndef / #define / #endif 是头文件保护，防止同一编译单元重复包含定义。
- */
-
 #ifndef APP_ROUTE_TEST_PLAN_H
 #define APP_ROUTE_TEST_PLAN_H
 
@@ -24,7 +18,6 @@ typedef struct {
     const char *name;
 } RouteTestLeg;
 
-/* static只让当前包含它的编译单元使用，const禁止修改表；每行按成员声明顺序填写。 */
 static const RouteTestLeg s_route_test_plan[ROUTE_TEST_STAGES] = {
     { 17u,  500u, "START_LEFT" },
     { 16u,  600u, "BACK_TO_3RD" },

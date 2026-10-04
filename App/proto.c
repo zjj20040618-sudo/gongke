@@ -1,13 +1,3 @@
-/*
- * 初学者导读：视觉串口协议解析器。字节通过长度和校验后才转成 ProtoFrame。
- * 当前 robot_init 选择二进制；旧 ASCII 文本解析仍保留，不能混作当前线缆格式。
- * 一个“帧”是一次完整消息；帧头 AA55 用来找起点，CRC 用来检查传输内容是否损坏。
- * request_id 区分哪次模式请求；sequence 区分结果帧序号，两者用途不同。
- * static void (*s_on_frame)(const ProtoFrame *) 是函数指针：保存“收到帧后要调用谁”。
- * 注册时传函数名，接收后调用 s_on_frame(&f)；与 Python 把函数当参数传递有相似用途。
- * QR 与 OBJ 的字段含义见 proto.h；像素坐标还不是毫米，也不是夹爪位置。
- */
-
 #include "proto.h"
 #include "main.h"
 #include <limits.h>
@@ -52,12 +42,6 @@ void proto_set_binary_mode(int enabled)
 }
 void proto_set_tx(void (*tx)(const char *s))          { s_tx = tx; }
 void proto_set_binary_tx(void (*tx)(const uint8_t *, uint16_t)) { s_binary_tx = tx; }
-/**
- * @brief 保存完整视觉帧的接收回调地址。
- * @param cb 返回void、参数为只读ProtoFrame指针的函数；当前注册robot_vision_frame。
- * @retval 无。
- * @note 函数指针不是普通数据指针；回调接收的是临时帧地址，要保留内容需复制结构体。
- */
 void proto_set_on_frame(void (*cb)(const ProtoFrame *f)) { s_on_frame = cb; }
 
 /* 串口逐字节喂入(USART2 RxCplt 回调里被调):攒行,\n 触发一次整帧 dispatch,孤立 \r 忽略 */
@@ -105,10 +89,8 @@ static void dispatch(char *line)
     int n = 0;
     tok[n++] = line;
     char *p = line;
-    /* strchr找到逗号地址，把逗号改为结束符，再把下一段地址放进tok数组；没有复制字符串。 */
     while (n < PROTO_FIELDS && (p = strchr(p, ','))) { *p++ = '\0'; tok[n++] = p; }
 
-    /* sizeof f得到整份结构体的字节数，memset把这些字节清零；&f是起始地址。 */
     ProtoFrame f; memset(&f, 0, sizeof f);
     f.type = PF_UNKNOWN;   /* 字段数对但数值解析失败也必须拒收，不能误计为 PF_NONE 已接受 */
 
@@ -156,24 +138,11 @@ void proto_stats_get(ProtoStats *out)
     __set_PRIMASK(pm);
 }
 
-/**
- * @brief 从两个连续字节读取小端16位整数。
- * @param p 指向至少两个字节；p[0]是低8位，p[1]是高8位。
- * @retval 合成的无符号16位数。
- * @note 例如字节34 12表示0x1234；<<8将高字节移到高8位，|合并两部分。
- */
 static uint16_t read_le16(const uint8_t *p)
 {
     return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
 }
 
-/**
- * @brief 计算当前协议的CRC16/CCITT-FALSE。
- * @param p 待校验字节区域首地址。
- * @param length 本区域字节数；不包含帧头和末尾CRC。
- * @retval 16位CRC值。
- * @note ^是按位异或，不是乘方；每个字节处理8个bit，0x1021是校验算法多项式。
- */
 static uint16_t binary_crc(const uint8_t *p, unsigned length)
 {
     uint16_t crc = 0xFFFFu;
@@ -186,14 +155,6 @@ static uint16_t binary_crc(const uint8_t *p, unsigned length)
 }
 
 /* model_9541 training aliases: 0 waist-drum, 2 cone, 9 common bucket. */
-/**
- * @brief 把视觉模型类别号转换成电控类别和标签。
- * @param model_class 模型类别0..9。
- * @param cls 输出地址，写入球/靶/人质/桶类别。
- * @param label 输出地址，写入颜色或形状标签。
- * @retval 1=已转换，0=不支持的类别。
- * @note 一个return只能直接返回一个值，因此另外两个结果通过指针参数写回。
- */
 static int binary_class(uint8_t model_class, int *cls, int *label)
 {
     switch (model_class) {
@@ -212,12 +173,6 @@ static int binary_class(uint8_t model_class, int *cls, int *label)
 }
 
 /* Validate the complete CRC-checked packet before any business callback. */
-/**
- * @brief 先验证整包字段，再按类别选最高分目标回调给业务层。
- * @param p 内层业务帧首地址；调用前已完成长度与CRC检查。
- * @retval 1=处理成功（含重复帧被忽略），0=字段非法。
- * @note 先检查全部目标，再开始回调，防止只接受坏包的前半部分。
- */
 static int binary_dispatch(const uint8_t *p)
 {
     const uint8_t type = p[0], count = p[3];
@@ -228,7 +183,6 @@ static int binary_dispatch(const uint8_t *p)
     if (type == 0x51u) {
         if (count != 1u || p[4] != 3u || p[5] < '1' || p[5] > '3'
             || p[6] < '1' || p[6] > '3' || p[7] < '1' || p[7] > '3') return 0;
-        /* 字符'3'不是整数3；减字符'0'后才得到数值3，前面已限定字符范围1..3。 */
         f.type = PF_QR; f.a = p[5] - '0'; f.b = p[6] - '0'; f.c = p[7] - '0';
     } else {
         f.img_w = read_le16(p + 4); f.img_h = read_le16(p + 6);
@@ -305,17 +259,10 @@ static int control_dispatch(const uint8_t *p, unsigned length)
 
 static void binary_drop(unsigned length)
 {
-    /* memmove会把后面的未处理字节前移；源和目的区重叠，所以这里不能随意换memcpy。 */
     s_binary_len -= length;
     memmove(s_binary_buf, s_binary_buf + length, s_binary_len);
 }
 
-/**
- * @brief 逐字节拼二进制帧，依次检查帧头、长度、CRC与业务结构。
- * @param ch 当前新收到的字节。
- * @retval 无。
- * @note 长度未收够就return等下次调用；校验失败只丢开头一个字节，再找后续AA55。
- */
 static void binary_feed(uint8_t ch)
 {
     const uint32_t now = HAL_GetTick();
@@ -372,7 +319,6 @@ static int token_int(const char *tok, int *out)
         int digit = *p - '0';
         have = 1;
         if (v > (INT_MAX - digit) / 10) return 0;
-        /* 十进制逐位累加：读到1是1，再读2得到1*10+2=12；前面先检查整数溢出。 */
         v = v * 10 + digit;
         ++p;
     }
@@ -382,12 +328,6 @@ static int token_int(const char *tok, int *out)
 }
 
 /* 发 "SET,scene" 给视觉:切当前任务的上报场景(mission 每区开头调) */
-/**
- * @brief 申请视觉切换到所需模式，更新请求号以隔离旧帧。
- * @param sc SCENE_IDLE停止、SCENE_QR扫码；其余任务场景都请求OBJECT识别。
- * @retval 无。
- * @note 当前二进制分支仅登记待发请求，真正发送在DefaultTask的proto_service中。
- */
 void proto_send_scene(ProtoScene sc)
 {
     if (s_binary) {
@@ -416,11 +356,6 @@ void proto_send_scene(ProtoScene sc)
     if (s_tx) s_tx(s);
 }
 
-/**
- * @brief 读取当前请求的握手进度。
- * @retval -1=失败，0=等待，1=收到成功ACK和本轮结构有效结果；IDLE只需ACK。
- * @note 返回1不等于看到了任务目标，OBJECT空包也可能合法，业务需另查目标帧。
- */
 int proto_scene_status(void)
 {
     uint32_t pm = __get_PRIMASK();

@@ -1,12 +1,3 @@
-/*
- * 初学者导读：轮速闭环。每次读“实际转多快”，再调整 PWM，让实际值接近目标。
- * rpm = 每分钟转数；PWM = 周期性高低电平，duty 是高电平对应的定时器计数值。
- * 上层给目标 rpm，这层每 1ms 算一次输出；board_pins.c 负责真正写硬件。
- * 闭环会看编码器反馈；开环直接给 duty，不知道轮子是否达到某个速度。
- * 数组下标 m 是轮号 0..3，多组数组的同一下标都属于同一只轮。
- * 当前 CTRL_KD=0，所以公式虽然写成 PID，实际使用 P（误差）和 I（累计误差）。
- */
-
 #include "control.h"
 #include "board_pins.h"
 
@@ -62,13 +53,6 @@ void ctrl_set_speed(int m, int16_t rpm)
     ctrl_set_speed_precise(m, (float)rpm);
 }
 
-/**
- * @brief 更新某只轮的目标转速，切回闭环模式。
- * @param m 轮号0..3；越界直接返回。
- * @param rpm 带符号转速，单位转/分钟；保留小数。
- * @retval 无。
- * @note 这里只改目标值，PWM要等下一次ctrl_tick_1ms计算；不表示轮子已经达到目标。
- */
 void ctrl_set_speed_precise(int m, float rpm)
 {
     if (m < 0 || m >= MOTOR_NUM) return;
@@ -117,12 +101,6 @@ void ctrl_coast_all(void)
 
 /* 1ms 每轮:目标 rpm vs 快速实际 rpm → 位置式 PID → 方向+duty。
  * feedback 用低通快速 rpm(不是 10ms 慢估),慢估只留日志/报告。 */
-/**
- * @brief 根据这一轮的目标和反馈计算方向与PWM。
- * @param m 轮号0..3，由本文件内部循环传入。
- * @retval 无。
- * @note 先处理自由滑行/开环/零目标，再进入PI公式，避免不同模式同时驱动。
- */
 static void ctrl_run_wheel(int m)
 {
     float t = s_target[m];
@@ -141,18 +119,14 @@ static void ctrl_run_wheel(int m)
 
     if (t == 0) { bp_motor_brake(m); return; }
 
-    /* 第1步：误差=目标-实际。实际转得慢时误差为正，要求增加驱动力。 */
     float e = (float)t - s_rpm_lp[m];
-    /* 第2步：把每拍误差累加成I项；此处按固定1ms拍累加，ki已按这个节拍使用。 */
     s_ei[m] += e;
     if (s_ei[m] >  CTRL_INTEG_LIM) s_ei[m] =  CTRL_INTEG_LIM;
     if (s_ei[m] < -CTRL_INTEG_LIM) s_ei[m] = -CTRL_INTEG_LIM;
-    /* 第3步：P看眼前误差，I消除长期小偏差；D看两拍误差变化，当前系数为0。 */
     float dout = s_kp * e + s_ki * s_ei[m]
                + CTRL_KD * (e - s_e_prev[m]);
     s_e_prev[m] = e;
 
-    /* 第4步：浮点输出截成整数，符号定方向，绝对值定PWM；再限制硬件范围。 */
     int duty = (int)dout;
     int dir  = (duty >= 0) ? BP_DIR_FWD : BP_DIR_REV;
     if (duty < 0) duty = -duty;
@@ -161,10 +135,6 @@ static void ctrl_run_wheel(int m)
     bp_motor_set(m, dir, duty);
 }
 
-/**
- * @brief 每轮读取编码器增量，估算转速，执行控制，并每10拍更新日志转速。
- * @retval 无。
- */
 void ctrl_tick_1ms(void)
 {
     for (int m = 0; m < MOTOR_NUM; m++) {
@@ -174,13 +144,11 @@ void ctrl_tick_1ms(void)
 
         /* 快速 rpm:脉冲/1ms *1000 /CPR *60,低通 */
         float inst = (float)d * 1000.0f / (float)CTRL_ENCODER_CPR * 60.0f;
-        /* 低通：旧值向新值挪alpha份。例如旧100、新120、alpha=0.2，结果104。 */
         s_rpm_lp[m] += (inst - s_rpm_lp[m]) * s_lp_alpha;
 
         ctrl_run_wheel(m);
     }
 
-    /* ++s_tick先加1再比较；1ms调用10次后，用窗口计数得到更平滑的日志转速。 */
     if (++s_tick >= CTRL_RPM_EST_PERIOD) {
         s_tick = 0;
         for (int m = 0; m < MOTOR_NUM; m++) {
@@ -195,11 +163,6 @@ void ctrl_tick_1ms(void)
     }
 }
 
-/**
- * @brief 把当前参数写到调用者提供的结构体。
- * @param out 输出地址，例如先定义 CtrlTune t，再传 &t；空指针时不写。
- * @retval 无。
- */
 void ctrl_tune_get(CtrlTune *out)
 {
     if (!out) return;
@@ -209,12 +172,6 @@ void ctrl_tune_get(CtrlTune *out)
     out->dead_min = s_dead_min;
 }
 
-/**
- * @brief 检查参数范围，写入RAM并清除旧的PI误差记录。
- * @param in 只读输入结构体指针，例如 &t；const 表示本函数不通过它修改输入。
- * @retval 1=已应用，0=输入为空或参数越界。
- * @note 参数保存到本文件变量，断电后恢复源码默认值。
- */
 int ctrl_tune_set(const CtrlTune *in)
 {
     int m;

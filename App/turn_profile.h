@@ -1,9 +1,3 @@
-/*
- * 初学者导读：转身保持参数。KP 把角度误差换成角速度，MIN/MAX 限速，SETTLE 是停后观察时长。
- * .h 相当于接口清单，供 #include 引入；函数实现通常在同名.c中。
- * #ifndef / #define / #endif 是头文件保护，防止同一编译单元重复包含定义。
- */
-
 #ifndef APP_TURN_PROFILE_H
 #define APP_TURN_PROFILE_H
 
@@ -22,7 +16,6 @@
 #define TURN_HOLD_MIN_W_RADS   0.18f
 #define TURN_HOLD_STILL_DEG    0.2f
 
-/* 下面是宏别名，预处理时替换成共享值；不是运行时变量赋值。 */
 #define TURN90_MAX_MS          TURN_HOLD_MAX_MS
 #define TURN90_SETTLE_MS       TURN_HOLD_SETTLE_MS
 #define TURN90_TARGET_DEG      90.0f

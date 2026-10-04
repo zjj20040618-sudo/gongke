@@ -1,10 +1,3 @@
-/*
- * 初学者导读：救援：按 QR 指定形状找人质、对准、抓住抬起；不在这里放下或走返回路线。
- * 这里按顺序调用 steps.c；任一步失败就返回 TASK_ABORT，让 mission 停止。
- * TASK_OK=0、TASK_ABORT=1 是任务返回约定；步骤函数多数用 1 成功、0 失败。
- * if (!step_xxx(...)) 的 ! 是逻辑非：步骤返回0时进入失败分支。
- */
-
 #include "robot_tasks.h"
 #include "steps.h"
 #include "proto.h"
@@ -29,12 +22,6 @@ const char *task_rescue_config_missing(void)
     return 0;
 }
 
-/**
- * @brief 执行本文件负责的任务步骤，失败立即交还顶层处理。
- * @param hostage_shape 人质形状LAB_CYL/LAB_CONE/LAB_WAIST。
- * @retval TASK_OK（0）=步骤链完成，TASK_ABORT（1）=步骤失败或中止。
- * @note 软件步骤完成不等于实物抓取/命中效果已经验收。
- */
 int task_rescue_run(int hostage_shape)
 {
     if (run_aborted()) return TASK_ABORT;

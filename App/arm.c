@@ -1,12 +1,3 @@
-/*
- * 初学者导读：机械臂有两类执行器，控制方法不同。
- * 爪舵机：持续输出 PWM，改变高电平持续时间（脉宽 us）来发位置指令。
- * 步进电机：DIR 指定方向，STEP 每发一个脉冲请求走一步；行程还取决于机构和细分。
- * axis0 是齿条轴，axis1 是升降轴；dir=0/1 的机械方向仍按实测确认。
- * 寄存器可以看作硬件专用的“变量”；DWT->CYCCNT 就是 CPU 周期计数器。
- * 这里只发命令，没有舵机位置或步进原点反馈，不能从脉冲数断言实物已经到位。
- */
-
 #include "arm.h"
 #include "main.h"
 #include "tim.h"
@@ -29,7 +20,6 @@ static void claw_set_cmp_us(uint16_t us)
 void arm_init(void)
 {
     /* Cortex-M4 DWT 周期计数器用于稳定的微秒级 STEP 脉宽。 */
-    /* |=是按位或后赋值：只打开指定bit，保留寄存器其它bit；->表示访问指针指向的结构。 */
     CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
     DWT->CYCCNT = 0u;
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
@@ -44,12 +34,6 @@ void arm_init(void)
 }
 
 /* 设爪舵机脉宽 us(自动限幅到 SERVO_MIN/MAX;OPEN/CLOSE 两个极限在上面) */
-/**
- * @brief 限制脉宽并写入舵机PWM比较值。
- * @param us 脉宽微秒，限制到500..2500；实际机械安全范围须实测。
- * @retval 无。
- * @note us是时间，不是角度；比较值us/2来自本工程定时器每计数2微秒。
- */
 void arm_claw_set_us(uint16_t us)
 {
     if (us < SERVO_MIN_US) us = SERVO_MIN_US;
@@ -60,7 +44,7 @@ void arm_claw_set_us(uint16_t us)
 
 uint16_t arm_claw_command_us(void) { return s_claw_command_us; }
 
-/* 爪开/合：发预置脉宽；实际夹力、机械极限与堵转安全须台测，不由命令成功证明。 */
+/* 爪开/合到台调极限脉宽(合=咬目标,堵转压紧 1~2s 内可接受,见 arch 决定) */
 void arm_claw_open(void)  { arm_claw_set_us(CLAW_OPEN_US); }
 void arm_claw_close(void) { arm_claw_set_us(CLAW_CLOSE_US); }
 
@@ -72,16 +56,9 @@ static GPIO_TypeDef *const s_dir_port[ARM_STEPPER_NUM]  = { GPIOA, GPIOA };
 static const uint32_t       s_dir_pin[ARM_STEPPER_NUM]   = { GPIO_PIN_10, GPIO_PIN_12 };
 
 /* DWT 周期计数微秒延时；系统时钟 168MHz 时不依赖编译优化级别。 */
-/**
- * @brief 用CPU周期计数器忙等指定微秒数。
- * @param us 延时微秒；此处用于短STEP脉冲。
- * @retval 无。
- * @note while等待期间不主动让出任务；不能拿这个短脉冲办法替代长时间的osDelay。
- */
 static void busy_us(uint32_t us)
 {
     uint32_t start = DWT->CYCCNT;
-    /* CPU每秒SystemCoreClock个周期，先算每微秒多少周期，再乘延时微秒。 */
     uint32_t ticks = (SystemCoreClock / 1000000u) * us;
     while ((uint32_t)(DWT->CYCCNT - start) < ticks) { ; }
 }
@@ -96,12 +73,6 @@ void arm_stepper_dir(int axis, int dir)
 }
 
 /* 某轴发 1 个步进脉冲(STEP 拉低 ~20µs 再回高阻;一 tick 一步,便于台上被 g2 随时打断) */
-/**
- * @brief 在指定轴输出一次约20微秒低电平STEP脉冲。
- * @param axis 轴号0或1；非法编号直接返回。
- * @retval 无。
- * @note 一次调用仅请求一步；步间隔、总步数和中止检查由上层负责。
- */
 void arm_stepper_step(int axis)
 {
     if (axis < 0 || axis >= ARM_STEPPER_NUM) return;

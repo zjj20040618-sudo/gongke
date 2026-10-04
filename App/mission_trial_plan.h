@@ -1,9 +1,3 @@
-/*
- * 初学者导读：模式32的数据结构与计算接口。extern 表示实体定义在另一个.c文件，这里只是声明。
- * .h 相当于接口清单，供 #include 引入；函数实现通常在同名.c中。
- * #ifndef / #define / #endif 是头文件保护，防止同一编译单元重复包含定义。
- */
-
 #ifndef APP_MISSION_TRIAL_PLAN_H
 #define APP_MISSION_TRIAL_PLAN_H
 
@@ -42,7 +36,6 @@ extern const MissionTrialRouteLeg
  * is subtracted from road progress. Pure lateral motion is also projected,
  * so alignment is not silently omitted. This is still wheel odometry: it
  * does not prove the actual car position or that its projection stays on-road. */
-/* 一份道路账本：固定方向+总长+已走进度+上次两轴读数，不是车在整个地图上的x/y。 */
 typedef struct {
     float road_heading_deg;
     float total_mm;
