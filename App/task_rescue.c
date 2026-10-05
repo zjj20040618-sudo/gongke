@@ -24,9 +24,9 @@ const char *task_rescue_config_missing(void)
 
 int task_rescue_run(int hostage_shape)
 {
-    if (run_aborted()) return TASK_ABORT;
+    if (run_aborted() || hostage_shape < LAB_CYL || hostage_shape > LAB_WAIST) return TASK_ABORT;
 
-    proto_send_scene(SCENE_RESCUE);
+    if (!step_vision_target(PROTO_TASK_HOSTAGE, (uint8_t)(hostage_shape - 2))) return TASK_ABORT;
     /* 1 找目标=沿图上方的左右目标带慢慢经过时锁 d3 形人质(纯白只靠形状认);真没
      * 看到才沿车身前后补扫,to=0 **一直扫到出现、不弃站**(垫底,正常别走到这)。
      *   找到后视觉锁(补相机↔爪偏移) */

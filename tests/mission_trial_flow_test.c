@@ -31,14 +31,31 @@ typedef struct {
     float fore, lat, heading, road, total;
 } Event;
 typedef struct { const char *name; uint32_t duration; } Hold;
-enum { IN_NONE, IN_WAIT, IN_TURN, IN_ALIGN, IN_PASS, IN_VISION, IN_LASER, IN_PREP, IN_TRANSLATE, IN_QR, IN_RETURN };
+typedef struct {
+    ProtoTask task;
+    uint8_t digit;
+    uint32_t at;
+    float heading;
+    unsigned positive_180_before;
+} TargetRequest;
+enum { IN_NONE, IN_WAIT, IN_TURN, IN_ALIGN, IN_PASS, IN_VISION, IN_LASER, IN_PREP, IN_TRANSLATE, IN_QR, IN_RETURN, IN_TARGET_SETTLE };
+/* Fixture-only marker; the bucket is a distinct request, not another EOD
+ * scene. Do not assign this test value to the real ProtoScene enum. */
+enum { VISION_BUCKET_MARKER = 100 };
 
 static Event events[MAX_EVENTS];
 static unsigned event_count, issues, qr_reads, commands, tuning_locks, first_leg_locks;
 static Hold holds[8];
 static unsigned hold_count, fire_calls, laser_on_calls;
-static ProtoScene scenes[8], idle_scene;
+static unsigned target_settle_calls;
+static uint32_t target_settle_started, target_settle_finished, laser_started, laser_finished;
+static int scenes[8], vision_abort_marker;
+static unsigned receive_end_calls, forbidden_scene_calls;
+static int receive_open;
 static unsigned scene_count;
+static TargetRequest target_requests[4];
+static unsigned target_request_count;
+static int32_t qr_digits[3];
 static uint32_t now_ms, phase_at, abort_at, context_at;
 static float fore_mm, lat_mm, heading_deg, cmd_fore, cmd_lat, cmd_w;
 static int aborted, laser_on, all_missing, in_context, scene_in_progress, sensor_ok;
@@ -54,6 +71,8 @@ static int task_errors[2];
 static float align_anchors[4], settle_shift_mm, ball_at_mm, target_at_mm, hostage_at_mm;
 static int task_exact_heading;
 static uint32_t qr_valid_after_ms;
+static uint32_t qr_request_at;
+static int qr_precached, qr_request_failed;
 
 static int is_phase(const char *name) { return strcmp(mission_trial_phase(), name) == 0; }
 static int returning(void) { return is_phase("TARGET_RETURN") || is_phase("HOSTAGE_RETURN"); }
@@ -98,7 +117,7 @@ float motion_lateral_odo_mm(void) { return lat_mm; }
 float step_heading_kp_deg(void) { return 0.3f; }
 float test_forward_ff_ratio(void) { return 0.0125f; }
 int run_aborted(void) { return aborted; }
-void run_abort(void) { aborted = 1; }
+void run_abort(void) { aborted = 1; step_vision_receive_end(); }
 
 void bp_debug_send(const char *s)
 {
@@ -109,6 +128,9 @@ void bp_debug_send(const char *s)
 void bp_laser_set(int on)
 {
     observe();
+    if (on && (!is_phase("TARGET_LASER") || run_aborted() ||
+               target_settle_calls != 1u || now_ms - target_settle_started != 1000u ||
+               target_settle_finished != now_ms)) issues++;
     laser_on = on != 0;
     if (on) laser_on_calls++;
 }
@@ -159,7 +181,7 @@ static void inject_stop(void)
     int matched;
     if (!abort_name || aborted || !sensor_ok) return;
     if (abort_context == IN_VISION)
-        matched = in_context == IN_VISION && scene_in_progress == (int)idle_scene;
+        matched = in_context == IN_VISION && scene_in_progress == vision_abort_marker;
     else matched = strcmp(mission_trial_phase(), abort_name) == 0 && in_context == abort_context;
     if (matched && now_ms - context_at >= 15u) {
         abort_at = now_ms;
@@ -178,11 +200,21 @@ void osDelay(uint32_t ms)
         int saved = in_context;
         if (in_context == IN_NONE) {
             const char *p = mission_trial_phase();
-            in_context = returning() ? IN_RETURN : strstr(p, "ALIGN") ? IN_ALIGN : strstr(p, "PASS") || strstr(p, "REMAINDER") ? IN_PASS
+            in_context = is_phase("QR_WAIT") ? (abort_context == IN_VISION ? IN_VISION : IN_QR)
+                : returning() ? IN_RETURN : strstr(p, "ALIGN") ? IN_ALIGN : strstr(p, "PASS") || strstr(p, "REMAINDER") ? IN_PASS
                 : strstr(p, "TURN") || is_phase("R3_LEFT95") || is_phase("R7_RIGHT85") || is_phase("R9_RIGHT85") ? IN_TURN : IN_TRANSLATE;
-            context_at = phase_at;
+            context_at = is_phase("QR_WAIT") ? qr_request_at : phase_at;
         }
         now_ms++;
+        if (in_context != IN_VISION && (in_context == IN_WAIT || in_context == IN_TARGET_SETTLE || in_context == IN_LASER
+                || returning() || is_phase("BALL_TURN180") || is_phase("BUCKET_TURN180_BACK")
+                || is_phase("BUCKET_TO_CORNER_REMAINDER") || is_phase("RESCUE_REMAINDER2125"))
+            && receive_open) issues++; /* Continued camera frames must not enter task control. */
+        if (in_context == IN_TARGET_SETTLE || in_context == IN_LASER) {
+            if (cmd_fore != 0.0f || cmd_lat != 0.0f || cmd_w != 0.0f) issues++;
+            if (in_context == IN_TARGET_SETTLE && laser_on) issues++;
+            if (in_context == IN_LASER && !aborted && !laser_on) issues++;
+        }
         fore_mm += cmd_fore * 0.001f;
         lat_mm += cmd_lat * 0.001f;
         heading_deg += cmd_w * RAD_DEG * 0.001f;
@@ -220,43 +252,97 @@ void wait_ms(uint32_t ms)
     while (!aborted && now_ms - started < ms) osDelay(1u);
     in_context = saved;
 }
-int wait_qr(int32_t d[3], uint32_t to)
+void proto_qr_begin(void)
 {
-    int saved = in_context;
-    if (to != 0u || !is_phase("QR_WAIT") || hold_count || !qr_prepared || !qr_ready
+    observe();
+    if (!is_phase("QR_WAIT") || !qr_prepared || hold_count ||
+        scene_count >= sizeof scenes / sizeof scenes[0]) { issues++; return; }
+    /* Nonblocking QR request. Four task requests use step_vision_target below. */
+    scenes[scene_count++] = SCENE_QR;
+    receive_open = 1;
+    qr_request_at = now_ms;
+    scene_in_progress = SCENE_QR;
+    if (qr_precached) qr_ready = 1u; /* Existing boot request may already be valid. */
+}
+
+int proto_scene_status(void)
+{
+    if (qr_request_failed) return -1;
+    if (now_ms - qr_request_at >= 40u) qr_ready = 1u;
+    return qr_ready ? 1 : 0; /* Fake ACK/fresh; real request/CRC checked elsewhere. */
+}
+
+int proto_qr_get(int32_t d[3])
+{
+    if (!is_phase("QR_WAIT") || hold_count || !qr_prepared
         || cmd_fore != 0.0f || cmd_lat != 0.0f || cmd_w != 0.0f) issues++;
-    in_context = IN_QR;
-    if (qr_reads == 0u) context_at = now_ms;
-    osDelay(5u);
-    in_context = saved;
+    qr_reads++;
     if (aborted) return 0;
-    d[0] = 2; d[1] = 3;
-    d[2] = qr_reads++ == 0u || now_ms - phase_at < qr_valid_after_ms || abort_context == IN_QR ? 0 : 1;
-    if (!d[2]) {
+    /* The parser hides partial/invalid tuples; the nonblocking getter must
+     * not release R2 or publish them, even after fresh status becomes true. */
+    if (!qr_ready || (!qr_precached && now_ms - qr_request_at < 50u) ||
+        now_ms - phase_at < qr_valid_after_ms || abort_context == IN_QR) {
         int32_t latched[3];
         mission_trial_get_qr(latched);
         if (latched[0] || latched[1] || latched[2] || event("R2_BACK600")) issues++;
+        return 0;
     }
-    return 1; /* first tuple deliberately invalid: runner must not accept it */
+    d[0] = qr_digits[0]; d[1] = qr_digits[1]; d[2] = qr_digits[2];
+    return 1;
 }
 
 int step_vision_scene(ProtoScene scene)
 {
-    int saved = in_context;
-    if (scene_count >= sizeof scenes / sizeof scenes[0]) { issues++; return 0; }
-    scenes[scene_count++] = scene;
-    if (scene == SCENE_QR && !qr_prepared) issues++;
-    in_context = IN_VISION; context_at = now_ms; scene_in_progress = (int)scene;
+    (void)scene;
+    issues++; /* Tasks must carry their selected digit, not a broad scene. */
+    return 0;
+}
+int step_vision_target(ProtoTask task, uint8_t digit)
+{
+    int saved = in_context, marker;
+    unsigned index;
+    if (scene_count >= sizeof scenes / sizeof scenes[0] || target_request_count >= 4u) {
+        issues++; return 0;
+    }
+    /* Task IDs are wire values: ball=1, target=2, hostage=3, bucket=4.
+     * Wire/CRC/request-ID validation is covered by the real parser tests. */
+    if (task == PROTO_TASK_BALL) {
+        marker = SCENE_EOD;
+        if (digit != qr_digits[0] || !event("R7_RIGHT85") || event("BALL_SINGLE_PASS")) issues++;
+    } else if (task == PROTO_TASK_TARGET) {
+        marker = SCENE_ANTI;
+        if (digit != qr_digits[1] || event("TARGET_SINGLE_PASS")) issues++;
+    } else if (task == PROTO_TASK_HOSTAGE) {
+        marker = SCENE_RESCUE;
+        if (digit != qr_digits[2] || !event("R9_RIGHT85") || event("HOSTAGE_SINGLE_PASS")) issues++;
+    } else if (task == PROTO_TASK_BUCKET) {
+        marker = VISION_BUCKET_MARKER;
+        if (digit != 0u || positive_180 != 1u || !event("BALL_TURN180") || event("BUCKET_ALIGN")
+            || !close_value(heading_deg, 207.0f, 0.31f)) issues++;
+    } else { issues++; return 0; }
+    index = target_request_count++;
+    target_requests[index].task = task;
+    target_requests[index].digit = digit;
+    target_requests[index].at = now_ms;
+    target_requests[index].heading = heading_deg;
+    target_requests[index].positive_180_before = positive_180;
+    scenes[scene_count++] = marker;
+    receive_open = 1;
+    in_context = IN_VISION; context_at = now_ms; scene_in_progress = marker;
     motion_brake();
     for (unsigned i = 0u; i < 40u && !aborted; ++i) osDelay(1u);
     in_context = saved;
-    if (scene == SCENE_QR && !aborted) qr_ready = 1u;
     return !aborted; /* command/ACK framing is covered by the binary replay suite */
 }
 void proto_send_scene(ProtoScene scene)
 {
-    if (scene != SCENE_IDLE) issues++;
-    idle_scene = scene;
+    (void)scene;
+    forbidden_scene_calls++; issues++; /* No stop/IDLE command is permitted in mode32. */
+}
+void step_vision_receive_end(void)
+{
+    receive_open = 0;
+    receive_end_calls++;
 }
 
 void step_object_select(int cls, int label)
@@ -264,12 +350,13 @@ void step_object_select(int cls, int label)
     selected_cls = cls; selected_label = label;
     align_index = 0u; next_frame_at = now_ms;
     if (strstr(mission_trial_phase(), "ALIGN") && cls >= 0 && cls < 4) align_anchors[cls] = progress();
-    if ((cls == CLS_BALL && label != LAB_G) || (cls == CLS_TARGET && label != LAB_B)
-        || (cls == CLS_HOSTAGE && label != LAB_CYL) || (cls == CLS_BUCKET && label != -1)) issues++;
+    if ((cls == CLS_BALL && label != qr_digits[0] - 1) || (cls == CLS_TARGET && label != qr_digits[1] - 1)
+        || (cls == CLS_HOSTAGE && label != qr_digits[2] + 2) || (cls == CLS_BUCKET && label != -1)) issues++;
 }
 int step_object_take(ProtoFrame *out)
 {
     float at = progress();
+    if (!receive_open) { issues++; return 0; }
     if (all_missing) return 0;
     memset(out, 0, sizeof *out);
     out->type = PF_OBJ; out->cls = selected_cls; out->label = selected_label;
@@ -296,11 +383,32 @@ int step_fire(uint32_t ms)
 {
     int saved = in_context;
     uint32_t started = now_ms;
-    if (ms != 2000u || !is_phase("TARGET_LASER")) issues++;
+    if (ms != 2000u || !is_phase("TARGET_LASER") || target_settle_calls != 1u ||
+        now_ms - target_settle_started != 1000u || target_settle_finished != now_ms ||
+        cmd_fore != 0.0f || cmd_lat != 0.0f || cmd_w != 0.0f) issues++;
+    if (aborted) return 0;
+    laser_started = now_ms;
     fire_calls++; bp_laser_set(1);
     in_context = IN_LASER; context_at = now_ms;
     while (!aborted && now_ms - started < ms) osDelay(1u);
-    bp_laser_set(0); in_context = saved;
+    bp_laser_set(0); laser_finished = now_ms; in_context = saved;
+    return !aborted;
+}
+
+int step_target_settle(void)
+{
+    int saved = in_context;
+    uint32_t started = now_ms;
+    observe();
+    if (!is_phase("TARGET_SETTLE1S")) issues++;
+    target_settle_calls++;
+    target_settle_started = now_ms;
+    bp_laser_set(0); motion_brake();
+    if (aborted) return 0;
+    in_context = IN_TARGET_SETTLE; context_at = now_ms;
+    while (!aborted && now_ms - started < 1000u) osDelay(1u);
+    target_settle_finished = now_ms;
+    in_context = saved;
     return !aborted;
 }
 
@@ -310,17 +418,24 @@ static void reset_fixture(void)
     memset(align_signs, 0, sizeof align_signs); memset(last_report, 0, sizeof last_report);
     memset(last_split_report, 0, sizeof last_split_report); memset(return_commands, 0, sizeof return_commands);
     memset(align_anchors, 0, sizeof align_anchors);
+    memset(scenes, 0, sizeof scenes); memset(target_requests, 0, sizeof target_requests);
+    target_request_count = 0u; qr_digits[0] = 2; qr_digits[1] = 3; qr_digits[2] = 1;
+    vision_abort_marker = -1;
     event_count = issues = qr_reads = commands = tuning_locks = hold_count = fire_calls = laser_on_calls = scene_count = 0u;
+    target_settle_calls = 0u;
+    target_settle_started = target_settle_finished = laser_started = laser_finished = 0u;
     now_ms = phase_at = context_at = abort_at = 0u;
     fore_mm = lat_mm = cmd_fore = cmd_lat = cmd_w = 0.0f; heading_deg = 37.0f;
     abort_fore = abort_lat = abort_w = 0.0f;
     aborted = laser_on = all_missing = 0; in_context = IN_NONE; scene_in_progress = -1;
-    abort_name = 0; abort_context = abort_kind = 0; idle_scene = SCENE_RESCUE;
+    abort_name = 0; abort_context = abort_kind = 0;
+    receive_open = 1; receive_end_calls = forbidden_scene_calls = 0u; /* boot QR may be active */
     selected_cls = selected_label = -1; align_index = positive_180 = first_turn_seen = 0u;
     first_leg_locks = qr_prepared = qr_ready = 0u; sensor_ok = 1;
     task_errors[0] = 60; task_errors[1] = -30;
     settle_shift_mm = 0.0f; ball_at_mm = 300.0f; target_at_mm = 800.0f; hostage_at_mm = 400.0f;
-    task_exact_heading = 0; qr_valid_after_ms = 0u;
+    task_exact_heading = 0; qr_valid_after_ms = qr_request_at = 0u;
+    qr_precached = qr_request_failed = 0;
     mission_trial_init();
     for (int cls = 0; cls < 4; ++cls)
         if (!mission_trial_set_alignment(cls, 200 + cls * 10, 1)) issues++;
@@ -331,7 +446,7 @@ static int test_success(void)
 {
     static const char *const order[] = { "R1_LEFT500", "QR_WAIT", "QR_VALID", "R2_BACK600", "R3_LEFT95", "R4_CROSS_ROAD750",
         "R5_LEFT730", "R6_FORWARD830", "R7_RIGHT85", "BALL_SINGLE_PASS", "BALL_ALIGN", "BALL_HOLD10S", "BALL_TURN180",
-        "BUCKET_ALIGN", "BUCKET_HOLD10S", "BUCKET_TURN180_BACK", "BUCKET_LEG_START", "TARGET_SINGLE_PASS", "TARGET_ALIGN", "TARGET_LASER",
+        "BUCKET_ALIGN", "BUCKET_HOLD10S", "BUCKET_TURN180_BACK", "BUCKET_LEG_START", "TARGET_SINGLE_PASS", "TARGET_ALIGN", "TARGET_SETTLE1S", "TARGET_LASER",
         "TARGET_RETURN", "BUCKET_TO_CORNER_REMAINDER", "R9_RIGHT85", "HOSTAGE_SINGLE_PASS", "HOSTAGE_ALIGN", "HOSTAGE_HOLD10S",
         "HOSTAGE_RETURN", "RESCUE_REMAINDER2125", "ROUTE_END" };
     const Event *a, *b;
@@ -341,9 +456,24 @@ static int test_success(void)
     CHECK(issues == 0u && !aborted && !laser_on);
     CHECK(event_count == sizeof order / sizeof order[0]);
     for (unsigned i = 0u; i < event_count; ++i) CHECK(strcmp(events[i].name, order[i]) == 0);
-    CHECK(qr_reads == 2u && fire_calls == 1u && laser_on_calls == 1u && positive_180 == 2u);
+    CHECK(qr_reads >= 2u && fire_calls == 1u && laser_on_calls == 1u && positive_180 == 2u);
+    CHECK(TARGET_AIM_SETTLE_MS == 1000u && TARGET_LASER_ON_MS == 2000u);
+    CHECK(target_settle_calls == 1u && target_settle_finished - target_settle_started == 1000u);
+    CHECK(laser_started == target_settle_finished && laser_finished - laser_started == 2000u);
     mission_trial_get_qr(qr); CHECK(qr[0] == 2 && qr[1] == 3 && qr[2] == 1);
-    CHECK(scene_count == 4u && scenes[0] == SCENE_QR && scenes[1] == SCENE_EOD && scenes[2] == SCENE_ANTI && scenes[3] == SCENE_RESCUE && idle_scene == SCENE_IDLE);
+    CHECK(scene_count == 5u && scenes[0] == SCENE_QR && scenes[1] == SCENE_EOD
+        && scenes[2] == VISION_BUCKET_MARKER && scenes[3] == SCENE_ANTI && scenes[4] == SCENE_RESCUE
+        && forbidden_scene_calls == 0u && !receive_open && receive_end_calls >= 5u);
+    CHECK(target_request_count == 4u);
+    CHECK(target_requests[0].task == PROTO_TASK_BALL && target_requests[0].digit == 2u);
+    CHECK(target_requests[1].task == PROTO_TASK_BUCKET && target_requests[1].digit == 0u);
+    CHECK(target_requests[2].task == PROTO_TASK_TARGET && target_requests[2].digit == 3u);
+    CHECK(target_requests[3].task == PROTO_TASK_HOSTAGE && target_requests[3].digit == 1u);
+    CHECK(target_requests[0].positive_180_before == 0u && target_requests[1].positive_180_before == 1u);
+    CHECK(target_requests[2].positive_180_before == 2u && target_requests[3].positive_180_before == 2u);
+    CHECK(target_requests[1].at > event("BALL_TURN180")->at
+        && target_requests[1].at < event("BUCKET_ALIGN")->at
+        && close_value(target_requests[1].heading, 207.0f, 0.31f));
     CHECK(hold_count == 3u && tuning_locks > 15u && first_leg_locks == tuning_locks);
     for (unsigned i = 0u; i < 3u; ++i) CHECK(holds[i].duration == 10000u);
     for (unsigned i = 0u; i < 4u; ++i) CHECK(align_signs[i] == 3u);
@@ -364,6 +494,12 @@ static int test_success(void)
     a = event("QR_WAIT"); b = event("R2_BACK600"); CHECK(a && b && b->at - a->at < 10000u
         && close_value(b->fore, a->fore, 0.001f) && close_value(b->lat, a->lat, 0.001f));
     a = event("BALL_HOLD10S"); b = event("BALL_TURN180"); CHECK(a && b && b->at - a->at >= 10000u);
+    CHECK(close_value(a->road, b->road, 0.001f) && close_value(a->fore, b->fore, 0.001f) && close_value(a->lat, b->lat, 0.001f));
+    a = event("TARGET_SETTLE1S"); b = event("TARGET_LASER");
+    CHECK(a && b && b->at - a->at == 1000u);
+    CHECK(close_value(a->road, b->road, 0.001f) && close_value(a->fore, b->fore, 0.001f) && close_value(a->lat, b->lat, 0.001f));
+    a = event("TARGET_LASER"); b = event("TARGET_RETURN");
+    CHECK(a && b && b->at - a->at == 2000u && b->at == laser_finished);
     CHECK(close_value(a->road, b->road, 0.001f) && close_value(a->fore, b->fore, 0.001f) && close_value(a->lat, b->lat, 0.001f));
     a = event("BUCKET_HOLD10S"); b = event("BUCKET_TURN180_BACK"); CHECK(a && b && b->at - a->at >= 10000u);
     CHECK(close_value(a->road, b->road, 0.001f) && close_value(a->fore, b->fore, 0.001f) && close_value(a->lat, b->lat, 0.001f));
@@ -386,13 +522,44 @@ static int test_success(void)
     return 0;
 }
 
+static int test_all_qr_target_requests(void)
+{
+    for (int ball = 1; ball <= 3; ++ball)
+        for (int target = 1; target <= 3; ++target)
+            for (int hostage = 1; hostage <= 3; ++hostage) {
+                int32_t latched[3];
+                reset_fixture();
+                qr_digits[0] = ball; qr_digits[1] = target; qr_digits[2] = hostage;
+                CHECK(mission_trial_run() == 1 && issues == 0u);
+                mission_trial_get_qr(latched);
+                CHECK(latched[0] == ball && latched[1] == target && latched[2] == hostage);
+                CHECK(target_request_count == 4u && scene_count == 5u && scenes[0] == SCENE_QR);
+                CHECK(target_requests[0].task == PROTO_TASK_BALL && target_requests[0].digit == ball);
+                CHECK(target_requests[1].task == PROTO_TASK_BUCKET && target_requests[1].digit == 0u);
+                CHECK(target_requests[2].task == PROTO_TASK_TARGET && target_requests[2].digit == target);
+                CHECK(target_requests[3].task == PROTO_TASK_HOSTAGE && target_requests[3].digit == hostage);
+                CHECK(target_requests[0].at < target_requests[1].at
+                    && target_requests[1].at < target_requests[2].at
+                    && target_requests[2].at < target_requests[3].at);
+                CHECK(target_requests[1].positive_180_before == 1u
+                    && target_requests[1].at > event("BALL_TURN180")->at
+                    && target_requests[1].at < event("BUCKET_ALIGN")->at
+                    && close_value(target_requests[1].heading, 207.0f, 0.31f));
+                CHECK(positive_180 == 2u && hold_count == 3u && fire_calls == 1u && !laser_on);
+            }
+    return 0;
+}
+
 static int test_no_objects(void)
 {
     reset_fixture(); all_missing = 1;
     CHECK(mission_trial_run() == 1 && issues == 0u);
     CHECK(!event("BALL_ALIGN") && !event("BUCKET_ALIGN") && !event("TARGET_ALIGN") && !event("HOSTAGE_ALIGN"));
-    CHECK(!event("BALL_TURN180") && !event("BUCKET_TURN180_BACK") && !event("TARGET_LASER"));
+    CHECK(!event("BALL_TURN180") && !event("BUCKET_TURN180_BACK") && !event("TARGET_SETTLE1S") && !event("TARGET_LASER"));
     CHECK(hold_count == 0u && fire_calls == 0u && positive_180 == 0u && strstr(last_report, "hits=0"));
+    CHECK(target_request_count == 3u && scene_count == 4u);
+    CHECK(target_requests[0].task == PROTO_TASK_BALL && target_requests[1].task == PROTO_TASK_TARGET
+        && target_requests[2].task == PROTO_TASK_HOSTAGE); /* No invented bucket request without a ball turn. */
     CHECK(!event("BUCKET_LEG_START") && event("BUCKET_ANCHOR_MISSING")
         && close_value(event("BUCKET_ANCHOR_MISSING")->road, 2450.0f, 0.7f));
     CHECK(strstr(last_split_report, "bucket_anchor=MISSING"));
@@ -469,6 +636,23 @@ static int test_qr_wait_without_fixed_hold(void)
     return 0;
 }
 
+static int test_qr_precached_and_request_failure(void)
+{
+    const Event *qr, *back;
+    reset_fixture(); qr_precached = 1;
+    CHECK(mission_trial_run() == 1 && issues == 0u);
+    qr = event("QR_WAIT"); back = event("R2_BACK600");
+    CHECK(qr && back && back->at - qr->at == 20u && qr_reads == 1u);
+    CHECK(close_value(qr->fore, back->fore, 0.001f) && close_value(qr->lat, back->lat, 0.001f));
+    CHECK(event("QR_VALID") && hold_count == 3u && target_settle_calls == 1u);
+    reset_fixture(); qr_request_failed = 1;
+    CHECK(mission_trial_run() == 0 && issues == 0u && aborted);
+    CHECK(event("QR_WAIT") && !event("QR_VALID") && !event("R2_BACK600") && qr_reads == 0u);
+    CHECK(is_phase("STOP") && !receive_open && forbidden_scene_calls == 0u && !laser_on && !fire_calls);
+    CHECK(cmd_fore == 0.0f && cmd_lat == 0.0f && cmd_w == 0.0f);
+    return 0;
+}
+
 static int test_return_stops_at_road_end(void)
 {
     static const char *const names[2] = { "TARGET_RETURN", "HOSTAGE_RETURN" };
@@ -493,10 +677,11 @@ static int test_cancellations(void)
     static const struct { const char *name; int context; int scene; } cases[] = {
         {"BALL_HOLD10S", IN_WAIT, 0}, {"BUCKET_HOLD10S", IN_WAIT, 0}, {"HOSTAGE_HOLD10S", IN_WAIT, 0},
         {"R3_LEFT95", IN_TURN, 0}, {"R7_RIGHT85", IN_TURN, 0}, {"BALL_TURN180", IN_TURN, 0}, {"BUCKET_TURN180_BACK", IN_TURN, 0}, {"R9_RIGHT85", IN_TURN, 0},
-        {"QR", IN_VISION, SCENE_QR}, {"EOD", IN_VISION, SCENE_EOD}, {"ANTI", IN_VISION, SCENE_ANTI}, {"RESCUE", IN_VISION, SCENE_RESCUE},
+        {"QR", IN_VISION, SCENE_QR}, {"EOD", IN_VISION, SCENE_EOD}, {"BUCKET", IN_VISION, VISION_BUCKET_MARKER},
+        {"ANTI", IN_VISION, SCENE_ANTI}, {"RESCUE", IN_VISION, SCENE_RESCUE},
         {"BALL_ALIGN", IN_ALIGN, 0}, {"BUCKET_ALIGN", IN_ALIGN, 0}, {"TARGET_ALIGN", IN_ALIGN, 0}, {"HOSTAGE_ALIGN", IN_ALIGN, 0},
         {"BALL_SINGLE_PASS", IN_PASS, 0}, {"TARGET_SINGLE_PASS", IN_PASS, 0}, {"HOSTAGE_SINGLE_PASS", IN_PASS, 0},
-        {"TARGET_LASER", IN_LASER, 0}, {"QR_WAIT", IN_QR, 0},
+        {"TARGET_SETTLE1S", IN_TARGET_SETTLE, 0}, {"TARGET_LASER", IN_LASER, 0}, {"QR_WAIT", IN_QR, 0},
         {"TARGET_RETURN", IN_RETURN, 0}, {"HOSTAGE_RETURN", IN_RETURN, 0},
         {"R1_LEFT500", IN_TRANSLATE, 0}, {"R2_BACK600", IN_TRANSLATE, 0}, {"R4_CROSS_ROAD750", IN_TRANSLATE, 0},
         {"R5_LEFT730", IN_TRANSLATE, 0}, {"R6_FORWARD830", IN_TRANSLATE, 0},
@@ -507,19 +692,21 @@ static int test_cancellations(void)
         for (int kind = 0; kind < 2; ++kind) {
             reset_fixture(); abort_name = cases[i].name; abort_context = cases[i].context; abort_kind = kind;
             if (abort_context == IN_RETURN) { task_errors[0] = -60; task_errors[1] = 30; }
-            if (abort_context == IN_VISION) idle_scene = (ProtoScene)cases[i].scene;
+            if (abort_context == IN_VISION) vision_abort_marker = cases[i].scene;
             CHECK(mission_trial_run() == 0 && aborted && issues == 0u);
             CHECK(abort_at != 0u && now_ms - abort_at <= 5u);
             if (abort_context == IN_TURN) CHECK(fabsf(abort_w) > 0.0f);
             if (abort_context == IN_ALIGN || abort_context == IN_PASS || abort_context == IN_TRANSLATE || abort_context == IN_RETURN)
                 CHECK(fabsf(abort_fore) + fabsf(abort_lat) > 0.0f);
-            if (abort_context == IN_WAIT || abort_context == IN_QR || abort_context == IN_VISION || abort_context == IN_PREP)
+            if (abort_context == IN_WAIT || abort_context == IN_QR || abort_context == IN_VISION || abort_context == IN_PREP || abort_context == IN_TARGET_SETTLE)
                 CHECK(abort_fore == 0.0f && abort_lat == 0.0f && abort_w == 0.0f);
-            CHECK(strcmp(mission_trial_phase(), "STOP") == 0 && idle_scene == SCENE_IDLE && !laser_on);
+            CHECK(strcmp(mission_trial_phase(), "STOP") == 0 && !receive_open && forbidden_scene_calls == 0u && !laser_on);
             CHECK(cmd_fore == 0.0f && cmd_lat == 0.0f && cmd_w == 0.0f);
             CHECK(!event("ROUTE_END") && mission_trial_set_alignment(0, 200, 1));
             CHECK(mission_trial_set_first_leg(1001u));
             if (strcmp(abort_name, "TARGET_LASER") == 0) CHECK(!event("TARGET_RETURN"));
+            if (strcmp(abort_name, "TARGET_SETTLE1S") == 0)
+                CHECK(!event("TARGET_LASER") && !event("TARGET_RETURN") && fire_calls == 0u && laser_on_calls == 0u);
             if (strcmp(abort_name, "HOSTAGE_HOLD10S") == 0) CHECK(!event("HOSTAGE_RETURN"));
             if (strcmp(abort_name, "TARGET_RETURN") == 0) CHECK(!event("BUCKET_TO_CORNER_REMAINDER"));
             if (strcmp(abort_name, "HOSTAGE_RETURN") == 0) CHECK(!event("RESCUE_REMAINDER2125"));
@@ -565,14 +752,16 @@ static int test_configuration_and_pending_abort(void)
 int main(void)
 {
     CHECK(test_success() == 0);
+    CHECK(test_all_qr_target_requests() == 0);
     CHECK(test_no_objects() == 0);
     CHECK(test_ball_beyond_common_bucket() == 0);
     CHECK(test_net_alignment_returns() == 0);
     CHECK(test_qr_wait_without_fixed_hold() == 0);
+    CHECK(test_qr_precached_and_request_failure() == 0);
     CHECK(test_return_stops_at_road_end() == 0);
     CHECK(test_cancellations() == 0);
     CHECK(test_return_imu_failure() == 0);
     CHECK(test_configuration_and_pending_abort() == 0);
-    puts("mission trial flow: real runner/ledger, QR valid wait without fixed hold, 3 task holds, common-bucket b1d split, ball beyond bucket, signed net returns without double count, capped road-end return, 68 stop injections, 2 return IMU failures and config gates passed (synthetic host only)");
+    puts("mission trial flow: real runner/ledger, 27 QR task selections and 4 ordered target requests (bucket only after +180), cached/new QR valid wait and request failure, 3 arm holds, target stopped1s then laser2s/off before return, common-bucket split, signed net returns, capped road-end return, 72 stop injections, 2 return IMU failures and config gates passed (synthetic host only)");
     return 0;
 }

@@ -16,6 +16,8 @@ void run_abort(void);       /* 请求外部安全停机:正在等待的步骤尽
 void wait_ms(uint32_t ms);                 /* 睡 ms(让出 CPU,期间可被中止) */
 int  wait_qr(int32_t d[3], uint32_t to);   /* 等二维码帧,存 d1/d2/d3;to==0→不限时;超时/中止→0 */
 int  step_vision_scene(ProtoScene scene); /* stopped command/ACK/fresh-result handshake */
+int  step_vision_target(ProtoTask task, uint8_t digit); /* selected task; stopped handshake */
+void step_vision_receive_end(void); /* local RX stage end + clear slots; camera keeps recognizing */
 void step_object_select(int cls, int label); /* new phase: clear slot and filter ISR inputs */
 int  step_object_take(ProtoFrame *out);      /* consume the latest matching fresh object */
 
@@ -51,6 +53,7 @@ const char *steps_config_missing(void); /* 主流程启动前检查仍为占位�
 #define NAV_SETTLE_MS  750u    /* 清本段航向零点后等待 0.75s，再启动下一段 */
 int  step_prepare_leg(void);      /* 刹车→四轮编码器连续静止→航向软件清零→等待；失败/中止回 0 */
 float step_heading_hold_w(float heading0_deg); /* 当前 IMU 相对航向→yaw 保持角速度(rad/s) */
+float step_heading_hold_w_kp(float heading0_deg, float kp); /* 显式0..5增益，不修改全局；单段调试用 */
 float step_heading_kp_deg(void);                /* 当前 RAM 航向增益 */
 int   step_heading_kp_set(float kp);            /* 0..5，RAM-only；成功回 1 */
 float step_orth_kp(void);                       /* 当前局部正交串动增益 */
@@ -74,6 +77,9 @@ int  step_arm_lift(uint32_t steps);   /* axis1(竖直丝杆)抬 steps 步:抓后
 int  step_arm_lower(uint32_t steps);  /* axis1(竖直丝杆)降 steps 步:抓前到目标高度或放桶前入桶 */
 
 /* ---- 动作步骤(ANTI) ---- */
+#define TARGET_AIM_SETTLE_MS 1000u /* 对准后保持刹车、激光关闭，静置1秒 */
+#define TARGET_LASER_ON_MS   2000u /* 靶射击保持2秒，结束/中止均关闭 */
+int  step_target_settle(void);                      /* 对准后静置；可中止，中止不得开光 */
 int  step_fire(uint32_t hold_ms);                    /* 激光亮 hold_ms 后自动灭 */
 
 /* ---- 帧喂入(MaixCam 帧解析回调里调,ISR 上下文) ---- */

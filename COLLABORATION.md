@@ -4,6 +4,8 @@
 
 电控主要改根目录 `App/`；视觉主要改 `03_扫码与物体识别联合App工程/qr_object_app/`。旧的 `jiejie` 演示仓库不再使用，但本仓库 Keil 工程文件依然叫 `MDK-ARM/jiejie.uvprojx`，不要混淆。
 
+2026-10-05当前交接见 [README_本次更新.md](README_本次更新.md) 与 [CONTROL_TO_VISION.md](CONTROL_TO_VISION.md)：电控ROUTE34-NOQR、视觉6a20efe/App2.1.1；53/63已补、34无码路线已加，真实QR/ACK仍未接通。下方10月4日为历史快照，不作为最新固件或测试数量。
+
 ## 电控框架与调参边界（2026-10-01）
 
 电控总体设计以用户已确认的口径、本地项目记录和验证证据为基准，由电控侧 Codex 负责集成审核；队友新提交不自动成为正确版本。现有框架默认保持，不随意重构。
@@ -40,7 +42,7 @@ VS Code 是编辑和 Git 操作界面；Keil 负责固件编译/调试。用 Git
 
 ### 双向协议交接（2026-10-04用户确认）
 
-视觉维护 [VISION_TO_CONTROL.md](VISION_TO_CONTROL.md)，电控每次协作或修改接收接口前读取。电控维护 `CONTROL_TO_VISION.md`，视觉每次协作或修改发送接口前读取；该文件当前由电控侧待创建，创建前先读取其已有 [VISION_TEAM_HANDOFF.md](VISION_TEAM_HANDOFF.md)，不由视觉代写电控确认。
+视觉维护 [VISION_TO_CONTROL.md](VISION_TO_CONTROL.md)，电控每次协作或修改接收接口前读取。电控已创建并维护 [CONTROL_TO_VISION.md](CONTROL_TO_VISION.md)，视觉每次协作或修改发送接口前读取；各自只维护本方方向文件，不替对方编造确认。旧 [VISION_TEAM_HANDOFF.md](VISION_TEAM_HANDOFF.md) 包仅供追溯，当前操作已在页首先列出。
 
 每次协议核对发现不匹配，或更新视觉代码/模型，都由视觉更新自己的方向文件，记录源码基线、实际输出、接收差异、相关VC编号和验证证据，并提交推送共用 `main`。这是用户对该协作流程的持续上传授权；明确要求暂不上传时除外。推送后报告真实提交号，队友拉取并按自己的方向文件反馈，不需要用户反复转述聊天。
 

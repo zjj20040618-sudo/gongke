@@ -53,6 +53,7 @@ void arm_stepper_step(int axis) { (void)axis; }
 void arm_claw_open(void) { }
 void arm_claw_close(void) { }
 void bp_laser_set(int on) { (void)on; }
+void proto_receive_end(void) { } /* abort closes local RX without a camera command */
 /* Rotation-only cases must never enter the recognition handshake. */
 void proto_send_scene(ProtoScene scene)
 {
@@ -64,6 +65,16 @@ int proto_scene_status(void)
 {
     fputs("legacy rotation unexpectedly polled a vision scene\n", stderr);
     abort();
+}
+int proto_target_filter(ProtoTask task, uint8_t digit, int *cls, int *label)
+{
+    (void)task; (void)digit; (void)cls; (void)label;
+    fputs("legacy rotation unexpectedly selected a vision target\n", stderr); abort();
+}
+int proto_send_target(ProtoTask task, uint8_t digit)
+{
+    (void)task; (void)digit;
+    fputs("legacy rotation unexpectedly requested a vision target\n", stderr); abort();
 }
 
 static int check(int deg, float start, float first_sample, int expected_sign)

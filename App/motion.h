@@ -32,6 +32,10 @@ const char *motion_profile_config_missing(void);
 void  motion_linear_ramp_init(MotionRamp *r);
 float motion_linear_profile_step(MotionRamp *r, float cruise_mms,
                                  float remaining_mm, float dt_s);
+/* Explicit caller-owned limits, without reading/writing the global profile.
+ * Initialize r with positive acc/dec; either disabled limit means constant speed. */
+float motion_linear_ramp_step(MotionRamp *r, float cruise_mms,
+                              float remaining_mm, float dt_s);
 
 void     motion_init(void);
 void     motion_ik(float vx, float vy, float w, int16_t rpm[4]); /* 体坐标速度 → 四轮 rpm */

@@ -12,6 +12,7 @@ static char buf[PROTO_MAX_LEN];
 static int  blen = 0;
 static int  dropping = 0;
 static volatile ProtoStats s_stats;
+static volatile ProtoWireDiag s_wire;
 static uint8_t s_binary, s_binary_buf[PROTO_BINARY_MAX_LEN];
 static unsigned s_binary_len;
 static uint32_t s_binary_tick;
@@ -19,6 +20,12 @@ static uint16_t s_binary_seq;
 static uint8_t s_binary_have_seq;
 static volatile uint16_t s_request;
 static volatile uint8_t s_controlled, s_mode, s_ack, s_fresh, s_failed, s_due;
+static volatile uint8_t s_receiving;
+static volatile uint8_t s_task, s_selection;
+static volatile int s_target_cls, s_target_label;
+static volatile uint8_t s_qr_valid, s_qr_notice_pending;
+static int32_t s_qr_tuple[3]; /* First legal QR of the current controlled request. */
+static int32_t s_qr_notice_tuple[3]; /* Survives automatic IDLE/OBJECT transition. */
 static uint32_t s_send_tick;
 
 static int token_int(const char *tok, int *out);
@@ -33,12 +40,19 @@ void proto_init(void)
     blen = dropping = 0;
     s_binary = 0u; s_binary_len = 0u; s_binary_have_seq = 0u;
     s_request = 0u; s_controlled = s_mode = s_ack = s_fresh = s_failed = s_due = 0u;
+    s_receiving = 0u;
+    s_task = s_selection = 0u; s_target_cls = s_target_label = -1;
+    s_qr_valid = s_qr_notice_pending = 0u; memset(s_qr_tuple, 0, sizeof s_qr_tuple);
+    memset(s_qr_notice_tuple, 0, sizeof s_qr_notice_tuple);
     memset((void *)&s_stats, 0, sizeof s_stats);
+    memset((void *)&s_wire, 0, sizeof s_wire);
 }
 void proto_set_binary_mode(int enabled)
 {
     s_binary = enabled ? 1u : 0u;
+    s_receiving = 0u;
     blen = dropping = 0; s_binary_len = 0u; s_binary_have_seq = 0u;
+    s_qr_valid = s_qr_notice_pending = 0u; memset(s_qr_tuple, 0, sizeof s_qr_tuple);
 }
 void proto_set_tx(void (*tx)(const char *s))          { s_tx = tx; }
 void proto_set_binary_tx(void (*tx)(const uint8_t *, uint16_t)) { s_binary_tx = tx; }
@@ -47,6 +61,7 @@ void proto_set_on_frame(void (*cb)(const ProtoFrame *f)) { s_on_frame = cb; }
 /* 串口逐字节喂入(USART2 RxCplt 回调里被调):攒行,\n 触发一次整帧 dispatch,孤立 \r 忽略 */
 void proto_feed_byte(uint8_t ch)
 {
+    s_wire.rx_bytes++;
     if (s_binary) { binary_feed(ch); return; }
     if (ch == '\r') return;                  /* 忽略帧内 \r，仅 \n 作尾 */
     if (ch == '\n') {
@@ -138,6 +153,34 @@ void proto_stats_get(ProtoStats *out)
     __set_PRIMASK(pm);
 }
 
+void proto_wire_diag_get(ProtoWireDiag *out)
+{
+    uint32_t pm;
+    if (!out) return;
+    pm = __get_PRIMASK(); __disable_irq();
+    *out = s_wire;
+    out->request = s_request; out->mode = s_mode;
+    out->controlled = s_controlled; out->ack = s_ack;
+    out->fresh = s_fresh; out->failed = s_failed;
+    out->receiving = s_receiving;
+    out->task = s_task; out->selection = s_selection;
+    __set_PRIMASK(pm);
+}
+
+/* Cache a bounded prefix in RX context; formatting/TX belongs to DefaultTask.
+ * length may be the expected size of a malformed frame. Only available bytes
+ * are copied. No pointer to the parser's mutable buffer escapes the ISR. */
+static void binary_reject_evidence(unsigned length)
+{
+    unsigned n = s_binary_len;
+    if (n > length) n = length;
+    if (n > PROTO_WIRE_PREFIX_LEN) n = PROTO_WIRE_PREFIX_LEN;
+    s_wire.last_reject_type = s_binary_len > 2u ? s_binary_buf[2] : 0u;
+    s_wire.last_reject_len = (uint16_t)length;
+    s_wire.prefix_len = (uint8_t)n;
+    for (unsigned i = 0u; i < n; i++) s_wire.prefix[i] = s_binary_buf[i];
+}
+
 static uint16_t read_le16(const uint8_t *p)
 {
     return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
@@ -180,10 +223,14 @@ static int binary_dispatch(const uint8_t *p)
     ProtoFrame f;
     memset(&f, 0, sizeof f);
     f.sequence = sequence;
-    if (type == 0x51u) {
-        if (count != 1u || p[4] != 3u || p[5] < '1' || p[5] > '3'
-            || p[6] < '1' || p[6] > '3' || p[7] < '1' || p[7] > '3') return 0;
-        f.type = PF_QR; f.a = p[5] - '0'; f.b = p[6] - '0'; f.c = p[7] - '0';
+    if (type == 0x51u || type == 0x53u) {
+        const unsigned offset = type == 0x53u ? 4u : 5u;
+        if (count != 1u || (type == 0x51u && p[4] != 3u)
+            || p[offset] < '1' || p[offset] > '3'
+            || p[offset + 1u] < '1' || p[offset + 1u] > '3'
+            || p[offset + 2u] < '1' || p[offset + 2u] > '3') return 0;
+        f.type = PF_QR; f.a = p[offset] - '0';
+        f.b = p[offset + 1u] - '0'; f.c = p[offset + 2u] - '0';
     } else {
         f.img_w = read_le16(p + 4); f.img_h = read_le16(p + 6);
         if (f.img_w == 0u || f.img_h == 0u) return 0;
@@ -199,8 +246,17 @@ static int binary_dispatch(const uint8_t *p)
     if (s_binary_have_seq && sequence == s_binary_seq) { s_stats.duplicate++; return 1; }
     s_binary_seq = sequence; s_binary_have_seq = 1u;
     s_stats.accepted++;
-    if (type == 0x51u) {
+    if (type == 0x51u || type == 0x53u) {
         s_stats.qr++;
+        /* This dispatcher is reached only after CRC/length validation. Legacy
+         * frames cannot fill the request-bound startup cache. Keep the first
+         * complete legal task choice, even while the chassis is still in R1. */
+        if (s_controlled && s_mode == 1u && s_ack && !s_failed && !s_qr_valid) {
+            s_qr_tuple[0] = f.a; s_qr_tuple[1] = f.b; s_qr_tuple[2] = f.c;
+            memcpy(s_qr_notice_tuple, s_qr_tuple, sizeof s_qr_notice_tuple);
+            s_qr_notice_pending = 1u;
+            s_qr_valid = 1u;
+        }
         if (s_on_frame) s_on_frame(&f);
     } else {
         s_stats.obj++;
@@ -209,6 +265,10 @@ static int binary_dispatch(const uint8_t *p)
             const uint16_t score = read_le16(obj + 1);
             int best = 1;
             if (!binary_class(obj[0], &f.cls, &f.label)) { s_stats.binary_unmapped++; continue; }
+            /* Even if the camera returns all detections, a selected request
+             * must never deliver another task/color/shape to the chassis. */
+            if (s_task && (f.cls != s_target_cls
+                || (s_target_label >= 0 && f.label != s_target_label))) continue;
             for (unsigned j = 0u; j < count; j++) {
                 const uint8_t *other = p + 14u + 11u * j;
                 if (j != i && other[0] == obj[0]
@@ -227,10 +287,24 @@ static int binary_dispatch(const uint8_t *p)
 /* Called only after outer CRC and exact length validation. Never transmit in RX ISR. */
 static int control_dispatch(const uint8_t *p, unsigned length)
 {
+    s_wire.last_type = p[0];
+    /* A CRC-valid returned request is echo/loopback evidence, not an ACK.
+     * Continue rejecting it; do not turn transport echo into scan success. */
+    if (p[0] == 0x60u || p[0] == 0x63u) {
+        s_wire.command_echo++;
+        return 0;
+    }
     if (p[0] == 0x61u) {
         if (length != 5u || p[3] > 2u || p[4] > 1u) return 0;
-        if (!s_controlled || read_le16(p + 1) != s_request) return 1;
-        if (p[4] != 0u || p[3] != s_mode) { s_failed = 1u; s_ack = 0u; return 1; }
+        s_wire.ack_packets++;
+        if (!s_controlled || read_le16(p + 1) != s_request) {
+            s_wire.ack_mismatch++; return 1;
+        }
+        if (!s_receiving) { s_wire.outside_phase++; return 1; }
+        if (p[4] != 0u || p[3] != s_mode) {
+            s_wire.ack_failed++;
+            s_failed = 1u; s_ack = 0u; s_qr_notice_pending = 0u; return 1;
+        }
         s_ack = 1u;
         return 1;
     }
@@ -238,12 +312,25 @@ static int control_dispatch(const uint8_t *p, unsigned length)
         const unsigned n = read_le16(p + 3);
         const uint8_t *body = p + 5;
         if (n + 5u != length || n < 4u) return 0;
-        if (!s_controlled || !s_ack || s_failed || s_mode == 0u
-            || read_le16(p + 1) != s_request) { s_stats.rejected++; return 1; }
+        if (!s_controlled || read_le16(p + 1) != s_request) {
+            s_wire.result_mismatch++;
+            binary_reject_evidence(length + 4u);
+            s_stats.rejected++; return 1;
+        }
+        if (!s_receiving) { s_wire.outside_phase++; return 1; }
+        if (!s_ack || s_failed || s_mode == 0u) {
+            s_wire.result_preack++;
+            binary_reject_evidence(length + 4u);
+            s_stats.rejected++; return 1;
+        }
         if (s_mode == 1u && body[0] == 0x51u) {
             if (body[3] == 0u && n == 4u) { s_fresh = 1u; return 1; }
             if (body[3] != 1u || n < 5u || n != 13u + body[4]) return 0;
             /* A structurally fresh but invalid QR is not a valid task selection. */
+            s_fresh = 1u;
+        } else if (s_mode == 1u && body[0] == 0x53u) {
+            if (body[3] == 0u && n == 4u) { s_fresh = 1u; return 1; }
+            if (body[3] != 1u || n != 7u) return 0;
             s_fresh = 1u;
         } else if (s_mode == 2u && body[0] == 0x01u) {
             if (body[3] > PROTO_BINARY_MAX_OBJECTS || n != 14u + 11u * body[3]) return 0;
@@ -253,7 +340,12 @@ static int control_dispatch(const uint8_t *p, unsigned length)
         return 1;
     }
     /* Legacy frames remain available for standalone replay, never for an armed run. */
-    if (s_controlled) { s_stats.rejected++; return 1; }
+    if (s_controlled) {
+        if (p[0] == 0x51u || p[0] == 0x53u) s_wire.legacy_qr++;
+        else if (p[0] == 0x01u) s_wire.legacy_obj++;
+        binary_reject_evidence(length + 4u);
+        s_stats.rejected++; return 1;
+    }
     return binary_dispatch(p);
 }
 
@@ -280,11 +372,14 @@ static void binary_feed(uint8_t ch)
         if (s_binary_buf[1] != 0x55u) { binary_drop(1u); continue; }
         if (s_binary_len < 6u) return;
         type = s_binary_buf[2]; count = s_binary_buf[5];
-        if (type == 0x61u) length = 9u;
+        if (type == 0x60u) length = 8u; /* capture valid echo, never accept it */
+        else if (type == 0x63u) length = 9u;
+        else if (type == 0x61u) length = 9u;
         else if (type == 0x62u) {
             if (s_binary_len < 7u) return;
             length = 9u + read_le16(s_binary_buf + 5);
             if (length > PROTO_BINARY_MAX_LEN || length < 13u) {
+                s_wire.bad_length++; binary_reject_evidence(length);
                 s_stats.binary_bad++; s_stats.rejected++; binary_drop(1u); continue;
             }
         }
@@ -295,15 +390,25 @@ static void binary_feed(uint8_t ch)
                 if (s_binary_len < 7u) return;
                 length = 17u + s_binary_buf[6];
             }
-        } else { s_stats.binary_bad++; s_stats.rejected++; binary_drop(1u); continue; }
+        } else if (type == 0x53u && count <= 1u) {
+            length = count == 0u ? 8u : 11u;
+        } else {
+            s_wire.unknown_type++; binary_reject_evidence(s_binary_len);
+            s_stats.binary_bad++; s_stats.rejected++; binary_drop(1u); continue;
+        }
         if (s_binary_len < length) return;
         s_stats.lines++;
         if (binary_crc(s_binary_buf + 2, length - 4u) != read_le16(s_binary_buf + length - 2u)) {
+            binary_reject_evidence(length);
             s_stats.crc_bad++; s_stats.rejected++;
             binary_drop(1u); /* keep subsequent headers after corrupt length/CRC */
             continue;
         }
-        if (!control_dispatch(s_binary_buf + 2, length - 4u)) { s_stats.binary_bad++; s_stats.rejected++; }
+        if (!control_dispatch(s_binary_buf + 2, length - 4u)) {
+            if (type != 0x60u && type != 0x63u) s_wire.invalid_payload++;
+            binary_reject_evidence(length);
+            s_stats.binary_bad++; s_stats.rejected++;
+        }
         binary_drop(length);
     }
 }
@@ -334,8 +439,15 @@ void proto_send_scene(ProtoScene sc)
         uint32_t pm = __get_PRIMASK();
         __disable_irq();
         s_controlled = 1u;
+        s_receiving = 1u;
         s_mode = sc == SCENE_IDLE ? 0u : sc == SCENE_QR ? 1u : 2u;
+        s_task = s_selection = 0u; s_target_cls = s_target_label = -1;
         s_ack = s_fresh = 0u; s_binary_have_seq = 0u;
+        s_qr_valid = 0u; memset(s_qr_tuple, 0, sizeof s_qr_tuple);
+        /* A fresh QR round cancels any previous notice. Automatic IDLE/OBJECT
+         * transitions preserve it: an RX IRQ may arrive after the task's
+         * notice poll but before its route/mode transition. */
+        if (sc == SCENE_QR) s_qr_notice_pending = 0u;
         /* Do not silently reuse an in-run request number on wrap. */
         if (s_request == 65535u) { s_failed = 1u; s_due = 0u; }
         else { s_request++; s_failed = 0u; s_due = 1u; }
@@ -356,32 +468,142 @@ void proto_send_scene(ProtoScene sc)
     if (s_tx) s_tx(s);
 }
 
+int proto_target_filter(ProtoTask task, uint8_t digit, int *cls, int *label)
+{
+    int c, l;
+    if (task == PROTO_TASK_BUCKET) {
+        if (digit != 0u) return 0;
+        c = CLS_BUCKET; l = -1;
+    } else {
+        if (digit < 1u || digit > 3u) return 0;
+        switch (task) {
+            case PROTO_TASK_BALL: c = CLS_BALL; l = (int)digit - 1; break;
+            case PROTO_TASK_TARGET: c = CLS_TARGET; l = (int)digit - 1; break;
+            case PROTO_TASK_HOSTAGE: c = CLS_HOSTAGE; l = (int)digit + 2; break;
+            default: return 0;
+        }
+    }
+    if (cls) *cls = c;
+    if (label) *label = l;
+    return 1;
+}
+
+int proto_send_target(ProtoTask task, uint8_t digit)
+{
+    int cls, label;
+    uint32_t pm;
+    if (!s_binary || !proto_target_filter(task, digit, &cls, &label)) return 0;
+    pm = __get_PRIMASK(); __disable_irq();
+    if (s_request == 65535u) {
+        s_failed = 1u; s_due = 0u;
+        __set_PRIMASK(pm); return 0;
+    }
+    s_controlled = 1u; s_mode = 2u; s_receiving = 1u;
+    s_task = (uint8_t)task; s_selection = digit;
+    s_target_cls = cls; s_target_label = label;
+    s_request++; s_ack = s_fresh = s_failed = 0u; s_due = 1u;
+    s_binary_have_seq = 0u;
+    /* The mission owns its locked QR tuple. Clear only parser readiness;
+     * preserve the DefaultTask's pending one-shot QR success notice. */
+    s_qr_valid = 0u; memset(s_qr_tuple, 0, sizeof s_qr_tuple);
+    __set_PRIMASK(pm);
+    return 1;
+}
+
+/* Startup, READY and R1 all share one QR request. Starting R1 must not erase
+ * a task choice already scanned at power-on. Cancellation/new scene clears it. */
+void proto_qr_begin(void)
+{
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    if (!s_binary || !s_controlled || !s_receiving || s_mode != 1u || s_failed)
+        proto_send_scene(SCENE_QR);
+    __set_PRIMASK(pm);
+}
+
+void proto_receive_end(void)
+{
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    s_receiving = 0u;
+    s_due = s_ack = s_fresh = 0u;
+    s_qr_valid = 0u;
+    memset(s_qr_tuple, 0, sizeof s_qr_tuple);
+    /* Keep the parser draining input. The next phase creates a new request,
+     * so a late tail from this phase cannot become a new target coordinate. */
+    __set_PRIMASK(pm);
+}
+
+void proto_qr_cancel(void)
+{
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    s_qr_notice_pending = 0u; /* Explicit abort/mode change is not auto transition. */
+    if (s_binary && s_controlled && s_mode == 1u)
+        proto_receive_end();
+    __set_PRIMASK(pm);
+}
+
+int proto_qr_get(int32_t out[3])
+{
+    uint32_t pm = __get_PRIMASK();
+    int ready;
+    __disable_irq();
+    ready = s_binary && s_controlled && s_receiving && s_mode == 1u && s_ack && s_fresh
+            && !s_failed && s_qr_valid;
+    if (ready && out) {
+        out[0] = s_qr_tuple[0]; out[1] = s_qr_tuple[1]; out[2] = s_qr_tuple[2];
+    }
+    __set_PRIMASK(pm);
+    return ready;
+}
+
+int proto_qr_take_notice(int32_t out[3])
+{
+    uint32_t pm = __get_PRIMASK();
+    int ready;
+    __disable_irq();
+    ready = s_qr_notice_pending;
+    if (ready) {
+        if (out) memcpy(out, s_qr_notice_tuple, sizeof s_qr_notice_tuple);
+        s_qr_notice_pending = 0u;
+    }
+    __set_PRIMASK(pm);
+    return ready;
+}
+
 int proto_scene_status(void)
 {
     uint32_t pm = __get_PRIMASK();
     int status;
     __disable_irq();
-    status = s_failed ? -1 : (s_ack && (s_mode == 0u || s_fresh)) ? 1 : 0;
+    status = s_failed ? -1 : (s_receiving && s_ack && (s_mode == 0u || s_fresh)) ? 1 : 0;
     __set_PRIMASK(pm);
     return status;
 }
 
 void proto_service(void)
 {
-    uint8_t packet[8] = {0xAAu, 0x55u, 0x60u, 0u, 0u, 0u, 0u, 0u};
+    uint8_t packet[9] = {0xAAu, 0x55u, 0x60u, 0u, 0u, 0u, 0u, 0u, 0u};
+    unsigned length = 8u;
     uint16_t crc;
     uint32_t pm = __get_PRIMASK(), now = HAL_GetTick();
     __disable_irq();
-    if (!s_binary || !s_controlled || s_failed || s_ack || !s_binary_tx
+    if (!s_binary || !s_controlled || !s_receiving || s_failed || s_ack || !s_binary_tx
         || (!s_due && (uint32_t)(now - s_send_tick) < 500u)) {
         __set_PRIMASK(pm); return;
     }
     packet[3] = (uint8_t)s_request; packet[4] = (uint8_t)(s_request >> 8);
-    packet[5] = s_mode; s_due = 0u; s_send_tick = now;
+    if (s_task) {
+        packet[2] = 0x63u; packet[5] = s_task; packet[6] = s_selection;
+        length = 9u;
+    } else packet[5] = s_mode;
+    s_due = 0u; s_send_tick = now;
+    s_wire.tx_attempts++; /* callback invoked below; not proof of physical TX */
     __set_PRIMASK(pm);
-    crc = binary_crc(packet + 2, 4u);
-    packet[6] = (uint8_t)crc; packet[7] = (uint8_t)(crc >> 8);
-    s_binary_tx(packet, sizeof packet);
+    crc = binary_crc(packet + 2, length - 4u);
+    packet[length - 2u] = (uint8_t)crc; packet[length - 1u] = (uint8_t)(crc >> 8);
+    s_binary_tx(packet, (uint16_t)length);
 }
 
 /* 发 PING 给视觉探活(链路测试用) */

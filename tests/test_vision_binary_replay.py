@@ -1,7 +1,7 @@
 """Historical QR51 fixtures and current OBJECT writer to real STM32 parser.
 
 legacy_qr_51 intentionally exercises the existing receiver. It does not represent
-current QR53 writer compatibility; test_mcu_protocol.py proves QR53 rejection.
+current QR53 writer; test_vision_qr53_replay.py covers that paired protocol.
 All replay evidence is synthetic host evidence, not device/UART acceptance.
 """
 import itertools

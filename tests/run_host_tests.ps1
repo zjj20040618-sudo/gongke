@@ -6,6 +6,8 @@ if (-not (Test-Path -LiteralPath $compiler)) { throw "GCC not found: $compiler" 
 $hostPython = 'D:\mingw64\bin\python.exe'
 if (-not (Test-Path -LiteralPath $hostPython)) { throw "Python not found: $hostPython" }
 $hostBuildId = [Guid]::NewGuid().ToString('N')
+$previousHostCompiler = $env:EOD_HOST_CC
+$env:EOD_HOST_CC = $compiler
 
 function Invoke-HostCase {
     param([string]$Name, [string[]]$Sources, [string[]]$Includes, [string[]]$ExtraFlags = @())
@@ -31,6 +33,7 @@ Push-Location $projectRoot
 try {
     Invoke-HostCase 'eod_arm_task_flow_test' @('tests/arm_task_flow_test.c', 'App/task_eod.c', 'App/task_rescue.c') @('App')
     Invoke-HostCase 'eod_anti_task_flow_test' @('tests/anti_task_flow_test.c', 'App/task_anti.c') @('App')
+    Invoke-HostCase 'eod_target_fire_timing_test' @('tests/target_fire_timing_test.c', 'App/steps.c') @('tests/stubs', 'App') @('-ffunction-sections', '-fdata-sections', '-fno-asynchronous-unwind-tables', '-fno-unwind-tables', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_obstacle_abort_test' @('tests/obstacle_abort_test.c', 'App/auto_steps.c') @('tests/stubs', 'App')
     Invoke-HostCase 'eod_mission_start_abort_test' @('tests/mission_start_abort_test.c') @('tests/stubs', 'App')
     # Real legacy test.c has an unrelated unused cmd_reset local; report it without changing that code.
@@ -38,10 +41,18 @@ try {
     # Real IK/ctrl target plumbing: keep the legacy unused pose local warning visible.
     Invoke-HostCase 'eod_forward_ff_ik_test' @('tests/forward_ff_ik_test.c', 'App/motion.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_precise_velocity_test' @('tests/precise_velocity_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-lm')
+    Invoke-HostCase 'eod_speed_yaw_tuning_test' @('tests/speed_yaw_tuning_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_speed_yaw_heading_test' @('tests/speed_yaw_heading_test.c', 'App/steps.c', 'App/motion.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_route_softstop_test' @('tests/route_softstop_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_route31_tuning_scope_test' @('tests/route31_tuning_scope_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_route31_qr_gate_test' @('tests/route31_qr_gate_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_route34_no_qr_test' @('tests/route34_no_qr_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_mission_departure_route_test' @('tests/mission_departure_route_test.c') @('tests/stubs', 'App') @('-lm')
     Invoke-HostCase 'eod_mission_trial_plan_test' @('tests/mission_trial_plan_test.c', 'App/mission_trial_plan.c') @('App') @('-lm')
     Invoke-HostCase 'eod_mission_trial_flow_test' @('tests/mission_trial_flow_test.c', 'App/mission_trial.c', 'App/mission_trial_plan.c') @('tests/stubs', 'App') @('-lm')
     Invoke-HostCase 'eod_proto_frame_test' @('tests/proto_frame_test.c', 'App/proto.c') @('tests/stubs', 'App')
+    Invoke-HostCase 'eod_vision_task_select_test' @('tests/vision_task_select_test.c', 'App/proto.c') @('tests/stubs', 'App')
+    Invoke-HostCase 'eod_uart_error_rearm_test' @('tests/uart_error_rearm_test.c') @('tests/uart_stubs', 'App') @('-ffunction-sections', '-fdata-sections', '-fno-asynchronous-unwind-tables', '-fno-unwind-tables', '-Wl,--gc-sections')
     Invoke-HostCase 'eod_vision_target_slot_test' @('tests/vision_target_slot_test.c') @('tests/stubs', 'App') @('-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_vision_scene_wait_test' @('tests/vision_scene_wait_test.c') @('tests/stubs', 'App') @('-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_rotate_continuous_test' @('tests/rotate_continuous_test.c', 'App/steps.c') @('tests/stubs', 'App') @('-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
@@ -52,6 +63,7 @@ try {
     }
     Invoke-HostPythonCase 'vision camera main loop' 'tests/test_vision_control_main.py'
     Invoke-HostPythonCase 'full binary packet replay' 'tests/test_vision_binary_replay.py'
+    Invoke-HostPythonCase 'current QR53 and four selected tasks' 'tests/test_vision_qr53_replay.py'
     Invoke-HostPythonCase 'receive-only vision IRQ/stop contract' 'tests/test_vision_diag_contract.py'
 
     $mission = Get-Content 'App/mission.c' -Raw -Encoding utf8
@@ -218,5 +230,6 @@ try {
     }
     Write-Output 'bench safety/default source contract: 3 checks passed'
 } finally {
+    $env:EOD_HOST_CC = $previousHostCompiler
     Pop-Location
 }

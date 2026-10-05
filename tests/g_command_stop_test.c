@@ -10,6 +10,8 @@ static MissionState host_state;
 static int host_abort, start_calls, brake_calls, pulse_calls, gate_closed;
 static int host_imu_valid;
 static float host_yaw, last_x, last_y, last_w;
+static float host_heading_kp;
+static unsigned host_precise_calls, host_integer_calls;
 static float host_fore, host_lateral;
 static int32_t host_counts[4];
 static int zero_calls, prepare_calls, servo_calls;
@@ -23,7 +25,15 @@ static int laser_state;
 static ProtoStats host_proto_stats;
 static ProtoScene host_scene;
 static int host_scene_calls, host_scene_status;
+static int host_receive_closed, host_receive_end_calls;
+static int host_qr_valid;
+static int32_t host_qr_tuple[3];
+static void (*host_scene_hook)(ProtoScene);
+static void (*host_qr_begin_hook)(void), (*host_qr_cancel_hook)(void);
+static void (*host_receive_end_hook)(void);
+static int (*host_qr_get_hook)(int32_t out[3]);
 static char host_messages[8192];
+static MotionProfileTune host_motion_profile;
 
 uint32_t HAL_GetTick(void) { return host_tick; }
 void bp_debug_send(const char *s)
@@ -38,16 +48,26 @@ void bp_laser_set(int on) { laser_state = on; }
 int32_t bp_enc_raw_total(int m) { (void)m; return 0; }
 void bp_enc_raw_reset_all(void) { }
 void motion_brake(void) { brake_calls++; last_x = last_y = last_w = 0.0f; }
-void motion_vel_set(float x, float y, float w) { last_x = x; last_y = y; last_w = w; }
+void motion_vel_set(float x, float y, float w)
+{ host_integer_calls++; last_x = x; last_y = y; last_w = w; }
+void motion_vel_set_precise(float x, float y, float w)
+{ host_precise_calls++; last_x = x; last_y = y; last_w = w; }
 float motion_odo_mm(void) { return host_fore; }
 float motion_lateral_odo_mm(void) { return host_lateral; }
 void motion_ik(float x, float y, float w, int16_t out[4])
 { (void)x; (void)y; (void)w; memset(out, 0, 4 * sizeof *out); }
-void motion_profile_get(MotionProfileTune *out) { memset(out, 0, sizeof *out); }
-int motion_profile_set(const MotionProfileTune *in) { (void)in; return 1; }
-void motion_linear_ramp_init(MotionRamp *r) { memset(r, 0, sizeof *r); }
+#ifndef HOST_REAL_MOTION_PROFILE
+void motion_profile_get(MotionProfileTune *out) { *out = host_motion_profile; }
+int motion_profile_set(const MotionProfileTune *in) { host_motion_profile = *in; return 1; }
+void motion_ramp_init(MotionRamp *r, float acc, float dec)
+{ r->cur = 0.0f; r->acc = acc; r->dec = dec; }
+void motion_linear_ramp_init(MotionRamp *r)
+{ motion_ramp_init(r, host_motion_profile.acc_mms2, host_motion_profile.dec_mms2); }
 float motion_linear_profile_step(MotionRamp *r, float v, float d, float dt)
 { (void)r; (void)d; (void)dt; return v; }
+float motion_linear_ramp_step(MotionRamp *r, float v, float d, float dt)
+{ (void)r; (void)d; (void)dt; return v; }
+#endif
 void ctrl_set_speed(int m, int16_t rpm) { (void)m; (void)rpm; }
 void ctrl_set_duty_open(int m, int16_t duty) { (void)m; (void)duty; }
 void ctrl_coast_all(void) { }
@@ -72,12 +92,24 @@ float imu_roll_deg(void) { return 0.0f; }
 uint8_t imu_ok(void) { return (uint8_t)host_imu_valid; }
 uint8_t imu_zero_leg_heading(void) { zero_calls++; host_yaw = 0.0f; return (uint8_t)host_imu_valid; }
 uint32_t imu_last_valid_age_ms(void) { return 0u; }
-void run_abort(void) { host_abort = 1; }
+void run_abort(void) { host_abort = 1; step_vision_receive_end(); }
 int run_aborted(void) { return host_abort; }
 int step_prepare_leg(void) { prepare_calls++; return !host_abort && host_imu_valid; }
-float step_heading_hold_w(float heading) { (void)heading; return 0.0f; }
-float step_heading_kp_deg(void) { return 0.3f; }
-int step_heading_kp_set(float v) { (void)v; return 1; }
+float step_heading_hold_w_kp(float heading, float kp)
+{
+    float e = heading - host_yaw;
+    float w;
+    while (e > 180.0f) e -= 360.0f;
+    while (e < -180.0f) e += 360.0f;
+    w = kp * e * 0.0174533f;
+    if (w > 2.0f) w = 2.0f;
+    if (w < -2.0f) w = -2.0f;
+    return w;
+}
+float step_heading_hold_w(float heading) { return step_heading_hold_w_kp(heading, host_heading_kp); }
+float step_heading_kp_deg(void) { return host_heading_kp; }
+int step_heading_kp_set(float v)
+{ if (v < 0.0f || v > 5.0f) return 0; host_heading_kp = v; return 1; }
 float step_orth_kp(void) { return 0.0f; }
 int step_orth_kp_set(float v) { (void)v; return 1; }
 float step_orth_hold_cmd(int lateral, float ref) { (void)lateral; (void)ref; return 0.0f; }
@@ -104,15 +136,53 @@ int mission_trial_set_alignment(int cls, int cx, int sign)
 }
 void robot_diag_report(void) { }
 void proto_stats_get(ProtoStats *out) { *out = host_proto_stats; }
+void proto_wire_diag_get(ProtoWireDiag *out) { memset(out, 0, sizeof *out); }
 int proto_scene_status(void) { return host_scene_status; }
 void proto_send_scene(ProtoScene scene)
-{ host_scene = scene; host_scene_calls++; host_scene_status = 0; }
+{
+    host_scene = scene; host_scene_calls++; host_scene_status = 0;
+    host_receive_closed = 0;
+    host_qr_valid = 0; memset(host_qr_tuple, 0, sizeof host_qr_tuple);
+    if (host_scene_hook) host_scene_hook(scene);
+}
+void proto_qr_begin(void)
+{
+    if (host_qr_begin_hook) { host_qr_begin_hook(); return; }
+    if (!host_scene_calls || host_receive_closed || host_scene != SCENE_QR || host_scene_status < 0)
+        proto_send_scene(SCENE_QR);
+}
+void proto_receive_end(void)
+{
+    host_receive_closed = 1; host_receive_end_calls++; host_scene_status = 0;
+    host_qr_valid = 0; memset(host_qr_tuple, 0, sizeof host_qr_tuple);
+    if (host_receive_end_hook) host_receive_end_hook();
+}
+void step_vision_receive_end(void) { proto_receive_end(); }
+void proto_qr_cancel(void)
+{
+    if (host_qr_cancel_hook) { host_qr_cancel_hook(); return; }
+    if (host_scene_calls && host_scene == SCENE_QR) proto_receive_end();
+}
+int proto_qr_get(int32_t out[3])
+{
+    if (host_qr_get_hook) return host_qr_get_hook(out);
+    if (host_receive_closed || host_scene != SCENE_QR || host_scene_status != 1 || !host_qr_valid) return 0;
+    if (out) memcpy(out, host_qr_tuple, sizeof host_qr_tuple);
+    return 1;
+}
+static void host_qr_accept(int a, int b, int c)
+{
+    if (host_receive_closed || host_scene != SCENE_QR || host_scene_status != 1 || host_qr_valid ||
+        a < 1 || a > 3 || b < 1 || b > 3 || c < 1 || c > 3) return;
+    host_qr_tuple[0] = a; host_qr_tuple[1] = b; host_qr_tuple[2] = c; host_qr_valid = 1;
+}
 
 static void reset_fixture(void)
 {
     host_tick = 100u; host_state = MS_BOOT;
     host_abort = start_calls = brake_calls = pulse_calls = gate_closed = 0;
     host_imu_valid = 1; host_yaw = last_x = last_y = last_w = 0.0f;
+    host_heading_kp = 0.3f; host_precise_calls = host_integer_calls = 0u;
     host_fore = host_lateral = 0.0f; memset(host_counts, 0, sizeof host_counts);
     zero_calls = prepare_calls = servo_calls = 0;
     host_servo = 1400u; last_message[0] = '\0';
@@ -122,7 +192,14 @@ static void reset_fixture(void)
     laser_state = 0;
     memset(&host_proto_stats, 0, sizeof host_proto_stats);
     host_scene = SCENE_IDLE; host_scene_calls = host_scene_status = 0;
+    host_receive_closed = host_receive_end_calls = 0;
+    host_qr_valid = 0; memset(host_qr_tuple, 0, sizeof host_qr_tuple);
+    host_scene_hook = NULL; host_qr_begin_hook = host_qr_cancel_hook = NULL;
+    host_receive_end_hook = NULL;
+    host_qr_get_hook = NULL;
     host_messages[0] = '\0';
+    memset(&host_motion_profile, 0, sizeof host_motion_profile);
+    (void)motion_profile_set(&host_motion_profile);
     test_init();
 }
 
@@ -137,6 +214,20 @@ static int sequence_start_stage(void)
     host_tick += NAV_SETTLE_MS;
     test_poll();
     CHECK(s_seq_state == SQ_RUN && s_round == R_RUN && prepare_calls == 0);
+    return 0;
+}
+
+/* Non-vision route tests supply a fresh legal camera response at R1.
+ * The dedicated QR-gate regression drives the waiting phase independently. */
+static int sequence_release_qr(void)
+{
+    CHECK(s_seq_state == SQ_QR_WAIT && host_scene == SCENE_QR);
+    int requests = host_scene_calls;
+    host_scene_status = 1;
+    host_qr_accept(1, 2, 3);
+    test_poll();
+    CHECK(s_seq_state == SQ_STILL && s_seq_stage == 1u && host_scene == SCENE_QR);
+    CHECK(host_receive_closed && host_scene_calls == requests && !proto_qr_get(NULL));
     return 0;
 }
 
@@ -155,14 +246,16 @@ static int sequence_finish_stage(void)
         CHECK(s_round == R_BRAKE && strcmp(s_turn_result, "DONE") == 0 && s_seq_state == SQ_RUN);
         host_tick += T_TURN_SETTLE_MS; test_poll();
     }
+    if (s_seq_state == SQ_QR_WAIT) CHECK(sequence_release_qr() == 0);
     return 0;
 }
 
 static int check_route_sequence(void)
 {
     /* Independent expectation, not copied from the live recipe at runtime. */
-    static const int expected_modes[10] = {17,16,30,15,17,15,20,15,20,15};
-    static const int expected_commands[10] = {-500,-600,-95,750,-730,830,85,2450,85,2125};
+    static const int expected_modes[12] = {17,16,30,15,16,15,17,15,20,15,20,15};
+    static const int expected_commands[12] = {-530,-650,-92,750,-170,210,-730,780,90,2450,90,2125};
+    static const float expected_speeds[12] = {100,100,100,300,20,100,100,100,100,100,100,100};
     static const char *const stop_keys[] = {"g", "a", "0"};
     reset_fixture();
     host_fore = 4321.0f; host_lateral = -1234.0f; host_yaw = 47.0f;
@@ -171,33 +264,35 @@ static int check_route_sequence(void)
     for (int i = 0; i < 5; i++) { host_tick += 100u; test_poll(); }
     CHECK(s_seq_state == SQ_READY && last_x == 0.0f && last_y == 0.0f && last_w == 0.0f);
     run_cmd("g"); CHECK(s_seq_run == 1u && s_seq_stage == 0u);
-    for (int i = 0; i < 10; i++) {
+    CHECK(ROUTE_TEST_STAGES == 12u);
+    for (int i = 0; i < 12; i++) {
         CHECK(s_seq_stage == i && sequence_start_stage() == 0);
         CHECK(s_msel == expected_modes[i] && s_route_leg == i + 1 && s_active_test == (uint32_t)i + 1u);
         if (dist_mode()) {
-            CHECK(s_dist_target == (float)expected_commands[i] && s_v == 100.0f);
-            CHECK(s_dist_ff_ratio == (s_msel == 15 ? T_FORWARD_FF_SEED : 0.0f));
+            CHECK(s_dist_target == (float)expected_commands[i] && s_v == expected_speeds[i]);
+            CHECK(s_dist_ramp.acc == 700.0f && s_dist_ramp.dec == 350.0f && s_dist_precise == 1u);
+            CHECK(s_dist_ff_ratio == (s_msel == 15 && i != 3 ? 0.00625f : 0.0f));
             CHECK(last_w == 0.0f);
             if (dist_lateral()) CHECK(last_x == 0.0f && last_y == -100.0f);
-            else CHECK(last_x == (i == 1 ? -100.0f : 100.0f) &&
-                       last_y == (i == 1 ? 0.0f : -1.25f));
+            else CHECK(last_x == (s_msel == 16 ? -expected_speeds[i] : expected_speeds[i]) &&
+                       last_y == (s_msel == 16 || i == 3 ? 0.0f : -0.625f));
         } else {
             CHECK(turn_target_deg() == (float)expected_commands[i] && last_x == 0.0f && last_y == 0.0f);
             CHECK(last_w == (i == 2 ? -T_TURN_MAX_W : T_TURN_MAX_W));
         }
         CHECK(start_calls == 0 && pulse_calls == 0 && servo_calls == 0 && !s_go);
         CHECK(sequence_finish_stage() == 0);
-        CHECK(i == 9 ? s_seq_state == SQ_DONE : s_seq_state == SQ_STILL);
+        CHECK(i == 11 ? s_seq_state == SQ_DONE : s_seq_state == SQ_STILL);
     }
-    CHECK(zero_calls == 17 && prepare_calls == 0); /* 10 node zeros + 7 distance-report resets */
+    CHECK(zero_calls == 21 && prepare_calls == 0); /* 12 node zeros + 9 distance-report resets */
     CHECK(s_msel == 31 && s_round == R_DONE && strstr(last_message, "status=DONE") != NULL);
     for (int i = 0; i < 10; i++) { host_tick += 1000u; test_poll(); }
     run_cmd("g"); CHECK(s_seq_state == SQ_DONE && last_x == 0.0f && last_y == 0.0f && last_w == 0.0f);
     run_cmd("31"); run_cmd("g"); CHECK(s_seq_run == 2u && s_seq_state == SQ_STILL);
     run_cmd("g"); CHECK(s_seq_state == SQ_STOPPED);
 
-    /* Every stage, every stop key, every phase: 10 * 3 * 4 = 120 cancellations. */
-    for (int stage = 0; stage < 10; stage++) {
+    /* Every stage, every stop key, every phase: 12 * 3 * 4 = 144 cancellations. */
+    for (int stage = 0; stage < 12; stage++) {
         for (int key = 0; key < 3; key++) {
             for (int phase = 0; phase < 4; phase++) {
                 reset_fixture(); run_cmd("31"); run_cmd("g");
@@ -236,12 +331,12 @@ static int check_route_sequence(void)
         for (size_t k = 0; k < sizeof writes / sizeof writes[0]; k++) {
             run_cmd(writes[k]);
             CHECK(strstr(last_message, "ERR ROUTE_SEQ_ACTIVE") != NULL && s_v == 100.0f &&
-                  s_d == 500.0f && s_seq_stage == 0u && s_msel == 17 && servo_calls == 0);
+                  s_d == 530.0f && s_seq_stage == 0u && s_msel == 17 && servo_calls == 0);
         }
         CHECK(route_seq_active()); run_cmd("g");
     }
     /* All failed sensor/turn statuses cancel rather than advancing a ready/done submode. */
-    for (int stage = 0; stage < 10; stage++) {
+    for (int stage = 0; stage < 12; stage++) {
         reset_fixture(); run_cmd("31"); run_cmd("g");
         s_seq_stage = (uint8_t)stage; route_seq_prepare(); CHECK(sequence_start_stage() == 0);
         host_imu_valid = 0; test_poll();
@@ -267,7 +362,7 @@ static int check_route_sequence(void)
     reset_fixture(); run_cmd("31"); run_cmd("g"); CHECK(sequence_start_stage() == 0);
     dist_begin_finish(0u); host_tick += T_DIST_STILL_MS; test_poll();
     CHECK(s_seq_state == SQ_STOPPED && s_seq_stage == 0u);
-    puts("route31: exact 10-step traversal, terminal/no-restart, 120 g/a/0 phase cancellations, write lock, nonblocking prepare, IMU/abort/turn failure passed");
+    puts("route31: exact 12-step traversal incl cross300/back20-170/forward100-210, QR camera fixture, terminal/no-restart, 144 g/a/0 phase cancellations, write lock, nonblocking prepare, IMU/abort/turn failure passed");
     return 0;
 }
 
@@ -306,7 +401,7 @@ static int check_forward_compensation(void)
     CHECK(s_dist_ff_ratio > 0.009999f && s_dist_ff_ratio < 0.010001f &&
           last_y > -1.0001f && last_y < -0.9999f);
     reset_fixture(); run_cmd("param");
-    CHECK(strstr(last_message, "fff=0.0125") != NULL);
+    CHECK(strstr(host_messages, "fff=0.0125") != NULL);
     puts("forward FF: default/left sign, v100/v200 gate, reverse/strafe isolation, RAM off/override and PARAM passed");
     return 0;
 }
@@ -316,9 +411,9 @@ static int check_shared_turn_hold(void)
     static const int modes[] = {20, 22, 30};
     /* Literal checks pin the successful 180 settings, not just new aliases. */
     CHECK(T_TURN180_MAX_MS == 12000u && T_TURN_MAX_MS == 12000u);
-    CHECK(TURN90_TARGET_DEG == 90.0f && T_TURN90_LEFT_COMP_DEG == 5.0f &&
-          T_TURN90_RIGHT_COMP_DEG == -5.0f && T_TURN_LEFT_TARGET_DEG == -95.0f &&
-          T_TURN_RIGHT_TARGET_DEG == 85.0f);
+    CHECK(TURN90_TARGET_DEG == 90.0f && T_TURN90_LEFT_COMP_DEG == 2.0f &&
+          T_TURN90_RIGHT_COMP_DEG == 0.0f && T_TURN_LEFT_TARGET_DEG == -92.0f &&
+          T_TURN_RIGHT_TARGET_DEG == 90.0f);
     CHECK(T_TURN_KP == 0.15f && T_TURN_MAX_W == 2.0f && T_TURN_MIN_W == 0.18f &&
           T_TURN_TOL_DEG == 0.3f && T_TURN_SETTLE_MS == 700u && TURN90_STILL_DEG == 0.2f);
     for (int k = 0; k < 3; k++) {
@@ -327,15 +422,15 @@ static int check_shared_turn_hold(void)
         reset_fixture(); snprintf(line, sizeof line, "%d", modes[k]);
         run_cmd(line); run_cmd("g");
         target = turn_target_deg(); dir = target < 0.0f ? -1.0f : 1.0f;
-        CHECK(target == (modes[k] == 22 ? 180.0f : (modes[k] == 30 ? -95.0f : 85.0f)));
+        CHECK(target == (modes[k] == 22 ? 180.0f : (modes[k] == 30 ? -92.0f : 90.0f)));
         CHECK(strstr(last_message, modes[k] == 22 ? "target=+180deg" :
-                                  (modes[k] == 30 ? "target=-95deg" : "target=+85deg")) != NULL);
+                                  (modes[k] == 30 ? "target=-92deg" : "target=+90deg")) != NULL);
         if (modes[k] != 22) {
-            host_yaw = dir * 90.0f; tick();
-            CHECK(s_round == R_RUN && last_w < 0.0f); /* old90: right overshot, left short */
-            host_yaw = dir * 92.0f; tick();
-            CHECK(s_round == R_RUN && last_w < 0.0f); /* old92: right corrects left, left continues left */
-            CHECK(strstr(last_message, modes[k] == 20 ? "comp=-5deg" : "comp=5deg") != NULL);
+            host_yaw = dir * 88.0f; tick();
+            CHECK(s_round == R_RUN && last_w * dir > 0.0f); /* both turns remain short */
+            host_yaw = dir * 91.0f; tick();
+            CHECK(s_round == R_RUN && last_w < 0.0f); /* right corrects past90, left continues toward92 */
+            CHECK(strstr(last_message, modes[k] == 20 ? "comp=0deg" : "comp=2deg") != NULL);
         }
         CHECK(turn_max_ms() == 12000u);
         host_yaw = target - dir * 10.0f; tick();
@@ -479,26 +574,32 @@ static int check_vision33_router(void)
             if (phase >= 2) { host_scene_status = 1; test_poll(); }
             if (phase >= 3) { host_scene_status = 1; test_poll(); }
             int requests = host_scene_calls;
+            ProtoScene previous_scene = host_scene;
             run_cmd(stops[key]);
             CHECK(s_vdiag_phase == VD_OFF && !s_vdiag_qr_pending && s_round == R_READY && s_msel == 33);
-            CHECK(host_scene == SCENE_IDLE && host_scene_calls == requests + 1);
+            CHECK(host_scene == previous_scene && host_scene_calls == requests && host_receive_closed);
+            CHECK(strstr(last_message, "LOCAL_RX_STOP") != NULL);
             diagnostic_qr(2, 2, 2); test_vision_feed_frame(&frame);
             host_scene_status = 1; test_poll();
-            CHECK(!s_vdiag_qr_pending && s_vdiag_sample[CLS_HOSTAGE].seen == 0u && host_scene == SCENE_IDLE);
+            CHECK(!s_vdiag_qr_pending && s_vdiag_sample[CLS_HOSTAGE].seen == 0u &&
+                  host_scene == previous_scene && host_receive_closed && host_scene_calls == requests);
             CHECK(!s_go && !host_abort && start_calls == 0 && trial_start_calls == 0 &&
                   pulse_calls == 0 && servo_calls == 0 && !laser_state);
             run_cmd("g");
             CHECK(s_vdiag_phase == VD_QR_WAIT && host_scene == SCENE_QR && s_active_test == 2u);
+            CHECK(!host_receive_closed && host_scene_calls == requests + 1);
             CHECK(s_vdiag_qr[0] == 0 && s_vdiag_sample[CLS_HOSTAGE].seen == 0u);
         }
     }
     reset_fixture();
     const char *batch = "33\ng\ng\n";
     while (*batch) test_feed((uint8_t)*batch++);
-    test_poll(); CHECK(host_scene == SCENE_IDLE && s_vdiag_phase == VD_OFF && !s_go);
+    test_poll(); CHECK(host_scene == SCENE_QR && host_receive_closed && host_scene_calls == 1 &&
+                       s_vdiag_phase == VD_OFF && !s_go);
     reset_fixture(); host_state = MS_EOD; run_cmd("33"); CHECK(s_msel == R_FREE && !host_scene_calls);
     reset_fixture(); run_cmd("33"); run_cmd("g"); host_scene_status = -1; host_tick += 1000u; test_poll();
-    CHECK(s_vdiag_phase == VD_QR_WAIT && strstr(last_message, "link=-1") != NULL && !s_go);
+    CHECK(s_vdiag_phase == VD_QR_WAIT && strstr(host_messages, "link=-1") != NULL && !s_go);
+    CHECK(strstr(host_messages, "VW req=") != NULL && strstr(last_message, "VR type=") != NULL);
     puts("vision33: ACK/fresh QR gating, current/empty packet snapshots, 17 write locks, 12 stops, late frames, same-batch cancellation and repeated test IDs passed; no actuator calls");
     return 0;
 }
@@ -561,22 +662,22 @@ int main(void)
     host_yaw = -89.0f; tick(); CHECK(s_round == R_RUN && last_w < 0.0f);
     host_yaw = -90.0f; tick(); CHECK(s_round == R_RUN && last_w < 0.0f);
     host_yaw = -91.0f; tick(); CHECK(s_round == R_RUN && last_w < 0.0f);
-    host_yaw = -94.0f; tick(); CHECK(s_round == R_RUN && last_w < 0.0f);
-    host_yaw = -96.0f; tick(); CHECK(s_round == R_RUN && last_w > 0.0f);
-    host_yaw = -95.0f; tick(); CHECK(s_round == R_BRAKE && last_w == 0.0f);
-    host_yaw = -95.8f; tick(); CHECK(s_round == R_RUN); /* inertia reopens correction */
+    host_yaw = -91.5f; tick(); CHECK(s_round == R_RUN && last_w < 0.0f);
+    host_yaw = -93.0f; tick(); CHECK(s_round == R_RUN && last_w > 0.0f);
+    host_yaw = -92.0f; tick(); CHECK(s_round == R_BRAKE && last_w == 0.0f);
+    host_yaw = -92.8f; tick(); CHECK(s_round == R_RUN); /* inertia reopens correction */
     tick(); CHECK(last_w > 0.0f);
-    host_yaw = -95.0f; tick(); host_tick += T_TURN_SETTLE_MS; tick();
+    host_yaw = -92.0f; tick(); host_tick += T_TURN_SETTLE_MS; tick();
     CHECK(s_round == R_DONE && strstr(last_message, "type=TURN90_LEFT") != NULL &&
-          strstr(last_message, "status=DONE") != NULL && strstr(last_message, "cmd_deg=-95") != NULL);
+          strstr(last_message, "status=DONE") != NULL && strstr(last_message, "cmd_deg=-92") != NULL);
     run_cmd("g"); CHECK(s_round == R_READY && last_w == 0.0f); /* clear only, no reverse */
 
     reset_fixture(); run_cmd("30"); run_cmd("g"); tick(); run_cmd("g");
     CHECK(s_round == R_BRAKE && strcmp(s_turn_result, "STOP") == 0 && last_w == 0.0f);
     host_yaw = -20.0f; host_tick += T_TURN_SETTLE_MS; tick();
     CHECK(s_round == R_DONE && strstr(last_message, "status=STOP") != NULL && last_w == 0.0f);
-    reset_fixture(); run_cmd("30"); run_cmd("g"); host_yaw = -95.0f; tick(); run_cmd("g");
-    host_yaw = -96.0f; host_tick += T_TURN_SETTLE_MS; tick();
+    reset_fixture(); run_cmd("30"); run_cmd("g"); host_yaw = -92.0f; tick(); run_cmd("g");
+    host_yaw = -93.0f; host_tick += T_TURN_SETTLE_MS; tick();
     CHECK(s_round == R_DONE && strstr(last_message, "status=STOP") != NULL && last_w == 0.0f);
 
     /* Same range as the old positive controller; mirrored range for left. */
@@ -592,7 +693,7 @@ int main(void)
     }
     reset_fixture(); run_cmd("30"); run_cmd("g"); host_yaw = -111.0f; tick();
     CHECK(s_round == R_BRAKE && strcmp(s_turn_result, "ANGLE_LIMIT") == 0 && last_w == 0.0f);
-    reset_fixture(); run_cmd("30"); run_cmd("g"); host_yaw = -95.0f; tick();
+    reset_fixture(); run_cmd("30"); run_cmd("g"); host_yaw = -92.0f; tick();
     host_yaw = 16.0f; tick(); CHECK(s_round == R_DONE && strstr(last_message, "status=ANGLE_LIMIT") != NULL);
     reset_fixture(); run_cmd("30"); run_cmd("g"); host_tick += T_TURN_MAX_MS; tick();
     CHECK(s_round == R_BRAKE && strcmp(s_turn_result, "TIMEOUT") == 0 && last_w == 0.0f);
@@ -605,13 +706,13 @@ int main(void)
     CHECK(s_round == R_READY && last_w == 0.0f);
     reset_fixture(); run_cmd("30"); run_cmd("g"); tick(); run_cmd("0");
     CHECK(s_round == R_READY && last_w == 0.0f);
-    reset_fixture(); run_cmd("34"); CHECK(s_msel == R_FREE && strstr(last_message, "MODE_RANGE") != NULL);
+    reset_fixture(); run_cmd("35"); CHECK(s_msel == R_FREE && strstr(last_message, "MODE_RANGE") != NULL);
     for (int mode = 20; mode <= 22; mode += 2) {
         reset_fixture(); s_msel = mode; run_cmd("g"); tick();
         CHECK(s_round == R_RUN && last_w == T_TURN_MAX_W);
         host_yaw = turn_target_deg(); tick(); host_tick += T_TURN_SETTLE_MS; tick();
         CHECK(s_round == R_DONE && strstr(last_message, "status=DONE") != NULL &&
-              strstr(last_message, mode == 20 ? "cmd_deg=85" : "cmd_deg=180") != NULL);
+              strstr(last_message, mode == 20 ? "cmd_deg=90" : "cmd_deg=180") != NULL);
     }
     puts("left90 entry: signed start/overshoot/settle/stop, mirrored limits, timeout/IMU, a/0, right90/180 preservation passed");
     reset_fixture(); run_cmd("20"); run_cmd("g");

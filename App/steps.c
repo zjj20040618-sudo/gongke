@@ -15,6 +15,9 @@
 static volatile int s_qr_pending, s_obj_pending;
 static ProtoFrame  s_qr_frame, s_obj_frame;
 static volatile int s_abort;
+/* Initially open for the power-on QR request. Closing a local stage never
+ * commands the camera to stop; only a new scene/target request reopens it. */
+static volatile uint8_t s_vision_receive_closed;
 static volatile int s_obj_want_cls = -1, s_obj_want_label = -1;
 
 /* Drop old frames at a new OBJ phase; filter before overwriting the latest slot. */
@@ -32,6 +35,10 @@ void steps_feed_frame(const ProtoFrame *f)
     uint32_t pm = __get_PRIMASK();
     if (!f || (f->type != PF_QR && f->type != PF_OBJ)) return;
     __disable_irq();
+    if (s_abort || s_vision_receive_closed) {
+        __set_PRIMASK(pm);
+        return;
+    }
     if (f->type == PF_QR) {
         s_qr_frame = *f;
         s_qr_pending = 1;
@@ -68,16 +75,39 @@ int step_object_take(ProtoFrame *out)
     return out ? take_frame(PF_OBJ, out) : 0;
 }
 
+void step_vision_receive_end(void)
+{
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    s_vision_receive_closed = 1u;
+    s_qr_pending = s_obj_pending = 0;
+    s_obj_want_cls = s_obj_want_label = -1;
+    proto_receive_end(); /* closes request/retries locally, not camera TX */
+    __set_PRIMASK(pm);
+}
+
 /* 整场中止标三连:run_abort() 置位 / run_aborted() 阻塞步每 ~5ms 轮询、见标即退 /
  * run_reset() 只能在初始化或接受启动请求前清中止标与暂存帧；g 后立即 a 的中止
  * 不得被 MissionTask 醒来时重置。整场运行中BT再次'g'或'a'均中止，不自动续跑。 */
 void run_reset(void)
 {
-    s_abort = 0; s_qr_pending = 0;
-    select_object(-1, -1);
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    s_abort = 0; s_qr_pending = s_obj_pending = 0;
+    s_obj_want_cls = s_obj_want_label = -1;
+    s_vision_receive_closed = 0u;
+    /* Do not cancel/restart the QR already latched by proto during boot/R1. */
+    __set_PRIMASK(pm);
 }
 int  run_aborted(void) { return s_abort; }
-void run_abort(void)   { s_abort = 1; }
+void run_abort(void)
+{
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    s_abort = 1;
+    step_vision_receive_end();
+    __set_PRIMASK(pm);
+}
 
 int step_vision_scene(ProtoScene scene)
 {
@@ -88,16 +118,42 @@ int step_vision_scene(ProtoScene scene)
         __disable_irq();
         s_qr_pending = s_obj_pending = 0;
         s_obj_want_cls = s_obj_want_label = -1;
+        s_vision_receive_closed = 0u;
+        proto_send_scene(scene);
         __set_PRIMASK(pm);
     }
-    proto_send_scene(scene);
     while (!s_abort) {
         int status = proto_scene_status();
         if (status > 0) return 1;
         if (status < 0) { run_abort(); break; }
         osDelay(5);
     }
-    proto_send_scene(SCENE_IDLE);
+    step_vision_receive_end();
+    return 0;
+}
+
+/* Atomically install the new slot filter and request before RX can publish a
+ * new coordinate. ACK/empty frame is link readiness, never target alignment. */
+int step_vision_target(ProtoTask task, uint8_t digit)
+{
+    int cls, label, queued;
+    uint32_t pm;
+    if (s_abort || !proto_target_filter(task, digit, &cls, &label)) return 0;
+    motion_brake();
+    pm = __get_PRIMASK(); __disable_irq();
+    s_qr_pending = s_obj_pending = 0;
+    s_obj_want_cls = cls; s_obj_want_label = label;
+    s_vision_receive_closed = 0u;
+    queued = proto_send_target(task, digit);
+    __set_PRIMASK(pm);
+    if (!queued) { run_abort(); return 0; }
+    while (!s_abort) {
+        int status = proto_scene_status();
+        if (status > 0) return 1;
+        if (status < 0) { run_abort(); break; }
+        osDelay(5);
+    }
+    step_vision_receive_end();
     return 0;
 }
 
@@ -410,8 +466,14 @@ static float wrap180f(float a)
 /* 普通路线与落地测试共用同一套 yaw 保持，避免测试代码另复制一份增益。 */
 float step_heading_hold_w(float heading0_deg)
 {
+    return step_heading_hold_w_kp(heading0_deg, s_nav_w_kp_deg);
+}
+
+float step_heading_hold_w_kp(float heading0_deg, float kp)
+{
+    if (!(kp >= 0.0f && kp <= 5.0f)) return 0.0f;
     float e = wrap180f(heading0_deg - imu_leg_heading_deg());
-    float w = s_nav_w_kp_deg * e * 0.0174533f;
+    float w = kp * e * 0.0174533f;
     if (w >  NAV_W_MAX_RADS) w =  NAV_W_MAX_RADS;
     if (w < -NAV_W_MAX_RADS) w = -NAV_W_MAX_RADS;
     return w;
@@ -424,7 +486,7 @@ float step_heading_kp_deg(void)
 
 int step_heading_kp_set(float kp)
 {
-    if (kp < 0.0f || kp > 5.0f) return 0;
+    if (!(kp >= 0.0f && kp <= 5.0f)) return 0;
     s_nav_w_kp_deg = kp;
     return 1;
 }
@@ -826,11 +888,33 @@ int step_arm_lower(uint32_t steps)
 }
 
 /* ---- 激光触发 ---- */
+/* Caller has already aligned the QR-selected target. Keep the chassis braked
+ * and the laser OFF for the full requested second; do not clear odometry or
+ * replace the calibrated image work point with the screen centre. */
+int step_target_settle(void)
+{
+    bp_laser_set(0);
+    motion_brake();
+    if (s_abort) return 0;
+    wait_ms(TARGET_AIM_SETTLE_MS);
+    return !s_abort;
+}
+
 /* 激光开枪:点亮 hold_ms 后自动灭;期间被中止则不点亮直接失败 */
 int step_fire(uint32_t hold_ms)
 {
-    if (s_abort) return 0;
+    uint32_t pm = __get_PRIMASK();
+    /* g/a stop runs in another RTOS task. Make the abort check and GPIO
+     * enable one operation, so an already processed stop cannot be followed
+     * by a late laser-ON command from this task. */
+    __disable_irq();
+    if (s_abort) {
+        bp_laser_set(0);
+        __set_PRIMASK(pm);
+        return 0;
+    }
     bp_laser_set(1);
+    __set_PRIMASK(pm);
     wait_ms(hold_ms);
     bp_laser_set(0);
     return !s_abort;

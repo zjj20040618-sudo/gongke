@@ -29,9 +29,9 @@ const char *task_eod_config_missing(void)
 int task_eod_run(int ball_color)
 {
     float bucket_scan_origin;
-    if (run_aborted()) return TASK_ABORT;
+    if (run_aborted() || ball_color < LAB_R || ball_color > LAB_B) return TASK_ABORT;
 
-    proto_send_scene(SCENE_EOD);
+    if (!step_vision_target(PROTO_TASK_BALL, (uint8_t)(ball_color + 1))) return TASK_ABORT;
 
     /* 1 抓:左侧相机沿车身前后方向扫d1色球；真实入口/远端/像素符号待实测。
      * 前后走补扫,to=0 **一直扫到出现、不弃站**(垫底,正常别走到这)。
@@ -48,6 +48,7 @@ int task_eod_run(int ball_color)
     if (!step_arm_run("EOD", "BALL_LIFT", EOD_LIFT_STEPS, step_arm_lift)) return TASK_ABORT;
     if (!step_rotate_deg(180, 0)) return TASK_ABORT;   /* to=0 不限时:转到位 / 外部 stop 才停 */
     bucket_scan_origin = motion_odo_mm();
+    if (!step_vision_target(PROTO_TASK_BUCKET, 0u)) return TASK_ABORT;
 
     /* 3 放:排爆桶全场单只、在带内——扫到桶(不挑 label)→ 锁桶对正 → 先 axis1 降
      * EOD_LOWER_STEPS 落进桶口 → 开爪放进 → 抬回(出桶口)。不留限时兜底(2026-09-06 用户:
