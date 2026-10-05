@@ -91,7 +91,7 @@ def _draw_lines(img, x, y, lines, color, scale, min_y=0, background=None, avoid_
             if fit_attempt < 3:
                 return _draw_lines(img, x, y, lines, color, scale * 0.8, min_y,
                                    background, avoid_rect, occupied, fit_attempt + 1)
-            return None  # 极拥挤时保留框，省略放不下的文字；触摸查看单个。
+            return None  # 极拥挤时保留框；可点击其他框隐藏信息，腾出位置。
         x, y = position
     for text, row_scale, width, height in rows:
         left = max(margin, min(x, img.width() - margin - width))
@@ -118,17 +118,20 @@ def draw_header(img, mode, fps, work_ms, uart_ms, remote_owned=False, selection_
                              config.BOX_TEXT_SCALE, bottom)
     return bottom
 
-def draw_objects(img, objects, display_size=None, min_y=0, details=False):
+def draw_objects(img, objects, display_size=None, min_y=0, details=False, info_objects=None):
+    """全部检测框都画；info_objects只控制哪些框附带文字信息。"""
     scale = _result_scale(img, display_size, config.OBJECT_TEXT_SCALE)
     occupied = []
     labels = []
+    info_ids = {id(obj) for obj in (objects if info_objects is None else info_objects)}
     # 先画全部框，再画文字，避免后画的框划穿已经放好的文字。
     for obj in objects:
         color = _object_color(obj.class_id)
         img.draw_rect(obj.x, obj.y, obj.w, obj.h, color, thickness=3)
         cx, cy = obj.x + obj.w // 2, obj.y + obj.h // 2
         img.draw_cross(cx, cy, color, size=9, thickness=2)
-        labels.append((obj, color, cx, cy))
+        if id(obj) in info_ids:
+            labels.append((obj, color, cx, cy))
     for obj, color, cx, cy in labels:
         coordinates = "x={}, y={}".format(cx, cy)
         lines = ["{} {:.2f}".format(class_name(obj.class_id), obj.score)]

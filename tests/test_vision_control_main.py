@@ -15,7 +15,7 @@ from protocol import build_control_packet, build_task_packet, build_ack_packet, 
 
 class MainLoopTests(unittest.TestCase):
     def run_loop(self, commands, qr_results=(), detections=(), writes=(), fail_object=False,
-                 start_mode="IDLE", manual_toggles=None, displayed=None):
+                 start_mode="IDLE", manual_toggles=None, displayed=None, taps=()):
         sent, captures, events, modes_entered = [], [], [], []
         incoming, decoded, detected, write_results = map(iter, (commands, qr_results, detections, writes))
         loops = [0]
@@ -65,9 +65,15 @@ class MainLoopTests(unittest.TestCase):
             return complete
         def noop(*args):
             pass
-        def draw_objects(img, objects, *args):
+        def draw_objects(img, objects, *args, **kwargs):
             if displayed is not None:
-                displayed.append([obj.class_id for obj in objects])
+                displayed.append([obj.class_id for obj in kwargs["info_objects"]])
+        from touch_inspector import ObjectInspector
+        touch_points = iter(taps)
+        def inspector_factory(display_size, enabled):
+            inspector = ObjectInspector(display_size, enabled=False)
+            inspector.poll = lambda: next(touch_points, None)
+            return inspector
         replacements = {
             "maix": SimpleNamespace(app=SimpleNamespace(need_exit=need_exit),
                 camera=SimpleNamespace(Camera=Camera), display=SimpleNamespace(),
@@ -78,6 +84,7 @@ class MainLoopTests(unittest.TestCase):
             "qr_reader": SimpleNamespace(QrReader=lambda: SimpleNamespace(decode=lambda img: next(decoded, []))),
             "ui": SimpleNamespace(draw_header=noop, draw_objects=draw_objects, draw_qrs=noop),
             "user_button": SimpleNamespace(UserButton=Button),
+            "touch_inspector": SimpleNamespace(ObjectInspector=inspector_factory),
         }
         with patch.dict(sys.modules, replacements), patch.multiple(config, DISPLAY_ENABLED=False, START_MODE=start_mode):
             spec = importlib.util.spec_from_file_location("test_camera_main", APP / "main.py")
@@ -130,7 +137,7 @@ class MainLoopTests(unittest.TestCase):
         self.assertEqual(sent[:3], [build_qr_packet(0, None), build_qr_packet(1, None), build_qr_packet(2, "331")])
         self.assertEqual(sent[3], build_object_packet(3, [candidates[-1], candidates[7], candidates[1]], 640, 480, 0, 7, 0))
         self.assertEqual(sent[4], build_object_packet(4, [], 640, 480, 0, 7, 0))
-        self.assertEqual(displayed, [[3, 7, 1], []])
+        self.assertEqual(displayed, [[1, 7, 3], []])  # 信息沿检测顺序，UART仍按任务顺序。
 
     def test_default_idle_user_enters_qr_and_unconfirmed_object_mode_sends_no_coordinates(self):
         objects = [SimpleNamespace(class_id=9, score=.9, x=10, y=20, w=30, h=40)]
@@ -140,7 +147,38 @@ class MainLoopTests(unittest.TestCase):
         self.assertEqual(entered, ["IDLE", "QR", "OBJECT"])
         self.assertEqual(captures, ["QR", "OBJECT", "OBJECT"])
         self.assertEqual([p[5] for p in sent], [0, 0, 0])
-        self.assertEqual(displayed, [[], []])
+        self.assertEqual(displayed, [[9], [9]])
+
+    def test_manual_start_identifies_all_ten_classes_without_qr(self):
+        objects = [SimpleNamespace(class_id=cid, score=.9, x=cid * 40, y=100, w=30, h=40)
+                   for cid in range(10)]
+        displayed = []
+        sent, captures, _, _ = self.run_loop([b""], detections=[objects],
+            start_mode="OBJECT", manual_toggles=(), displayed=displayed)
+        self.assertEqual(displayed, [list(range(10))])
+        self.assertEqual(captures, ["OBJECT"])
+        self.assertEqual(sent, [build_object_packet(0, [], 640, 480, 0, 7, 0)])
+
+    def test_touch_other_and_target_toggle_info_without_changing_uart(self):
+        red = SimpleNamespace(class_id=4, score=.9, x=100, y=100, w=40, h=40)
+        bucket = SimpleNamespace(class_id=9, score=.9, x=300, y=100, w=40, h=40)
+        displayed = []
+        # 640x480源图缩到480x320屏幕，左右黑边各约26.7像素。
+        sent, _, _, _ = self.run_loop([build_task_packet(1, 4, 0)] + [b""] * 4,
+            detections=[[red, bucket]] * 5, displayed=displayed,
+            taps=[None, (107, 80), (107, 80), (240, 80), (240, 80)])
+        self.assertEqual(displayed, [[9], [4, 9], [9], [], [9]])
+        self.assertEqual([p for p in sent if p[2] == 0x62],
+            [bind_result(build_object_packet(seq, [bucket], 640, 480, 0, 7, 0), 1)
+             for seq in range(5)])
+
+    def test_mcu_takes_over_manual_all_classes_and_restores_task_defaults(self):
+        objects = [SimpleNamespace(class_id=cid, score=.9, x=cid * 40, y=100, w=30, h=40)
+                   for cid in range(10)]
+        displayed = []
+        self.run_loop([b"", build_task_packet(1, 1, 1)], detections=[objects, objects],
+            start_mode="OBJECT", manual_toggles=(), displayed=displayed)
+        self.assertEqual(displayed, [list(range(10)), [4]])
 
     def test_user_return_to_qr_clears_old_task_before_confirming_another(self):
         objects = [SimpleNamespace(class_id=cid, score=.8, x=10, y=20, w=30, h=40) for cid in range(10)]

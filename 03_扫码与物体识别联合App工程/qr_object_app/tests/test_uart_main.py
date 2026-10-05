@@ -90,7 +90,7 @@ class UartMainTests(unittest.TestCase):
                 captures.append((turn[0], len(serial.wire), self.modes.mode))
                 return SimpleNamespace(width=lambda: 640, height=lambda: 480)
 
-        noop = lambda *args: None
+        noop = lambda *args, **kwargs: None
         fake_maix = SimpleNamespace(
             app=SimpleNamespace(need_exit=need_exit), camera=SimpleNamespace(Camera=Camera),
             display=SimpleNamespace(), image=SimpleNamespace(Format=SimpleNamespace(FMT_RGB888=0)),

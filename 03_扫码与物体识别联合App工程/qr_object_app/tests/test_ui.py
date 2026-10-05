@@ -99,6 +99,19 @@ class UiTests(unittest.TestCase):
         self.assertIn("x=34, y=45", [row.text for row in img.strings])
         self.assert_visible(img)
 
+    def test_hidden_information_keeps_all_boxes_and_crosses(self):
+        objects = [self.obj(), self.obj(x=400, class_id=4)]
+        img = RecordingImage(1600, 900)
+        self.ui.draw_objects(img, objects, display_size=(1600, 900), info_objects=[objects[1]])
+        self.assertEqual(img.crosses, [(25, 42), (415, 42)])
+        self.assertEqual(len([r for r in img.rectangles if r[1]["thickness"] == 3]), 2)
+        self.assertNotIn("x=25, y=42", [row.text for row in img.strings])
+        self.assertIn("x=415, y=42", [row.text for row in img.strings])
+        hidden = RecordingImage(1600, 900)
+        self.ui.draw_objects(hidden, objects, info_objects=[])
+        self.assertEqual(hidden.strings, [])
+        self.assertEqual(hidden.crosses, img.crosses)
+
     def test_wide_image_keeps_coordinates_on_one_line(self):
         img = RecordingImage(1600, 900)
         self.ui.draw_objects(img, [self.obj()], display_size=(1600, 900))

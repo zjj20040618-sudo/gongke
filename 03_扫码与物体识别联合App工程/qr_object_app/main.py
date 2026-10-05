@@ -36,6 +36,7 @@ def main():
         auto_detect_pending = False  # 本帧发完确认的QR后，下一轮释放旧图再切OBJECT。
         last_task_message = None
         modes.enter(config.START_MODE)
+        manual_object_view = modes.mode == config.MODE_OBJECT
         print("[APP] ready {}; model={} classes=10; UART controls recognition".format(modes.mode, config.MODEL_FILE))
         print("[UART] QR=0x53 three ASCII digits; OBJECT=0x01; task request=0x63; MCU QR/task update required")
         for class_id, name in enumerate(config.CLASS_NAMES_CN):
@@ -51,6 +52,7 @@ def main():
                     ack, changed = control.apply(*command)
                     auto_detect_pending = False  # 主控请求优先，独立扫码不得擅自切模式。
                     if changed:
+                        manual_object_view = False
                         inspector.reset()
                         cached_qrs, cached_qr_left = [], 0
                         fps_count, fps_value, fps_started = 0, 0.0, time.ticks_ms()
@@ -82,6 +84,7 @@ def main():
                 gc.collect()
                 try:
                     modes.toggle()
+                    manual_object_view = modes.mode == config.MODE_OBJECT
                     inspector.reset()
                     if modes.mode == config.MODE_QR:
                         task.reset()
@@ -97,6 +100,7 @@ def main():
                 gc.collect()
                 try:
                     modes.enter(config.MODE_OBJECT)
+                    manual_object_view = False
                     inspector.reset()
                     cached_qrs, cached_qr_left = [], 0
                     fps_count, fps_value, fps_started = 0, 0.0, time.ticks_ms()
@@ -156,11 +160,15 @@ def main():
                     uart_ms = time.ticks_ms() - uart_started
 
             draw_started = time.ticks_ms()
-            # 独立运行像05一样只画任务目标；主控接管后保留全类别诊断显示。
-            display_objects = objects if control.remote_owned else selected_objects
-            visible_objects = inspector.choose(display_objects, (width, height), tap) if modes.mode == config.MODE_OBJECT else []
+            # 所有检测框都能点击；默认文字与UART筛选是两套列表，互不影响。
+            # USER手动识别默认显示全部；自动/电控任务只默认显示任务目标。
+            default_info = objects if manual_object_view and not control.remote_owned else selected_objects
+            visible_objects = inspector.choose(objects, (width, height), tap,
+                default_visible=default_info) if modes.mode == config.MODE_OBJECT else []
             status = inspector.status if modes.mode == config.MODE_OBJECT else None
             task_status = "TASK:{} DIGIT:{}".format(control.task_id, control.qr_digit) if control.target_class_id is not None else task.message
+            if manual_object_view and not control.remote_owned:
+                task_status = "MANUAL: ALL CLASSES"
             status = "{} {}".format(task_status, status or "").strip()
             header_bottom = draw_header(img, modes.mode, fps_value, work_ms, uart_ms, control.remote_owned, status) or 0
             if modes.mode == config.MODE_QR:
@@ -169,7 +177,8 @@ def main():
                     cached_qr_left -= 1
             else:
                 # 单独的显示列表；上面的任务筛选和UART已完成，不受触摸影响。
-                draw_objects(img, visible_objects[:config.MAX_OBJECTS], display_size, header_bottom, inspector.selected)
+                draw_objects(img, objects, display_size, header_bottom, inspector.selected,
+                             info_objects=visible_objects)
             if screen is not None:
                 screen.show(img)
             draw_ms = time.ticks_ms() - draw_started

@@ -60,41 +60,63 @@ class InspectorTests(unittest.TestCase):
         self.assertEqual(len(inspector.device.events), 22)
         self.assertIsNone(inspector.poll())
 
-    def test_select_one_blank_restores_all_and_does_not_mutate(self):
+    def test_target_toggle_black_bar_and_blank_restore_defaults_without_mutation(self):
         inspector = self.make()
         objects = [obj(), obj(4, x=150)]
         before = [vars(o).copy() for o in objects]
-        self.assertEqual(inspector.choose(objects, (320, 320), (105, 40)), [objects[0]])
-        self.assertIn("SELECTED", inspector.status)
-        self.assertEqual(inspector.choose(objects, (320, 320), (20, 40)), [objects[0]])
-        self.assertEqual(inspector.choose(objects, (320, 320), (350, 280)), objects)
+        defaults = [objects[0]]
+        self.assertEqual(inspector.choose(objects, (320, 320), (105, 40), defaults), [])
+        self.assertIn("INFO:OFF", inspector.status)
+        self.assertEqual(inspector.choose(objects, (320, 320), (20, 40), defaults), [])
+        self.assertEqual(inspector.choose(objects, (320, 320), (105, 40), defaults), defaults)
+        self.assertIn("INFO:ON", inspector.status)
+        self.assertEqual(inspector.choose(objects, (320, 320), (350, 280), defaults), defaults)
         self.assertIsNone(inspector.status)
         self.assertEqual([vars(o) for o in objects], before)
 
-    def test_can_switch_directly_to_another_object(self):
+    def test_other_objects_toggle_independently_of_target(self):
         inspector = self.make()
         objects = [obj(), obj(4, x=150)]
-        inspector.choose(objects, (320, 320), (105, 40))
-        self.assertEqual(inspector.choose(objects, (320, 320), (245, 40)), [objects[1]])
+        defaults = [objects[0]]
+        self.assertEqual(inspector.choose(objects, (320, 320), (245, 40), defaults), objects)
+        self.assertEqual(inspector.choose(objects, (320, 320), (105, 40), defaults), [objects[1]])
+        self.assertEqual(inspector.choose(objects, (320, 320), (245, 40), defaults), [])
+        self.assertEqual(inspector.choose(objects, (320, 320), (105, 40), defaults), defaults)
+
+    def test_manual_defaults_show_all_and_can_hide_one(self):
+        inspector = self.make()
+        objects = [obj(), obj(4, x=150)]
+        self.assertEqual(inspector.choose(objects, (320, 320)), objects)
+        self.assertEqual(inspector.choose(objects, (320, 320), (105, 40)), [objects[1]])
+        self.assertEqual(inspector.choose(objects, (320, 320), (105, 40)), objects)
+
+    def test_two_same_class_objects_have_separate_toggles(self):
+        inspector = self.make()
+        objects = [obj(), obj(x=150)]
+        inspector.choose(objects, (320, 320), (105, 40), [])
+        self.assertEqual(inspector.choose(objects, (320, 320), (245, 40), []), objects)
+        fresh = [obj(x=12), obj(x=152)]
+        self.assertEqual(inspector.choose(fresh, (320, 320), (107, 40), []), [fresh[1]])
 
     def test_overlapping_boxes_choose_smallest_then_score(self):
         inspector = self.make()
         objects = [obj(w=100, h=100), obj(4), obj(5, score=.95)]
-        self.assertEqual(inspector.choose(objects, (320, 320), (105, 40)), [objects[2]])
+        self.assertEqual(inspector.choose(objects, (320, 320), (105, 40), []), [objects[2]])
 
     def test_spatial_association_ignores_other_class_and_high_score_far_box(self):
         inspector = self.make()
-        inspector.choose([obj()], (320, 320), (105, 40))
+        inspector.choose([obj()], (320, 320), (105, 40), [])
         near, far = obj(x=12, score=.4), obj(x=150, score=.99)
-        self.assertEqual(inspector.choose([far, obj(4, x=11), near], (320, 320)), [near])
+        self.assertEqual(inspector.choose([far, obj(4, x=11), near], (320, 320), default_visible=[]), [near])
 
-    def test_lost_selection_never_shows_old_coordinates_or_reacquires_automatically(self):
+    def test_lost_object_discards_override_and_returning_object_uses_defaults(self):
         inspector = self.make()
-        inspector.choose([obj()], (320, 320), (105, 40))
+        inspector.choose([obj()], (320, 320), (105, 40), [])
         self.assertEqual(inspector.choose([], (320, 320)), [])
-        self.assertIn("LOST", inspector.status)
-        self.assertEqual(inspector.choose([obj()], (320, 320)), [])
-        self.assertEqual(inspector.choose([obj()], (320, 320), (105, 40)), [obj()])
+        self.assertIsNone(inspector.status)
+        self.assertFalse(inspector.selected)
+        self.assertEqual(inspector.choose([obj()], (320, 320), default_visible=[]), [])
+        self.assertEqual(inspector.choose([obj()], (320, 320)), [obj()])
 
     def test_reset_discards_selection_but_does_not_retrigger_held_finger(self):
         inspector = self.make([(105, 40, 1)])
@@ -108,7 +130,8 @@ class InspectorTests(unittest.TestCase):
         inspector = self.make()
         device = inspector.device
         inspector.choose([obj()], (320, 320), (105, 40))
-        with patch.object(device, "available", side_effect=RuntimeError("driver")):
+        device.events = [(105, 40, 1)]
+        with patch.object(device, "available", side_effect=[True, RuntimeError("driver")]):
             self.assertIsNone(inspector.poll())
         self.assertTrue(device.closed)
         self.assertIsNone(inspector.device)
@@ -142,10 +165,10 @@ class TouchMainTests(unittest.TestCase):
              patch.object(test_app.maix.app, "need_exit", side_effect=need_exit, create=True), \
              patch.object(main, "init_uart", return_value=serial), \
              patch.object(main, "send_packet", side_effect=send), \
-             patch.object(main, "draw_objects", side_effect=lambda im, objects, *args: shown.append(list(objects))):
+             patch.object(main, "draw_objects", side_effect=lambda im, objects, *args, **kw: shown.append(list(kw["info_objects"]))):
             main.main()
-        self.assertEqual([[o.class_id for o in frame] for frame in shown], [[4]] * 3)
-        self.assertTrue(all((frame[0].x, frame[0].y) == (150, 20) for frame in shown))
+        self.assertEqual([[o.class_id for o in frame] for frame in shown], [[9, 4]] * 3)
+        self.assertTrue(all((frame[1].x, frame[1].y) == (150, 20) for frame in shown))
         packets = [p for p in sent if p[2] == 0x62]
         self.assertEqual(packets, [bind_result(build_object_packet(seq, [barrel], 320, 320), 3) for seq in range(3)])
         self.assertEqual([p for p in sent if p[2] == 0x61], [build_ack_packet(3, 2)] * 2)
