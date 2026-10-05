@@ -27,7 +27,7 @@
 
 ## 验证与未做
 
-主机全套回归与真实Python→C双端回放通过；Keil全量重编0 Error / 0 Warning，GCC既有motion.c未用th警告保留。当前HEX校验和本机构建记录见CONTROL_TUNING_TODO顶部；构建产物、凭证、个人VS Code设置和过时补充包不随源码上传。发布前会再跑最终合并回归/重编，结果写在本节，不借旧日志声称新验证。
+合并视觉`7a2ab10`后的整套`tests/run_host_tests.ps1`回归（含真实XY与Python→C双端回放）exit0，视觉完整unittest 97项通过。最终Keil全量重编0 Error / 0 Warning，GCC既有motion.c未用th警告保留。构建源基准`ac5b7d2`（后续仅补本段交接文档），本机日志`MDK-ARM/rebuild_publish_xy_pc12_2026-10-06.txt`，HEX SHA256=`BA17634B268B820CBDC905F1B85CF2F73AB406EE6C18583A6C430B0F9169EC48`。构建产物、凭证、个人VS Code设置和过时补充包不随源码上传；最终发布提交以本文件Git历史为准。
 
 未烧录MCU、未部署相机、未驱动实体；XY实体收敛、工作点/夹持、激光点亮、带载道路投影和整场验收仍待实测。队友拉取后编译同一工程，按固件ID核对烧录，不仅看Git最新就认为设备已更新。历史版本说明保留在Git，下方保留队友前一视觉发布原说明；其中测试数量/“本轮”只描述当时，不替代本次电控验证。
 
