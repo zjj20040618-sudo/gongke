@@ -172,8 +172,9 @@ def main():
             status = "{} {}".format(task_status, status or "").strip()
             header_bottom = draw_header(img, modes.mode, fps_value, work_ms, uart_ms, control.remote_owned, status) or 0
             if modes.mode == config.MODE_QR:
+                # 无解码结果/缓存耗尽时也画实际扫描区域。
+                draw_qrs(img, cached_qrs if cached_qr_left > 0 else [], display_size, header_bottom)
                 if cached_qr_left > 0:
-                    draw_qrs(img, cached_qrs, display_size, header_bottom)
                     cached_qr_left -= 1
             else:
                 # 单独的显示列表；上面的任务筛选和UART已完成，不受触摸影响。

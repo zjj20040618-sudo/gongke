@@ -1,0 +1,73 @@
+"""扫码区域细框：与解码ROI一致，空结果也显示，画框在解码后。"""
+import importlib
+import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
+import test_ui as fixture
+import test_app
+import config
+from qr_reader import center_roi
+
+
+class QrRegionTests(unittest.TestCase):
+    def setUp(self):
+        self.fixture = fixture.UiTests()
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.doCleanups)
+        self.ui = self.fixture.ui
+
+    def test_empty_qr_still_draws_exact_decode_region_with_thin_outline(self):
+        img = fixture.RecordingImage(1920, 1440)
+        self.ui.draw_qrs(img, [], (480, 320))
+        self.assertEqual(len(img.rectangles), 1)
+        args, kwargs = img.rectangles[0]
+        self.assertEqual(list(args[:4]), center_roi(img))
+        self.assertEqual(args[:4], (480, 360, 960, 720))
+        self.assertEqual(args[4], (0, 255, 255))
+        self.assertEqual(kwargs["thickness"], 4)
+        self.assertEqual(img.strings, [])
+
+    def test_smaller_image_uses_one_pixel_outline_and_current_roi_setting(self):
+        img = fixture.RecordingImage(320, 240)
+        with patch.object(config, "QR_ROI_FRACTION", .8):
+            self.ui.draw_qrs(img, [], (480, 320))
+            self.assertEqual(list(img.rectangles[0][0][:4]), center_roi(img))
+        self.assertEqual(img.rectangles[0][1]["thickness"], 1)
+
+    def test_full_image_scan_outline_stays_inside_edges(self):
+        img = fixture.RecordingImage(640, 480)
+        with patch.object(config, "QR_ROI_FRACTION", 1.0):
+            self.assertEqual(center_roi(img), [])
+            self.ui.draw_qrs(img, [], (640, 480))
+        self.assertEqual(img.rectangles[0][0][:4], (0, 0, 639, 479))
+
+    def test_object_mode_does_not_draw_scan_region(self):
+        img = fixture.RecordingImage(320, 320)
+        self.ui.draw_objects(img, [])
+        self.assertEqual(img.rectangles, [])
+
+    def test_main_draws_region_each_empty_qr_frame_only_after_decoding(self):
+        main = importlib.import_module("main")
+        events = []
+        class Frame(test_app.FakeImage):
+            def find_qrcodes(self, roi, **kwargs):
+                events.append(("decode", tuple(roi)))
+                return []
+            def draw_rect(self, x, y, w, h, color, **kwargs):
+                events.append(("outline", (x, y, w, h)))
+        class Camera(test_app.FakeCamera):
+            def read(self):
+                return Frame(self.width, self.height)
+        exits = iter((False, False, True))
+        with patch.object(test_app.maix.camera, "Camera", Camera, create=True), \
+             patch.object(test_app.maix.display, "Display", return_value=SimpleNamespace(width=lambda: 480, height=lambda: 320, show=lambda img: events.append(("show", None))), create=True), \
+             patch.object(test_app.maix.app, "need_exit", side_effect=lambda: next(exits), create=True), \
+             patch.object(main, "init_uart", return_value=None), \
+             patch.object(config, "START_MODE", config.MODE_QR):
+            main.main()
+        expected = [("decode", (480, 360, 960, 720)), ("outline", (480, 360, 960, 720)), ("show", None)]
+        self.assertEqual(events, expected * 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

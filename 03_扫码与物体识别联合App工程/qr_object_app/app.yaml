@@ -1,7 +1,7 @@
 id: qr_object_switch
 name: QR and Object Switch
 name[zh]: 扫码与物体识别切换
-version: 2.1.7
+version: 2.1.8
 icon: app.png
 author: Bellator
 desc: Per-object info toggles and manual ten-class recognition; MCU task reports

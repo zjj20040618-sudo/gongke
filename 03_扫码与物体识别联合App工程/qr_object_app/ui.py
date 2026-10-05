@@ -2,6 +2,7 @@
 from maix import image
 import config
 from utils import class_name
+from qr_reader import center_roi
 
 
 def _text_size(text, scale):
@@ -146,6 +147,11 @@ def draw_objects(img, objects, display_size=None, min_y=0, details=False, info_o
                     avoid_rect=(obj.x, obj.y, obj.w, obj.h), occupied=occupied)
 
 def draw_qrs(img, qrs, display_size=None, min_y=0):
+    # 仅在解码完成后的显示阶段绘制，不把引导线送入二维码算法。
+    roi = center_roi(img) or [0, 0, max(1, img.width() - 1), max(1, img.height() - 1)]
+    # 大图缩小显示时补偿线宽，保持屏幕上约1像素；小图不放大。
+    thickness = max(1, round(_result_scale(img, display_size, text_scale=1)))
+    img.draw_rect(*roi, image.Color.from_rgb(0, 255, 255), thickness=thickness)
     scale = _result_scale(img, display_size)
     for qr in qrs:
         try:
