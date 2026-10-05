@@ -30,4 +30,5 @@ UART_WRITE_ATTEMPTS = 8
 DISPLAY_ENABLED = True
 PRINT_EVERY_N_FRAMES = 10
 STATUS_TEXT_SCALE = 5
-BOX_TEXT_SCALE = 2  # 结果文字按实际屏幕缩放补偿；物体和QR共用字号。
+BOX_TEXT_SCALE = 2  # QR结果基础字号；保留当前扫码显示设置。
+OBJECT_TEXT_SCALE = 3  # 物体标签和中心X/Y；按实际屏幕缩小比例补偿。

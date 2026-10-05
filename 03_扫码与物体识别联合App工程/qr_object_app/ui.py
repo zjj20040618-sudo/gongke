@@ -8,10 +8,21 @@ def _text_size(text, scale):
     return image.string_size(text, scale=scale, thickness=-1)
 
 
-def _result_scale(img, display_size=None):
+def _result_scale(img, display_size=None, text_scale=None):
     width, height = display_size or (config.OBJECT_WIDTH, config.OBJECT_HEIGHT)
     # Display.show默认FIT_CONTAIN；小图居中不放大，大图等比例缩小。
-    return config.BOX_TEXT_SCALE * max(1.0, img.width() / max(1, width), img.height() / max(1, height))
+    base = config.BOX_TEXT_SCALE if text_scale is None else text_scale
+    return base * max(1.0, img.width() / max(1, width), img.height() / max(1, height))
+
+
+def _object_color(class_id):
+    """十类固定配色；仅显示样式，不修改模型ID、排序或协议。"""
+    colors = ((255, 180, 60), (60, 215, 240), (190, 140, 255),
+              (90, 165, 255), (255, 105, 105), (95, 230, 120),
+              (255, 120, 195), (135, 160, 255), (175, 235, 85),
+              (195, 195, 195))
+    rgb = colors[class_id] if 0 <= class_id < len(colors) else (220, 220, 220)
+    return image.Color.from_rgb(*rgb)
 
 
 def _label_position(x, y, width, height, pad, margin, img, top, occupied):
@@ -108,12 +119,12 @@ def draw_header(img, mode, fps, work_ms, uart_ms, remote_owned=False, selection_
     return bottom
 
 def draw_objects(img, objects, display_size=None, min_y=0, details=False):
-    scale = _result_scale(img, display_size)
+    scale = _result_scale(img, display_size, config.OBJECT_TEXT_SCALE)
     occupied = []
     labels = []
     # 先画全部框，再画文字，避免后画的框划穿已经放好的文字。
     for obj in objects:
-        color = image.COLOR_RED if obj.class_id >= 6 else image.COLOR_BLUE
+        color = _object_color(obj.class_id)
         img.draw_rect(obj.x, obj.y, obj.w, obj.h, color, thickness=3)
         cx, cy = obj.x + obj.w // 2, obj.y + obj.h // 2
         img.draw_cross(cx, cy, color, size=9, thickness=2)
@@ -127,8 +138,8 @@ def draw_objects(img, objects, display_size=None, min_y=0, details=False):
             lines.extend(["x={}".format(cx), "y={}".format(cy)])
         if details:
             lines.append("w={}, h={}".format(obj.w, obj.h))
-        _draw_lines(img, obj.x, obj.y, lines, image.COLOR_WHITE, scale, min_y,
-                    background=image.Color.from_rgb(0, 0, 0),
+        _draw_lines(img, obj.x, obj.y, lines, image.Color.from_rgb(0, 0, 0), scale, min_y,
+                    background=color,
                     avoid_rect=(obj.x, obj.y, obj.w, obj.h), occupied=occupied)
 
 def draw_qrs(img, qrs, display_size=None, min_y=0):
