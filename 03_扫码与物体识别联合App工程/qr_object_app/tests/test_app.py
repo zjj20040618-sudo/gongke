@@ -363,8 +363,8 @@ class AppTests(unittest.TestCase):
     def test_stage_36_package_and_device_log_share_version(self):
         import uart_log
 
-        self.assertEqual(uart_log.APP_VERSION, "2.1.9")
-        self.assertIn("version: 2.1.9", (APP_DIR / "app.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(uart_log.APP_VERSION, "2.1.10")
+        self.assertIn("version: 2.1.10", (APP_DIR / "app.yaml").read_text(encoding="utf-8"))
 
     def test_idle_retains_model_and_reuses_it(self):
         cam = FakeCamera()
@@ -582,7 +582,7 @@ class AppTests(unittest.TestCase):
         serial = types.SimpleNamespace(read=lambda **kwargs: next(commands))
         with patch.object(main, "init_uart", return_value=serial), \
              patch.object(main, "send_packet", side_effect=send), \
-             patch.object(main, "QrReader", return_value=types.SimpleNamespace(decode=decode)), \
+             patch.object(main, "QrReader", return_value=types.SimpleNamespace(decode=decode, roi=center_roi)), \
              patch.object(maix.camera, "Camera", FakeCamera, create=True), \
              patch.object(maix.app, "need_exit", side_effect=need_exit, create=True), \
              patch.object(maix.time, "sleep_ms", lambda ms: None, create=True), \

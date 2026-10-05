@@ -1,11 +1,11 @@
 id: qr_object_switch
 name: QR and Object Switch
 name[zh]: 扫码与物体识别切换
-version: 2.1.9
+version: 2.1.10
 icon: app.png
 author: Bellator
-desc: Short display-only box retention; live MCU task reports
-desc[zh]: 漏检画框暂留200毫秒；保留信息开关、十类识别与实时任务回传
+desc: Tap to reposition QR scan region; live MCU task reports
+desc[zh]: 触屏移动真实扫码区域；保留十类识别与实时任务回传
 exclude: [__pycache__, .backup, tests, dist]
 files:
   - app.yaml

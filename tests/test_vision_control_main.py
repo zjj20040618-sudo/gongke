@@ -71,7 +71,7 @@ class MainLoopTests(unittest.TestCase):
             if complete:
                 sent.append(packet)
             return complete
-        def noop(*args):
+        def noop(*args, **kwargs):
             pass
         def draw_objects(img, objects, *args, **kwargs):
             img.annotated = True
@@ -94,7 +94,8 @@ class MainLoopTests(unittest.TestCase):
                 time=SimpleNamespace(ticks_ms=ticks_ms, sleep_ms=noop)),
             "hardware": SimpleNamespace(init_uart=lambda: Serial(), send_packet=send),
             "mode_controller": SimpleNamespace(ModeController=Modes),
-            "qr_reader": SimpleNamespace(QrReader=lambda: SimpleNamespace(decode=lambda img: next(decoded, []))),
+            "qr_reader": SimpleNamespace(QrReader=lambda: SimpleNamespace(
+                decode=lambda img: next(decoded, []), roi=lambda img: [], move_to=lambda *args: False)),
             "ui": SimpleNamespace(draw_header=noop, draw_objects=draw_objects, draw_qrs=noop),
             "user_button": SimpleNamespace(UserButton=Button),
             "touch_inspector": SimpleNamespace(ObjectInspector=inspector_factory),

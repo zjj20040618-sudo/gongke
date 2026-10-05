@@ -99,7 +99,7 @@ class UartMainTests(unittest.TestCase):
         replacements = {
             "maix": fake_maix,
             "mode_controller": SimpleNamespace(ModeController=Modes),
-            "qr_reader": SimpleNamespace(QrReader=lambda: SimpleNamespace(decode=lambda img: [])),
+            "qr_reader": SimpleNamespace(QrReader=lambda: SimpleNamespace(decode=lambda img: [], roi=lambda img: [])),
             "ui": SimpleNamespace(draw_header=noop, draw_objects=noop, draw_qrs=noop),
             "user_button": SimpleNamespace(UserButton=lambda: SimpleNamespace(
                 take_toggle_request=lambda: False, close=noop)),

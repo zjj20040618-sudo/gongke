@@ -130,6 +130,9 @@ def main():
 
             if modes.mode == config.MODE_QR:
                 work_started = time.ticks_ms()
+                if config.QR_ROI_TOUCH_MOVE and tap is not None and qr_reader.move_to(img, tap, display_size):
+                    cached_qrs, cached_qr_left = [], 0
+                    task.observe_qrs([])  # 只清未确认的连续计数；已锁存任务不改变。
                 qrs = qr_reader.decode(img)
                 confirmed = task.observe_qrs(qrs)
                 if task.message != last_task_message:
@@ -183,7 +186,8 @@ def main():
             header_bottom = draw_header(img, modes.mode, fps_value, work_ms, uart_ms, control.remote_owned, status) or 0
             if modes.mode == config.MODE_QR:
                 # 无解码结果/缓存耗尽时也画实际扫描区域。
-                draw_qrs(img, cached_qrs if cached_qr_left > 0 else [], display_size, header_bottom)
+                draw_qrs(img, cached_qrs if cached_qr_left > 0 else [], display_size, header_bottom,
+                         roi=qr_reader.roi(img))
                 if cached_qr_left > 0:
                     cached_qr_left -= 1
             else:
