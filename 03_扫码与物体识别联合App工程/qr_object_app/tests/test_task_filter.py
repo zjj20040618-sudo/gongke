@@ -6,6 +6,8 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
+import config
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from task_selection import TaskSelection
@@ -23,6 +25,9 @@ def obj(class_id, score=.9, x=10, **fields):
 
 class TaskFilterTests(unittest.TestCase):
     def setUp(self):
+        confirmation = patch.object(config, "TASK_CONFIRM_FRAMES", 3)
+        confirmation.start()  # 保留可配置多帧确认的旧回归；默认单帧另有测试。
+        self.addCleanup(confirmation.stop)
         redirect = contextlib.redirect_stdout(io.StringIO())
         redirect.__enter__()
         self.addCleanup(redirect.__exit__, None, None, None)

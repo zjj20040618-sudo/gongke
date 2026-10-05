@@ -16,7 +16,8 @@ from protocol import build_control_packet, build_task_packet, build_ack_packet, 
 class MainLoopTests(unittest.TestCase):
     def run_loop(self, commands, qr_results=(), detections=(), writes=(), fail_object=False,
                  start_mode="IDLE", manual_toggles=None, displayed=None, taps=(),
-                 frame_times=None, displayed_boxes=None):
+                 frame_times=None, displayed_boxes=None, manual_exits=(), dual_buffer=False,
+                 displayed_frames=None):
         sent, captures, events, modes_entered = [], [], [], []
         incoming, decoded, detected, write_results = map(iter, (commands, qr_results, detections, writes))
         loops = [0]
@@ -51,16 +52,27 @@ class MainLoopTests(unittest.TestCase):
                 self.enter("OBJECT" if self.mode == "QR" else "QR")
             def close(self):
                 pass
+        class Frame:
+            def __init__(self, frame_id):
+                self.frame_id = frame_id
+                self.annotated = False
+            def width(self): return 640
+            def height(self): return 480
+            def copy(self): return Frame(self.frame_id)
         class Camera:
-            def __init__(self, *args):
+            def __init__(self, *args, **kwargs):
+                if kwargs != {"buff_num": 2}:
+                    raise AssertionError("initial RGB object camera requires two buffers")
                 pass
-            def read(self):
+            def read(self, **kwargs):
                 captures.append(self.modes.mode)
                 events.append(("capture", self.modes.mode))
-                return SimpleNamespace(width=lambda: 640, height=lambda: 480)
+                return Frame(loops[0])
         class Button:
             def take_toggle_request(self):
-                return True if manual_toggles is None else loops[0] in manual_toggles
+                return manual_toggles is not None and loops[0] in manual_toggles
+            def take_exit_request(self):
+                return loops[0] in manual_exits
             def close(self):
                 pass
         def send(serial, packet):
@@ -74,6 +86,8 @@ class MainLoopTests(unittest.TestCase):
         def noop(*args, **kwargs):
             pass
         def draw_objects(img, objects, *args, **kwargs):
+            if displayed_frames is not None:
+                displayed_frames.append(img.frame_id)
             img.annotated = True
             events.append(("draw", "OBJECT"))
             if displayed is not None:
@@ -96,11 +110,12 @@ class MainLoopTests(unittest.TestCase):
             "mode_controller": SimpleNamespace(ModeController=Modes),
             "qr_reader": SimpleNamespace(QrReader=lambda: SimpleNamespace(
                 decode=lambda img: next(decoded, []), roi=lambda img: [], move_to=lambda *args: False)),
-            "ui": SimpleNamespace(draw_header=noop, draw_objects=draw_objects, draw_qrs=noop),
+            "ui": SimpleNamespace(draw_header=noop, draw_objects=draw_objects, draw_qrs=noop, make_qr_preview=noop),
             "user_button": SimpleNamespace(UserButton=Button),
             "touch_inspector": SimpleNamespace(ObjectInspector=inspector_factory),
         }
-        with patch.dict(sys.modules, replacements), patch.multiple(config, DISPLAY_ENABLED=False, START_MODE=start_mode):
+        with patch.dict(sys.modules, replacements), patch.multiple(config, DISPLAY_ENABLED=False,
+                START_MODE=start_mode, TASK_CONFIRM_FRAMES=1, DUAL_BUFFER=dual_buffer):
             spec = importlib.util.spec_from_file_location("test_camera_main", APP / "main.py")
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
@@ -135,23 +150,23 @@ class MainLoopTests(unittest.TestCase):
         sent, captures, _, entered = self.run_loop(commands,
             [self.qr("123")] * 3 + [[], self.qr("321")] + [self.qr("222")] * 3 + [[]])
         qr_packets = [packet for packet in sent if packet[2] == 0x62]
-        self.assertEqual([packet[11:-2] for packet in qr_packets], [b""] * 2 + [b"123"] * 3 + [b""] * 2 + [b"222"] * 2)
+        self.assertEqual([packet[11:-2] for packet in qr_packets], [b"123"] * 5 + [b"222"] * 4)
         self.assertTrue(all(len(packet) in (13, 16) and packet[7] == 0x53 for packet in qr_packets))
         self.assertEqual(captures, ["QR"] * 9)
         self.assertEqual(entered, ["IDLE", "QR", "QR", "IDLE"])
 
-    def test_standalone_confirms_then_automatically_filters_three_classes(self):
+    def test_standalone_confirms_waits_for_short_press_then_shows_all_classes(self):
         obj = lambda cid, score, x: SimpleNamespace(class_id=cid, score=score, x=x, y=20, w=30, h=40)
         candidates = [obj(cid, .8, 10) for cid in range(10)] + [obj(3, .95, 100)]
         displayed = []
-        sent, captures, _, entered = self.run_loop([b""] * 5, [self.qr("331")] * 3,
-            [candidates, []], start_mode="QR", manual_toggles=(), displayed=displayed)
-        self.assertEqual(captures, ["QR"] * 3 + ["OBJECT"] * 2)
+        sent, captures, _, entered = self.run_loop([b""] * 3, [self.qr("331")],
+            [candidates, []], start_mode="QR", manual_toggles=(2,), displayed=displayed)
+        self.assertEqual(captures, ["QR"] + ["OBJECT"] * 2)
         self.assertEqual(entered, ["QR", "OBJECT"])
-        self.assertEqual(sent[:3], [build_qr_packet(0, None), build_qr_packet(1, None), build_qr_packet(2, "331")])
-        self.assertEqual(sent[3], build_object_packet(3, [candidates[-1], candidates[7], candidates[1]], 640, 480, 0, 7, 0))
-        self.assertEqual(sent[4], build_object_packet(4, [], 640, 480, 0, 7, 0))
-        self.assertEqual(displayed, [[1, 7, 3], [1, 7, 3]])  # 漏检只暂留屏幕，UART本帧为空。
+        self.assertEqual(sent[0], build_qr_packet(0, "331"))
+        self.assertEqual(sent[1], build_object_packet(1, [candidates[-1], candidates[7], candidates[1]], 640, 480, 0, 7, 0))
+        self.assertEqual(sent[2], build_object_packet(2, [], 640, 480, 0, 7, 0))
+        self.assertEqual(displayed, [list(range(10)) + [3]] * 2)
 
     def test_missing_bucket_holds_display_but_uart_immediately_sends_empty_frame(self):
         bucket = SimpleNamespace(class_id=9, score=.9, x=20, y=30, w=30, h=40)
@@ -224,27 +239,126 @@ class MainLoopTests(unittest.TestCase):
 
     def test_user_return_to_qr_clears_old_task_before_confirming_another(self):
         objects = [SimpleNamespace(class_id=cid, score=.8, x=10, y=20, w=30, h=40) for cid in range(10)]
-        sent, captures, _, entered = self.run_loop([b""] * 9,
-            [self.qr("331")] * 3 + [[]] + [self.qr("123")] * 3,
-            [objects, objects], start_mode="QR", manual_toggles=(5,))
-        self.assertEqual(captures, ["QR"] * 3 + ["OBJECT"] + ["QR"] * 4 + ["OBJECT"])
+        sent, captures, _, entered = self.run_loop([b""] * 5,
+            [self.qr("331"), [], self.qr("123")],
+            [objects, objects], start_mode="QR", manual_toggles=(2, 3, 5))
+        self.assertEqual(captures, ["QR", "OBJECT", "QR", "QR", "OBJECT"])
         self.assertEqual(entered, ["QR", "OBJECT", "QR", "OBJECT"])
-        self.assertEqual(sent[4], build_qr_packet(4, None))
-        self.assertEqual(sent[-1], build_object_packet(8, [objects[4], objects[8], objects[0]], 640, 480, 0, 7, 0))
+        self.assertEqual(sent[2], build_qr_packet(2, None))
+        self.assertEqual(sent[-1], build_object_packet(4, [objects[4], objects[8], objects[0]], 640, 480, 0, 7, 0))
 
     def test_remote_request_wins_over_pending_standalone_auto_switch(self):
-        sent, captures, _, entered = self.run_loop([b""] * 3 + [build_control_packet(1, 1), b""],
-            [self.qr("331")] * 3 + [self.qr("123"), self.qr("123")], start_mode="QR", manual_toggles=())
-        self.assertEqual(captures, ["QR"] * 5)
+        sent, captures, _, entered = self.run_loop([b"", build_control_packet(1, 1), b""],
+            [self.qr("331"), self.qr("123"), self.qr("123")], start_mode="QR", manual_toggles=())
+        self.assertEqual(captures, ["QR"] * 3)
         self.assertEqual(entered, ["QR", "QR"])
-        self.assertEqual(sent[-2:], [bind_result(build_qr_packet(3, None), 1), bind_result(build_qr_packet(4, None), 1)])
+        self.assertEqual(sent[-2:], [bind_result(build_qr_packet(1, "123"), 1), bind_result(build_qr_packet(2, "123"), 1)])
 
-    def test_standalone_auto_load_failure_keeps_locked_qr_and_does_not_retry_forever(self):
+    def test_manual_load_failure_keeps_locked_qr_and_does_not_retry_forever(self):
         sent, captures, _, entered = self.run_loop([b""] * 5, [self.qr("331")] * 3 + [[], []],
-            start_mode="QR", manual_toggles=(), fail_object=True)
+            start_mode="QR", manual_toggles=(2,), fail_object=True)
         self.assertEqual(captures, ["QR"] * 5)
         self.assertEqual(entered, ["QR", "OBJECT"])
         self.assertEqual(sent[-2:], [build_qr_packet(3, "331"), build_qr_packet(4, "331")])
+
+    def test_unscanned_qr_short_press_enters_all_objects_then_returns_to_qr(self):
+        objects = [SimpleNamespace(class_id=cid, score=.9, x=cid * 40, y=100, w=30, h=40)
+                   for cid in range(10)]
+        displayed = []
+        sent, captures, _, entered = self.run_loop([b""] * 3, [[]], [objects, objects],
+            start_mode="QR", manual_toggles=(1, 3), displayed=displayed)
+        self.assertEqual(entered, ["QR", "OBJECT", "QR"])
+        self.assertEqual(captures, ["OBJECT", "OBJECT", "QR"])
+        self.assertEqual(displayed, [list(range(10))] * 2)
+        self.assertEqual([p[5] for p in sent], [0, 0, 0])
+
+    def test_remote_qr_then_request_enters_current_object_display(self):
+        objects = [SimpleNamespace(class_id=cid, score=.9, x=cid * 40, y=100, w=30, h=40)
+                   for cid in range(10)]
+        displayed = []
+        sent, captures, _, _ = self.run_loop([build_control_packet(1, 1), build_task_packet(2, 1, 3)],
+            [self.qr("331")], [objects], displayed=displayed)
+        self.assertEqual(captures, ["QR", "OBJECT"])
+        self.assertIn(bind_result(build_qr_packet(0, "331"), 1), sent)
+        self.assertEqual(displayed, [[3]])
+        self.assertEqual(sent[-1], bind_result(build_object_packet(1, [objects[3]], 640, 480, 0, 7, 0), 2))
+
+    def test_remote_short_press_pauses_business_same_retry_fails_new_request_resumes(self):
+        objects = [SimpleNamespace(class_id=cid, score=.9, x=cid * 40, y=100, w=30, h=40)
+                   for cid in range(10)]
+        displayed = []
+        commands = [build_control_packet(1, 1), b"", b"", build_control_packet(1, 1),
+                    build_task_packet(2, 4, 0)]
+        sent, captures, _, entered = self.run_loop(commands, [self.qr("331"), []],
+            [objects] * 3, manual_toggles=(2, 3), displayed=displayed)
+        self.assertEqual(captures, ["QR", "OBJECT", "QR", "QR", "OBJECT"])
+        self.assertEqual(displayed, [list(range(10)), [9]])
+        self.assertEqual([p[2] for p in sent], [0x61, 0x62, 0x61, 0x61, 0x62])
+        self.assertIn(build_ack_packet(1, 1, 1), sent)
+        self.assertEqual(sent[-1], bind_result(build_object_packet(4, [objects[9]], 640, 480, 0, 7, 0), 2))
+
+    def test_long_press_wins_over_short_press_after_remote_control(self):
+        sent, captures, _, entered = self.run_loop([build_task_packet(1, 4, 0), b""],
+            manual_toggles=(2,), manual_exits=(2,))
+        self.assertEqual(captures, ["OBJECT"])
+        self.assertEqual(entered, ["IDLE", "OBJECT"])
+        self.assertEqual(len(sent), 2)
+
+    def test_scanned_standalone_does_not_auto_leave_qr(self):
+        sent, captures, _, entered = self.run_loop([b""] * 3,
+            [self.qr("331"), [], []], start_mode="QR", manual_toggles=())
+        self.assertEqual(captures, ["QR"] * 3)
+        self.assertEqual(entered, ["QR"])
+        self.assertEqual(sent, [build_qr_packet(seq, "331") for seq in range(3)])
+
+    def test_dual_buffer_pairs_previous_input_and_missing_target_sends_empty(self):
+        bucket = SimpleNamespace(class_id=9, score=.9, x=100, y=20, w=30, h=40)
+        frames, boxes = [], []
+        sent, _, _, _ = self.run_loop([build_task_packet(1, 4, 0), b"", b""],
+            detections=[[bucket], [bucket], []], dual_buffer=True,
+            displayed_frames=frames, displayed_boxes=boxes)
+        # 第一轮库返回值不可信，第二轮配图1，第三轮配图2。
+        self.assertEqual(frames, [1, 1, 2])
+        self.assertEqual(boxes[:2], [[], [(9, 100, False)]])
+        self.assertEqual([p for p in sent if p[2] == 0x62], [
+            bind_result(build_object_packet(0, [bucket], 640, 480, 0, 7, 50), 1),
+            bind_result(build_object_packet(1, [], 640, 480, 0, 7, 50), 1)])
+
+    def test_dual_buffer_new_request_discards_previous_task_result(self):
+        red = SimpleNamespace(class_id=4, score=.9, x=100, y=20, w=30, h=40)
+        green = SimpleNamespace(class_id=5, score=.9, x=200, y=20, w=30, h=40)
+        frames = []
+        sent, _, _, _ = self.run_loop([build_task_packet(1, 1, 1), b"",
+            build_task_packet(2, 1, 2), b""], detections=[[], [red], [red], [green]],
+            dual_buffer=True, displayed_frames=frames)
+        self.assertEqual(frames, [1, 1, 3, 3])
+        packets = [p for p in sent if p[2] == 0x62]
+        self.assertEqual([struct.unpack_from("<H", p, 3)[0] for p in packets], [1, 2])
+        self.assertEqual([p[21] for p in packets], [4, 5])
+        self.assertEqual([p[24:26] for p in packets], [struct.pack("<H", 115), struct.pack("<H", 215)])
+
+    def test_dual_buffer_manual_modes_and_mcu_resume_prime_again(self):
+        red = SimpleNamespace(class_id=4, score=.9, x=100, y=20, w=30, h=40)
+        frames = []
+        commands = [build_task_packet(1, 1, 1), b"", b"", b"", b"",
+                    build_task_packet(2, 1, 1), b""]
+        sent, captures, _, _ = self.run_loop(commands, qr_results=[self.qr("331")],
+            detections=[[], [red], [red], [red], [red], [red]], manual_toggles=(3, 4),
+            dual_buffer=True, displayed_frames=frames)
+        self.assertEqual(captures, ["OBJECT", "OBJECT", "QR"] + ["OBJECT"] * 4)
+        self.assertEqual(frames, [1, 1, 4, 4, 6, 6])
+        packets = [p for p in sent if p[2] == 0x62]
+        self.assertEqual([struct.unpack_from("<H", p, 3)[0] for p in packets], [1, 2])
+        self.assertTrue(all(p[7] == 0x01 for p in packets))
+
+    def test_dual_buffer_touch_hides_info_not_uart_target(self):
+        bucket = SimpleNamespace(class_id=9, score=.9, x=100, y=100, w=40, h=40)
+        displayed = []
+        sent, _, _, _ = self.run_loop([build_task_packet(1, 4, 0), b"", b""],
+            detections=[[], [bucket], [bucket]], dual_buffer=True,
+            taps=[None, (107, 80), (107, 80)], displayed=displayed)
+        self.assertEqual(displayed, [[], [], [9]])
+        self.assertEqual([p[21] for p in sent if p[2] == 0x62], [9, 9])
 
     def test_four_tasks_single_target_and_missing_bucket_never_reuses_coordinates(self):
         obj = lambda cid, score, x: SimpleNamespace(class_id=cid, score=score, x=x, y=30, w=20, h=40)

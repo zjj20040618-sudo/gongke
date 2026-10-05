@@ -106,6 +106,43 @@ class TaskControlTests(unittest.TestCase):
         self.assertEqual(self.control.apply(1, 2, 1, 1), (ack, False))
         self.assertEqual(self.control.result(self.empty), bind_result(self.empty, 1))
 
+    def test_manual_switch_suppresses_business_even_after_return_to_same_mode(self):
+        self.modes.toggle = lambda: self.modes.enter("QR" if self.modes.mode == "OBJECT" else "OBJECT")
+        ack, _ = self.control.apply(1, 2, 4, 0)
+        self.control.ack_sent(ack)
+        self.control.manual_toggle()
+        self.assertTrue(self.control.ready_for_capture())
+        self.assertIsNone(self.control.result(build_qr_packet(1, "123")))
+        self.control.manual_toggle()
+        self.assertIsNone(self.control.result(self.empty))
+        failure, changed = self.control.apply(1, 2, 4, 0)
+        self.assertEqual(failure, build_ack_packet(1, 2, 1))
+        self.assertFalse(changed)
+        self.control.ack_sent(ack)
+        self.assertFalse(self.control.acknowledged)
+        new_ack, _ = self.control.apply(2, 2, 4, 0)
+        self.assertFalse(self.control.manual_override)
+        self.assertIsNone(self.control.result(self.empty))
+        self.control.ack_sent(new_ack)
+        self.assertEqual(self.control.result(self.empty), bind_result(self.empty, 2))
+
+    def test_manual_switch_failure_preserves_live_session(self):
+        ack, _ = self.control.apply(1, 2, 4, 0)
+        self.control.ack_sent(ack)
+        def fail():
+            raise RuntimeError("camera failure")
+        self.modes.toggle = fail
+        with self.assertRaises(RuntimeError):
+            self.control.manual_toggle()
+        self.assertFalse(self.control.manual_override)
+        self.assertEqual(self.control.result(self.empty), bind_result(self.empty, 1))
+
+    def test_result_type_must_match_actual_mode(self):
+        ack, _ = self.control.apply(1, 1)
+        self.control.ack_sent(ack)
+        self.assertIsNone(self.control.result(self.empty))
+        self.assertIsNotNone(self.control.result(build_qr_packet(1, "123")))
+
     def test_same_id_changed_task_or_digit_pauses_business(self):
         for changed_command in ((1, 2, 1, 2), (1, 2, 4, 0), (1, 0), (1, 2)):
             with self.subTest(command=changed_command):

@@ -109,11 +109,14 @@ def _draw_lines(img, x, y, lines, color, scale, min_y=0, background=None, avoid_
     return round(y)
 
 
-def draw_header(img, mode, fps, work_ms, uart_ms, remote_owned=False, selection_status=None):
+def draw_header(img, mode, fps, work_ms, uart_ms, remote_owned=False, selection_status=None,
+                source_size=None, text_scale=None):
     title = "QR SCAN" if mode == config.MODE_QR else "OBJ10 YOLO26"
-    bottom = _draw_lines(img, 8, 8, ["{} {}x{} FPS:{:.1f}".format(title, img.width(), img.height(), fps)], image.COLOR_GREEN, config.STATUS_TEXT_SCALE)
+    width, height = source_size or (img.width(), img.height())
+    scale = config.STATUS_TEXT_SCALE if text_scale is None else text_scale
+    bottom = _draw_lines(img, 8, 8, ["{} {}x{} FPS:{:.1f}".format(title, width, height, fps)], image.COLOR_GREEN, scale)
     owner = "UART:CTRL" if remote_owned else "USER:SWITCH"
-    bottom = _draw_lines(img, 8, bottom, ["WORK:{}ms UART:{}ms {}".format(work_ms, uart_ms, owner)], image.COLOR_YELLOW, config.STATUS_TEXT_SCALE)
+    bottom = _draw_lines(img, 8, bottom, ["WORK:{}ms UART:{}ms {}".format(work_ms, uart_ms, owner)], image.COLOR_YELLOW, scale)
     if selection_status:
         bottom = _draw_lines(img, 8, bottom, [selection_status], image.COLOR_YELLOW,
                              config.BOX_TEXT_SCALE, bottom)
@@ -147,6 +150,31 @@ def draw_objects(img, objects, display_size=None, min_y=0, details=False, info_o
         _draw_lines(img, obj.x, obj.y, lines, image.Color.from_rgb(0, 0, 0), scale, min_y,
                     background=color,
                     avoid_rect=(obj.x, obj.y, obj.w, obj.h), occupied=occupied)
+
+def make_qr_preview(frame, qrs, roi, display_size):
+    """与07一致：解码后缩小灰度图、转屏幕RGB；不转换解码输入。"""
+    sw, sh = display_size
+    iw, ih = frame.width(), frame.height()
+    ratio = min(1.0, sw / iw, sh / ih)
+    if ratio == 1:
+        return frame.to_format(image.Format.FMT_RGB888), qrs, roi
+    small = frame.resize(sw, sh, fit=image.Fit.FIT_CONTAIN)
+    canvas = small.to_format(image.Format.FMT_RGB888)
+    ox, oy = (sw - iw * ratio) / 2, (sh - ih * ratio) / 2
+    def point(x, y):
+        return int(ox + x * ratio), int(oy + y * ratio)
+    def box(x, y, w, h):
+        px, py = point(x, y)
+        return [px, py, min(sw - px - 1, max(1, int(w * ratio))),
+                        min(sh - py - 1, max(1, int(h * ratio)))]
+    display_qrs = []
+    for qr in qrs:
+        display_qr = dict(qr)  # 不改原始解码结果、缓存或串口任务。
+        display_qr.update(zip(("x", "y", "w", "h"), box(qr["x"], qr["y"], qr["w"], qr["h"])))
+        display_qr["corners"] = [point(x, y) for x, y in qr.get("corners", ())]
+        display_qrs.append(display_qr)
+    return canvas, display_qrs, box(*(roi or [0, 0, iw, ih]))
+
 
 def draw_qrs(img, qrs, display_size=None, min_y=0, roi=None):
     # 仅在解码完成后的显示阶段绘制，不把引导线送入二维码算法。

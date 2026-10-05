@@ -38,7 +38,7 @@ class UartMainTests(unittest.TestCase):
         cls.addClassCleanup(replay_class.doClassCleanups)
         cls.mcu = replay_class()
 
-    def run_loop(self, commands, detections, write_counts):
+    def run_loop(self, commands, detections, write_counts, dual_buffer=False):
         incoming, detected, counts = map(iter, (commands, detections, write_counts))
         turn, captures = [0], []
 
@@ -83,12 +83,17 @@ class UartMainTests(unittest.TestCase):
                 pass
 
         class Camera:
-            def __init__(self, *args):
+            def __init__(self, *args, **kwargs):
                 pass
 
             def read(self):
                 captures.append((turn[0], len(serial.wire), self.modes.mode))
-                return SimpleNamespace(width=lambda: 640, height=lambda: 480)
+                return Frame()
+
+        class Frame:
+            def width(self): return 640
+            def height(self): return 480
+            def copy(self): return Frame()
 
         noop = lambda *args, **kwargs: None
         fake_maix = SimpleNamespace(
@@ -100,13 +105,13 @@ class UartMainTests(unittest.TestCase):
             "maix": fake_maix,
             "mode_controller": SimpleNamespace(ModeController=Modes),
             "qr_reader": SimpleNamespace(QrReader=lambda: SimpleNamespace(decode=lambda img: [], roi=lambda img: [])),
-            "ui": SimpleNamespace(draw_header=noop, draw_objects=noop, draw_qrs=noop),
+            "ui": SimpleNamespace(draw_header=noop, draw_objects=noop, draw_qrs=noop, make_qr_preview=noop),
             "user_button": SimpleNamespace(UserButton=lambda: SimpleNamespace(
                 take_toggle_request=lambda: False, close=noop)),
         }
         with patch.dict(sys.modules, replacements), \
              patch.multiple(config, DISPLAY_ENABLED=False, START_MODE="IDLE", UART_TRACE=False,
-                 UART_WRITE_ATTEMPTS=8, UART_TRACE_EVERY_N_FRAMES=10), \
+                 UART_WRITE_ATTEMPTS=8, UART_TRACE_EVERY_N_FRAMES=10, DUAL_BUFFER=dual_buffer), \
              contextlib.redirect_stdout(io.StringIO()):
             hardware = load_file("uart_main_hardware", APP / "hardware.py")
             with patch.dict(sys.modules, {"hardware": hardware}), \
@@ -128,6 +133,26 @@ class UartMainTests(unittest.TestCase):
             frames.append(packet)
             offset += size
         return frames
+
+    def test_dual_buffer_fresh_request_and_empty_frame_reach_actual_mcu(self):
+        serial, _ = self.run_loop([build_task_packet(1, 1, 1), b"",
+            build_task_packet(2, 4, 0), b"", b""],
+            [[], [detection(4, 100)], [detection(4, 999)], [detection(9, 200)], []],
+            [], dual_buffer=True)
+        frames = self.frames(serial.wire)
+        self.assertEqual([p[2] for p in frames], [0x61, 0x62, 0x61, 0x62, 0x62])
+        results = [p for p in frames if p[2] == 0x62]
+        self.assertEqual([p[10] for p in results], [1, 1, 0])
+        self.assertEqual([p[21] for p in results if p[10]], [4, 9])
+        timeline = [(0, "@2")]
+        for turn in range(1, 6):
+            if turn == 3: timeline.append((turn * 10 - 1, "@2"))
+            timeline += [(turn * 10, chunk) for chunk_turn, chunk in serial.chunks if chunk_turn == turn]
+        lines, stats = self.mcu.replay(timeline)
+        self.assertEqual([line for line in lines if line.startswith("OBJ,")],
+            ["OBJ,0,0,115,40,30,40,90,0,640,480", "OBJ,3,0,215,40,30,40,90,1,640,480"])
+        self.assertEqual(stats[:3], (3, 0, 3))
+        self.assertEqual(stats[7], 0)
 
     def test_old_target_tail_and_new_empty_frame_have_unique_seq_and_both_reach_real_mcu(self):
         serial, captures = self.run_loop([build_control_packet(1, 2), b""],

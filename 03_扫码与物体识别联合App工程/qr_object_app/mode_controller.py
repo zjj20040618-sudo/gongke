@@ -1,6 +1,6 @@
 """集中管理模式、摄像头分辨率和模型；切换失败尽量恢复原模式。"""
 import gc
-from maix import err, time
+from maix import err, image, time
 import config
 from object_detector import ObjectDetector
 
@@ -9,6 +9,18 @@ class ModeController:
     def __init__(self, cam):
         self.cam, self.mode, self.detector = cam, None, None
         self.width, self.height = config.OBJECT_WIDTH, config.OBJECT_HEIGHT
+        self.format = cam.format()
+
+    def _configure_camera(self, width, height, pixel_format):
+        # set_resolution不能改格式；同一个句柄关闭后按官方open接口重开。
+        self.cam.close()
+        buffers = (config.QR_CAMERA_BUFFERS if pixel_format == image.Format.FMT_GRAYSCALE
+                   else config.OBJECT_CAMERA_BUFFERS)
+        result = self.cam.open(width, height, format=pixel_format, buff_num=buffers)
+        if result != err.Err.ERR_NONE:
+            raise RuntimeError("camera open {}x{} format={} failed: {}".format(width, height, pixel_format, result))
+        if pixel_format == image.Format.FMT_GRAYSCALE:
+            self.cam.skip_frames(config.QR_WARMUP_FRAMES)
 
     def enter(self, new_mode):
         if new_mode == "IDLE":
@@ -19,6 +31,7 @@ class ModeController:
         if new_mode == self.mode:
             return
         old_size = (self.width, self.height)
+        old_format = self.format
         candidate = self.detector
         resolution_attempted = False
         started = time.ticks_ms()
@@ -28,20 +41,18 @@ class ModeController:
                     candidate = ObjectDetector()
                 # 不猜测转换后的模型尺寸，读取实际输入宽高。
                 width, height = candidate.input_width, candidate.input_height
+                pixel_format = image.Format.FMT_RGB888
             else:
                 width, height = config.QR_WIDTH, config.QR_HEIGHT
+                pixel_format = image.Format.FMT_GRAYSCALE
             resolution_attempted = True
-            result = self.cam.set_resolution(width, height)
-            if result != err.Err.ERR_NONE:
-                raise RuntimeError("set_resolution {}x{} failed: {}".format(width, height, result))
+            self._configure_camera(width, height, pixel_format)
         except Exception:
             if candidate is not None and candidate is not self.detector:
                 candidate.close()
             if resolution_attempted:
                 try:
-                    result = self.cam.set_resolution(*old_size)
-                    if result != err.Err.ERR_NONE:
-                        raise RuntimeError("camera rollback error: " + str(result))
+                    self._configure_camera(*old_size, old_format)
                 except Exception as exc:
                     self.mode = None
                     raise RuntimeError("camera rollback failed; restart app") from exc
@@ -55,7 +66,8 @@ class ModeController:
             self.detector = None
             gc.collect()
         self.mode, self.width, self.height = new_mode, width, height
-        print("[MODE] {} {}x{} switch={}ms".format(new_mode, width, height, time.ticks_ms() - started))
+        self.format = pixel_format
+        print("[MODE] {} {}x{} format={} switch={}ms".format(new_mode, width, height, pixel_format, time.ticks_ms() - started))
 
     def toggle(self):
         self.enter(config.MODE_OBJECT if self.mode == config.MODE_QR else config.MODE_QR)
@@ -64,5 +76,7 @@ class ModeController:
         if self.detector is not None:
             self.detector.close()
             self.detector = None
+        if self.cam is not None:
+            self.cam.close()
         self.cam = None
 

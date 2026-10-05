@@ -1,11 +1,11 @@
 id: qr_object_switch
 name: QR and Object Switch
 name[zh]: 扫码与物体识别切换
-version: 2.1.10
+version: 2.1.12
 icon: app.png
 author: Bellator
-desc: Tap to reposition QR scan region; live MCU task reports
-desc[zh]: 触屏移动真实扫码区域；保留十类识别与实时任务回传
+desc: MCU handshake with USER mode toggle and per-object touch information
+desc[zh]: MCU握手切任务；USER短按扫码识别切换、长按退出；逐个点选物体信息
 exclude: [__pycache__, .backup, tests, dist]
 files:
   - app.yaml
@@ -22,6 +22,7 @@ files:
   - task_selection.py
   - touch_inspector.py
   - display_cache.py
+  - frame_pair.py
   - ui.py
   - user_button.py
   - utils.py

@@ -11,22 +11,25 @@ from mode_controller import ModeController
 from protocol import build_object_packet, build_qr_packet, CommandReceiver
 from control_session import ControlSession
 from qr_reader import QrReader
-from ui import draw_header, draw_objects, draw_qrs
+from ui import draw_header, draw_objects, draw_qrs, make_qr_preview
 from user_button import UserButton
 from utils import class_name
 from task_selection import TaskSelection
 from touch_inspector import ObjectInspector
 from display_cache import DisplayCache
+from frame_pair import FramePair
 
 
 def main():
-    cam = screen = serial = button = modes = img = inspector = None
+    cam = screen = serial = button = modes = img = canvas = inspector = None
     try:
-        cam = camera.Camera(config.OBJECT_WIDTH, config.OBJECT_HEIGHT, image.Format.FMT_RGB888)
+        cam = camera.Camera(config.OBJECT_WIDTH, config.OBJECT_HEIGHT, image.Format.FMT_RGB888,
+                            buff_num=config.OBJECT_CAMERA_BUFFERS)
         screen = display.Display() if config.DISPLAY_ENABLED else None
         display_size = (screen.width(), screen.height()) if screen is not None else (config.OBJECT_WIDTH, config.OBJECT_HEIGHT)
         inspector = ObjectInspector(display_size, enabled=screen is not None)
         object_display = DisplayCache(config.OBJECT_BOX_HOLD_MS)
+        frame_pair = FramePair(config.DUAL_BUFFER)
         serial, button = init_uart(), UserButton()
         modes, qr_reader = ModeController(cam), QrReader()
         receiver, control = CommandReceiver(), ControlSession(modes)
@@ -35,7 +38,6 @@ def main():
         fps_value, fps_started = 0.0, time.ticks_ms()
         cached_qrs, cached_qr_left = [], 0
         pending_ack = None
-        auto_detect_pending = False  # 本帧发完确认的QR后，下一轮释放旧图再切OBJECT。
         last_task_message = None
         modes.enter(config.START_MODE)
         manual_object_view = modes.mode == config.MODE_OBJECT
@@ -52,8 +54,8 @@ def main():
                 data = serial.read(len=256, timeout=0)
                 for command in receiver.feed(data or b""):
                     ack, changed = control.apply(*command)
-                    auto_detect_pending = False  # 主控请求优先，独立扫码不得擅自切模式。
                     if changed:
+                        frame_pair.reset()  # 新请求，即使仍是OBJECT，也拒绝前任务的流水线结果。
                         manual_object_view = False
                         inspector.reset()
                         object_display.reset()
@@ -68,25 +70,24 @@ def main():
                         pending_ack = None
                     else:
                         print("[CONTROL] ACK write incomplete; business paused request={}".format(command[0]))
-                if pending_ack is None and control.request_id is not None and not control.acknowledged:
+                if pending_ack is None and not control.manual_override and control.request_id is not None and not control.acknowledged:
                     pending_ack = control.last_ack
                 if pending_ack is not None and not ack_attempted:
                     if send_packet(serial, pending_ack):
                         control.ack_sent(pending_ack)
                         pending_ack = None
-            # USER 短按仍服从电控；长按允许人为退出，不受接管状态限制。
+            # 短按始终切换QR/OBJECT；长按优先退出，绝不同时触发短按。
             # 只退出视觉 App，不是电机急停；停车/断流保护由电控独立处理。
             take_exit = getattr(button, "take_exit_request", None)
-            # 旧限制保留供对照：接管后也禁止长按退出。
-            # if take_exit is not None and take_exit() and not control.remote_owned:
             if take_exit is not None and take_exit():
                 print("[KEY] manual exit; remote_owned={}; MCU stop unconfirmed".format(control.remote_owned))
                 break
-            if button.take_toggle_request() and not control.remote_owned:
-                auto_detect_pending = False
+            if button.take_toggle_request():
                 gc.collect()
                 try:
-                    modes.toggle()
+                    control.manual_toggle()
+                    pending_ack = None  # 不继续确认已被人工暂停的业务请求。
+                    frame_pair.reset()
                     manual_object_view = modes.mode == config.MODE_OBJECT
                     inspector.reset()
                     object_display.reset()
@@ -99,34 +100,21 @@ def main():
                         raise
                     print("[MODE] switch failed; old mode continues:", exc)
 
-            if auto_detect_pending and not control.remote_owned:
-                auto_detect_pending = False
-                gc.collect()
-                try:
-                    modes.enter(config.MODE_OBJECT)
-                    manual_object_view = False
-                    inspector.reset()
-                    object_display.reset()
-                    cached_qrs, cached_qr_left = [], 0
-                    fps_count, fps_value, fps_started = 0, 0.0, time.ticks_ms()
-                except Exception as exc:
-                    if modes.mode is None:
-                        raise
-                    # 已确认任务保留；失败留在QR，可短按USER重试，不循环重载模型。
-                    print("[MODE] task auto-switch failed; press USER to retry:", exc)
-
             # 即使IDLE/QR/ACK等待也排空触摸事件，不让旧点击跨模式生效。
             tap = inspector.poll()
-            if pending_ack is not None or modes.mode == "IDLE" or (control.remote_owned and (control.request_id is None or not control.acknowledged)):
+            if pending_ack is not None or modes.mode == "IDLE" or not control.ready_for_capture():
                 time.sleep_ms(10)
                 continue
             loop_started = time.ticks_ms()  # 切换/命令处理耗时不计入单帧处理。
             capture_started = time.ticks_ms()
-            img = cam.read()
+            img = cam.read(block=True, block_ms=config.QR_READ_TIMEOUT_MS) if modes.mode == config.MODE_QR else cam.read()
+            if img is None:
+                raise RuntimeError("Camera read timed out; restart App")
             width, height = img.width(), img.height()
             capture_ms = time.ticks_ms() - capture_started
             objects, qrs, selected_objects = [], [], []
             work_ms = uart_ms = 0
+            result_ready = True
 
             if modes.mode == config.MODE_QR:
                 work_started = time.ticks_ms()
@@ -134,12 +122,10 @@ def main():
                     cached_qrs, cached_qr_left = [], 0
                     task.observe_qrs([])  # 只清未确认的连续计数；已锁存任务不改变。
                 qrs = qr_reader.decode(img)
-                confirmed = task.observe_qrs(qrs)
+                task.observe_qrs(qrs)
                 if task.message != last_task_message:
                     print("[TASK]", task.message)
                     last_task_message = task.message
-                if confirmed and not control.remote_owned:
-                    auto_detect_pending = True
                 if task.payload is not None:
                     qrs = [qr for qr in qrs if qr["payload"] == task.payload]
                 work_ms = time.ticks_ms() - work_started
@@ -156,11 +142,18 @@ def main():
                     uart_ms = time.ticks_ms() - uart_started
             else:
                 objects, work_ms = modes.detector.detect(img)
+                paired = frame_pair.align(img, capture_ms, loop_started)
+                if paired is None:
+                    # 第一轮只提交本任务图像；返回值可能属于旧任务，既不画也不发。
+                    objects, result_ready = [], False
+                else:
+                    img, capture_ms, source_started = paired
+                    width, height = img.width(), img.height()
                 selected_objects = task.select(objects, control.target_class_id,
                     include_barrel=control.remote_owned, img_w=width, img_h=height)
-                vision_ms = time.ticks_ms() - loop_started
+                vision_ms = time.ticks_ms() - source_started if result_ready else 0
                 # 0x63只发当前任务；通用0x60 OBJECT保留三任务加桶诊断。
-                if serial is not None:
+                if serial is not None and result_ready:
                     uart_started = time.ticks_ms()
                     packet = build_object_packet(sequence, selected_objects, width, height, capture_ms, work_ms, vision_ms)
                     sequence = (sequence + 1) & 0xFFFF
@@ -170,7 +163,7 @@ def main():
             draw_started = time.ticks_ms()
             # 所有检测框都能点击；默认文字与UART筛选是两套列表，互不影响。
             # USER手动识别默认显示全部；自动/电控任务只默认显示任务目标。
-            default_info = objects if manual_object_view and not control.remote_owned else selected_objects
+            default_info = objects if manual_object_view else selected_objects
             display_objects, visible_objects = [], []
             if modes.mode == config.MODE_OBJECT:
                 # 先完成本帧推理和UART，再更新显示缓存；旧框不会进入模型或串口。
@@ -180,24 +173,35 @@ def main():
                     default_visible=display_defaults)
             status = inspector.status if modes.mode == config.MODE_OBJECT else None
             task_status = "TASK:{} DIGIT:{}".format(control.task_id, control.qr_digit) if control.target_class_id is not None else task.message
-            if manual_object_view and not control.remote_owned:
+            if manual_object_view:
                 task_status = "MANUAL: ALL CLASSES"
+            if control.manual_override:
+                task_status += " MCU PAUSED: NEW REQUEST REQUIRED"
+            if not result_ready:
+                task_status += " PIPELINE WARMUP"
             status = "{} {}".format(task_status, status or "").strip()
-            header_bottom = draw_header(img, modes.mode, fps_value, work_ms, uart_ms, control.remote_owned, status) or 0
             if modes.mode == config.MODE_QR:
-                # 无解码结果/缓存耗尽时也画实际扫描区域。
-                draw_qrs(img, cached_qrs if cached_qr_left > 0 else [], display_size, header_bottom,
-                         roi=qr_reader.roi(img))
+                # 原始灰度图只解码；与07相同，先缩到屏幕再转RGB绘制预览。
+                canvas = img
+                display_qrs = cached_qrs if cached_qr_left > 0 else []
+                display_roi = qr_reader.roi(img)
+                if screen is not None:
+                    canvas, display_qrs, display_roi = make_qr_preview(img, display_qrs, display_roi, display_size)
+                header_bottom = draw_header(canvas, modes.mode, fps_value, work_ms, uart_ms,
+                    control.remote_owned, status, source_size=(width, height), text_scale=3) or 0
+                draw_qrs(canvas, display_qrs, display_size, header_bottom, roi=display_roi)
                 if cached_qr_left > 0:
                     cached_qr_left -= 1
             else:
+                canvas = img
+                header_bottom = draw_header(img, modes.mode, fps_value, work_ms, uart_ms, control.remote_owned, status) or 0
                 # 单独的显示列表；上面的任务筛选和UART已完成，不受触摸影响。
                 draw_objects(img, display_objects, display_size, header_bottom, inspector.selected,
                              info_objects=visible_objects)
             if screen is not None:
-                screen.show(img)
+                screen.show(canvas)
             draw_ms = time.ticks_ms() - draw_started
-            img = None  # 不让旧图像持有摄像头缓冲，防止下一轮切分辨率出错。
+            img = canvas = None  # 切换前释放原始图和预览，不占用旧格式缓冲。
 
             fps_count += 1
             frame_count += 1
@@ -212,7 +216,9 @@ def main():
                 selected_ids = ",".join(str(obj.class_id) for obj in selected_objects)
                 print("[PERF] mode={} request={} task={} frame={} size={}x{} fps={:.2f} obj={} sent_ids=[{}] qr={} cap={}ms work={}ms draw/display={}ms uart={}ms loop={}ms {}".format(modes.mode, control.request_id, task.payload, frame_count, width, height, fps_value, len(objects), selected_ids, len(qrs), capture_ms, work_ms, draw_ms, uart_ms, loop_ms, details))
     finally:
-        img = None
+        img = canvas = None
+        if 'frame_pair' in locals():
+            frame_pair.reset()
         if inspector is not None:
             inspector.close()
         if serial is not None:

@@ -157,7 +157,8 @@ class TouchMainTests(unittest.TestCase):
         def send(serial, packet):
             sent.append(packet)
             return True
-        with patch.object(test_app.maix, "touchscreen", SimpleNamespace(TouchScreen=lambda: touch), create=True), \
+        with patch.object(test_app.config, "DUAL_BUFFER", False), \
+             patch.object(test_app.maix, "touchscreen", SimpleNamespace(TouchScreen=lambda: touch), create=True), \
              patch.object(test_app.maix.nn, "YOLO26", test_app.FakeModel, create=True), \
              patch.object(test_app.FakeModel, "detect", return_value=[barrel, red]), \
              patch.object(test_app.maix.camera, "Camera", test_app.FakeCamera, create=True), \

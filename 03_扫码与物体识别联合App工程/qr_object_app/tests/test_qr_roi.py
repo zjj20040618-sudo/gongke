@@ -104,8 +104,8 @@ class QrRegionTests(unittest.TestCase):
                 if color == (0, 255, 255):
                     events.append(("outline", (x, y, w, h)))
         class Camera(test_app.FakeCamera):
-            def read(self):
-                return Frame(self.width, self.height)
+            def read(self, **kwargs):
+                return Frame(self.width, self.height, self.pixel_format)
         incoming = iter([build_control_packet(17, 1)] + [b""] * (len(taps) - 1))
         exits = iter([False] * len(taps) + [True])
         with patch.object(test_app.maix.camera, "Camera", Camera, create=True), \
@@ -115,7 +115,7 @@ class QrRegionTests(unittest.TestCase):
              patch.object(main, "send_packet", side_effect=lambda serial, packet: packets.append(packet) or True), \
              patch.object(main, "TaskSelection", return_value=task), \
              patch.object(main, "ObjectInspector", return_value=inspector), \
-             patch.multiple(config, QR_ROI_TOUCH_MOVE=enabled, DISPLAY_ENABLED=True, START_MODE="IDLE"):
+             patch.multiple(config, QR_ROI_TOUCH_MOVE=enabled, DISPLAY_ENABLED=True, START_MODE="IDLE", TASK_CONFIRM_FRAMES=3):
             main.main()
         return task, events, [p for p in packets if p[2] == 0x62]
 
@@ -123,8 +123,8 @@ class QrRegionTests(unittest.TestCase):
         task, events, packets = self.run_touch_loop([None, None, (240, 96), None, None, (240, 224)])
         self.assertEqual([p for event, p in events if event == "decode"],
                          [(480, 360, 960, 720)] * 2 + [(480, 72, 960, 720)] * 3 + [(480, 648, 960, 720)])
-        self.assertEqual([p for event, p in events if event == "decode"],
-                         [p for event, p in events if event == "outline"])
+        self.assertEqual([p for event, p in events if event == "outline"],
+                         [(133, 80, 213, 160)] * 2 + [(133, 16, 213, 160)] * 3 + [(133, 144, 213, 160)])
         self.assertEqual(packets, [bind_result(build_qr_packet(i, None if i < 4 else "123"), 17) for i in range(6)])
         self.assertEqual(task.payload, "123")
 
@@ -144,8 +144,8 @@ class QrRegionTests(unittest.TestCase):
             def draw_rect(self, x, y, w, h, color, **kwargs):
                 events.append(("outline", (x, y, w, h)))
         class Camera(test_app.FakeCamera):
-            def read(self):
-                return Frame(self.width, self.height)
+            def read(self, **kwargs):
+                return Frame(self.width, self.height, self.pixel_format)
         exits = iter((False, False, True))
         with patch.object(test_app.maix.camera, "Camera", Camera, create=True), \
              patch.object(test_app.maix.display, "Display", return_value=SimpleNamespace(width=lambda: 480, height=lambda: 320, show=lambda img: events.append(("show", None))), create=True), \
@@ -153,7 +153,7 @@ class QrRegionTests(unittest.TestCase):
              patch.object(main, "init_uart", return_value=None), \
              patch.object(config, "START_MODE", config.MODE_QR):
             main.main()
-        expected = [("decode", (480, 360, 960, 720)), ("outline", (480, 360, 960, 720)), ("show", None)]
+        expected = [("decode", (480, 360, 960, 720)), ("outline", (133, 80, 213, 160)), ("show", None)]
         self.assertEqual(events, expected * 2)
 
 
