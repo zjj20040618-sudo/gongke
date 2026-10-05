@@ -63,9 +63,13 @@ def main():
                     if send_packet(serial, pending_ack):
                         control.ack_sent(pending_ack)
                         pending_ack = None
-            # 接管后 USER 短按/长按均不覆盖电控，避免识别中途被人为退出。
+            # USER 短按仍服从电控；长按允许人为退出，不受接管状态限制。
+            # 只退出视觉 App，不是电机急停；停车/断流保护由电控独立处理。
             take_exit = getattr(button, "take_exit_request", None)
-            if take_exit is not None and take_exit() and not control.remote_owned:
+            # 旧限制保留供对照：接管后也禁止长按退出。
+            # if take_exit is not None and take_exit() and not control.remote_owned:
+            if take_exit is not None and take_exit():
+                print("[KEY] manual exit; remote_owned={}; MCU stop unconfirmed".format(control.remote_owned))
                 break
             if button.take_toggle_request() and not control.remote_owned:
                 gc.collect()
