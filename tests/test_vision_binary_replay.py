@@ -1,4 +1,9 @@
-"""Real Maix packet writer -> real STM32 parser, synthetic host evidence only."""
+"""Historical QR51 fixtures and current OBJECT writer to real STM32 parser.
+
+legacy_qr_51 intentionally exercises the existing receiver. It does not represent
+current QR53 writer compatibility; test_mcu_protocol.py proves QR53 rejection.
+All replay evidence is synthetic host evidence, not device/UART acceptance.
+"""
 import itertools
 import os
 from pathlib import Path
@@ -12,7 +17,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "03_扫码与物体识别联合App工程/qr_object_app"))
-from protocol import (build_object_packet, build_qr_packet, build_control_packet,
+from protocol import (build_object_packet, build_control_packet,
                       build_ack_packet, bind_result, CommandReceiver)
 from control_session import ControlSession
 from task_selection import TaskSelection
@@ -23,8 +28,15 @@ def detection(class_id, score=0.875, x=10, y=20, w=30, h=40):
     return SimpleNamespace(class_id=class_id, score=score, x=x, y=y, w=w, h=h)
 
 
-def qr(sequence, payload="123"):
-    return build_qr_packet(sequence, [{"payload": payload, "x": 100, "y": 50, "w": 20, "h": 30}])
+def legacy_qr_51(sequence, payload="123"):
+    """Explicit old QR51 test fixture, including geometry for receiver regression."""
+    body = bytearray(struct.pack("<BHB", 0x51, sequence & 0xFFFF, 0 if payload is None else 1))
+    if payload is not None:
+        raw = payload.encode("utf-8")[:255]
+        body.append(len(raw))
+        body.extend(raw)
+        body.extend(struct.pack("<HHHH", 110, 65, 20, 30))
+    return b"\xaa\x55" + bytes(body) + struct.pack("<H", crc16_ccitt(body))
 
 
 def objects(sequence, items, width=480, height=320):
@@ -40,8 +52,8 @@ class BinaryReplayTests(unittest.TestCase):
     def setUpClass(cls):
         cls.temporary = tempfile.TemporaryDirectory(prefix="eod-binary-replay-")
         cls.executable = Path(cls.temporary.name) / "replay.exe"
-        compiler = os.environ.get("EOD_HOST_CC", "D:/mingw64/bin/gcc.exe")
-        subprocess.run([compiler, "-std=c11", "-Wall", "-Wextra", "-Werror",
+        compiler = os.environ.get("EOD_HOST_CC", "E:/setup/devc++/Dev-Cpp/MinGW64/bin/gcc.exe")
+        subprocess.run([compiler, "-std=c11", "-fuse-ld=bfd", "-Wall", "-Wextra", "-Werror",
                         "-I" + str(ROOT / "App"), "-I" + str(ROOT / "tests/stubs"),
                         str(ROOT / "tests/vision_binary_replay.c"), str(ROOT / "App/proto.c"),
                         "-o", str(cls.executable)], check=True, capture_output=True)
@@ -67,15 +79,15 @@ class BinaryReplayTests(unittest.TestCase):
 
     def test_control_ack_then_fresh_qr_not_ack_alone(self):
         frames, _ = self.replay([(0, "@1"), (1, "?"),
-            (2, bind_result(qr(1), 1)), (3, build_ack_packet(1, 1)), (4, "?"),
-            (5, bind_result(build_qr_packet(2, []), 1)), (6, "?"),
-            (7, bind_result(qr(3), 1))])
+            (2, bind_result(legacy_qr_51(1), 1)), (3, build_ack_packet(1, 1)), (4, "?"),
+            (5, bind_result(legacy_qr_51(2, None), 1)), (6, "?"),
+            (7, bind_result(legacy_qr_51(3), 1))])
         self.assertEqual(frames, ["TX," + build_control_packet(1, 1).hex(),
             "STATUS,0", "STATUS,0", "STATUS,1", "QR,1,2,3,3"])
 
     def test_control_stale_legacy_wrong_kind_and_stop(self):
         frames, _ = self.replay([(0, "@2"), (1, build_ack_packet(1, 2)),
-            (2, objects(1, [detection(4)])), (3, bind_result(qr(1), 1)),
+            (2, objects(1, [detection(4)])), (3, bind_result(legacy_qr_51(1), 1)),
             (4, bind_result(objects(2, [detection(4)]), 1)),
             (5, "@2"), (6, bind_result(objects(3, [detection(4)]), 1)),
             (7, build_ack_packet(1, 2)), (8, "?"), (9, build_ack_packet(2, 2)),
@@ -93,7 +105,7 @@ class BinaryReplayTests(unittest.TestCase):
         frames, _ = self.replay([(0, "@1"), (499, "~"), (500, "~"),
             (501, build_ack_packet(99, 1)), (502, "?"),
             (503, build_ack_packet(1, 0, 1)), (504, "?"), (1000, "~"),
-            (1001, bind_result(qr(1), 1)), (1002, "@0"),
+            (1001, bind_result(legacy_qr_51(1), 1)), (1002, "@0"),
             (1003, build_ack_packet(2, 0)), (1004, "?")])
         self.assertEqual(frames, [command, command, "STATUS,0", "STATUS,-1",
             "TX," + build_control_packet(2, 0).hex(), "STATUS,1"])
@@ -103,15 +115,15 @@ class BinaryReplayTests(unittest.TestCase):
         bad_length = recalculate_crc(b"\xaa\x55\x62\x01\x00\xff\xff\x00\x00")
         frames, stats = self.replay([(0, "@1"), (1, bytes(corrupt) + bad_length),
             (200, build_ack_packet(1, 2)), (201, "?"),
-            (202, bind_result(qr(9), 1))])
+            (202, bind_result(legacy_qr_51(9), 1))])
         self.assertEqual(frames[-1], "STATUS,-1")
         self.assertFalse(any(f.startswith("QR,") for f in frames))
         self.assertGreaterEqual(stats[3], 1)
 
     def test_control_invalid_qr_is_fresh_but_not_task_success(self):
         frames, _ = self.replay([(0, "@1"), (1, build_ack_packet(1, 1)),
-            (2, bind_result(qr(1, "12x"), 1)), (3, "?"),
-            (4, bind_result(qr(2, "x" * 255), 1)), (5, bind_result(qr(3), 1))])
+            (2, bind_result(legacy_qr_51(1, "12x"), 1)), (3, "?"),
+            (4, bind_result(legacy_qr_51(2, "x" * 255), 1)), (5, bind_result(legacy_qr_51(3), 1))])
         self.assertEqual(frames, ["TX," + build_control_packet(1, 1).hex(),
             "STATUS,1", "QR,1,2,3,3"])
 
@@ -138,20 +150,29 @@ class BinaryReplayTests(unittest.TestCase):
         ack, changed = control.apply(1, 2)
         self.assertTrue(changed)
         self.assertEqual(ack, build_ack_packet(1, 2))
+        self.assertIsNone(control.result(objects(1, [])))
+        control.ack_sent(ack)
         self.assertEqual(control.result(objects(1, [])), bind_result(objects(1, []), 1))
         self.assertEqual(control.apply(1, 2), (ack, False))
         self.assertEqual(modes.calls, 1)
-        self.assertTrue(control.apply(2, 2)[1])
+        second_ack, changed = control.apply(2, 2)
+        self.assertTrue(changed)
+        self.assertIsNone(control.result(objects(2, [])))
+        control.ack_sent(second_ack)
         self.assertEqual(control.result(objects(2, [])), bind_result(objects(2, []), 2))
-        self.assertEqual(control.apply(3, 0)[0], build_ack_packet(3, 0))
-        self.assertIsNone(control.result(qr(3)))
+        idle_ack, _ = control.apply(3, 0)
+        self.assertEqual(idle_ack, build_ack_packet(3, 0))
+        control.ack_sent(idle_ack)
+        self.assertIsNone(control.result(legacy_qr_51(3)))
         modes.fail = True
-        self.assertEqual(control.apply(4, 1)[0], build_ack_packet(4, 0, 1))
-        self.assertIsNone(control.result(qr(4)))
+        failed_ack, _ = control.apply(4, 1)
+        self.assertEqual(failed_ack, build_ack_packet(4, 0, 1))
+        control.ack_sent(failed_ack)
+        self.assertIsNone(control.result(legacy_qr_51(4)))
         self.assertEqual(control.apply(4, 1)[1], False)
 
     def test_all_27_qr_codes_fragmented_and_concatenated(self):
-        packets = [qr(i, "".join(digits)) for i, digits in enumerate(itertools.product("123", repeat=3))]
+        packets = [legacy_qr_51(i, "".join(digits)) for i, digits in enumerate(itertools.product("123", repeat=3))]
         stream = b"".join(packets)
         frames, stats = self.replay([(0, stream[i:i + 3]) for i in range(0, len(stream), 3)])
         self.assertEqual(frames, ["QR,{},{},{},{}".format(*digits, i)
@@ -174,7 +195,7 @@ class BinaryReplayTests(unittest.TestCase):
                 self.assertTrue(task.observe(code))
                 selected = task.select([detection(i) for i in range(10)])
                 frames, stats = self.replay([(0, "@1"), (1, build_ack_packet(1, 1)),
-                    (2, bind_result(qr(1, code), 1)), (3, "@2"),
+                    (2, bind_result(legacy_qr_51(1, code), 1)), (3, "@2"),
                     (4, build_ack_packet(2, 2)),
                     (5, bind_result(objects(2, selected, width=320, height=320), 2)), (6, "?")])
                 # Expected business labels derive from the competition digits,
@@ -219,42 +240,42 @@ class BinaryReplayTests(unittest.TestCase):
         self.assertEqual(stats[7], 1)
 
     def test_empty_object_packet_and_sequence_wrap(self):
-        frames, stats = self.replay(objects(65535, []) + qr(0))
+        frames, stats = self.replay(objects(65535, []) + legacy_qr_51(0))
         self.assertEqual(frames, ["QR,1,2,3,0"])
         self.assertEqual(stats[:3], (2, 1, 1))
 
     def test_invalid_qr_payloads_never_dispatch(self):
         payloads = ["", "12", "1234", "120", "1x3", "１２３", "x" * 255]
-        stream = b"".join(qr(i, payload) for i, payload in enumerate(payloads)) + qr(99)
+        stream = b"".join(legacy_qr_51(i, payload) for i, payload in enumerate(payloads)) + legacy_qr_51(99)
         frames, stats = self.replay(stream)
         self.assertEqual(frames, ["QR,1,2,3,99"])
         self.assertEqual(stats[4], len(payloads))
 
     def test_crc_corruption_noise_truncation_then_valid(self):
-        bad = bytearray(qr(1)); bad[-1] ^= 1
-        frames, stats = self.replay(b"noise\xaa" + bytes(bad) + qr(2)[:8] + qr(3) + qr(4))
+        bad = bytearray(legacy_qr_51(1)); bad[-1] ^= 1
+        frames, stats = self.replay(b"noise\xaa" + bytes(bad) + legacy_qr_51(2)[:8] + legacy_qr_51(3) + legacy_qr_51(4))
         self.assertEqual(frames, ["QR,1,2,3,3", "QR,1,2,3,4"])
         self.assertGreaterEqual(stats[3], 2)
 
     def test_corrupt_counts_and_types_recover(self):
-        bad_type = bytearray(qr(1)); bad_type[2] = 0x99
+        bad_type = bytearray(legacy_qr_51(1)); bad_type[2] = 0x99
         bad_count = bytearray(objects(2, [])); bad_count[5] = 11
-        qr_count = bytearray(qr(3)); qr_count[5] = 2
-        frames, stats = self.replay(bytes(bad_type) + bytes(bad_count) + bytes(qr_count) + qr(4))
+        qr_count = bytearray(legacy_qr_51(3)); qr_count[5] = 2
+        frames, stats = self.replay(bytes(bad_type) + bytes(bad_count) + bytes(qr_count) + legacy_qr_51(4))
         self.assertEqual(frames, ["QR,1,2,3,4"])
         self.assertGreaterEqual(stats[4], 3)
 
     def test_invalid_geometry_confidence_and_class_drop_whole_frame(self):
         invalid = [detection(10), detection(255), detection(4, 1.1), detection(4, w=0),
                    detection(4, x=480), detection(4, w=481)]
-        stream = b"".join(objects(i, [detection(4), item]) for i, item in enumerate(invalid)) + qr(9)
+        stream = b"".join(objects(i, [detection(4), item]) for i, item in enumerate(invalid)) + legacy_qr_51(9)
         frames, stats = self.replay(stream)
         self.assertEqual(frames, ["QR,1,2,3,9"])
         self.assertEqual(stats[4], len(invalid))
 
     def test_gap_reset_and_tick_wrap(self):
-        partial = qr(1, "x" * 255)[:7]
-        frames, stats = self.replay([(0xfffffff0, partial), (0x100, qr(2))])
+        partial = legacy_qr_51(1, "x" * 255)[:7]
+        frames, stats = self.replay([(0xfffffff0, partial), (0x100, legacy_qr_51(2))])
         self.assertEqual(frames, ["QR,1,2,3,2"])
         self.assertEqual(stats[5], 1)
 
@@ -263,14 +284,14 @@ class BinaryReplayTests(unittest.TestCase):
         chunks = []
         for i in range(30):
             noise = bytes(rng.randrange(256) for _ in range(100))
-            chunks.extend([(i * 1000, noise), (i * 1000 + 200, qr(i))])
+            chunks.extend([(i * 1000, noise), (i * 1000 + 200, legacy_qr_51(i))])
         frames, _ = self.replay(chunks)
         self.assertEqual(frames, ["QR,1,2,3,{}".format(i) for i in range(30)])
 
     def test_crc_known_vector_and_valid_crc_unknown_payload_not_accepted(self):
         self.assertEqual(crc16_ccitt(b"123456789"), 0x29b1)
-        malformed = bytearray(qr(0)); malformed[7] = ord("x")
-        frames, _ = self.replay(recalculate_crc(malformed) + qr(1))
+        malformed = bytearray(legacy_qr_51(0)); malformed[7] = ord("x")
+        frames, _ = self.replay(recalculate_crc(malformed) + legacy_qr_51(1))
         self.assertEqual(frames, ["QR,1,2,3,1"])
 
 

@@ -29,25 +29,39 @@ def main():
         sequence = frame_count = fps_count = 0
         fps_value, fps_started = 0.0, time.ticks_ms()
         cached_qrs, cached_qr_left = [], 0
+        pending_ack = None
         modes.enter(config.START_MODE)
-        print("[APP] ready IDLE; model=9541 classes=10; UART controls recognition")
-        print("[UART] protocol=v2 QR status only; OBJECT class+center, target X only; MCU parser update required")
+        print("[APP] ready {}; model={} classes=10; UART controls recognition".format(modes.mode, config.MODEL_FILE))
+        print("[UART] QR=0x53 three ASCII digits; OBJECT=0x01; task request=0x63; MCU QR/task update required")
         for class_id, name in enumerate(config.CLASS_NAMES_CN):
             print("[CLASS] {} {} ({})".format(class_id, name, class_name(class_id)))
 
         while not app.need_exit():
             loop_started = time.ticks_ms()
+            ack_attempted = False
             # 前一帧已释放；只有主循环会修改摄像头和模型。
             if serial is not None:
                 data = serial.read(len=256, timeout=0)
-                for request_id, mode in receiver.feed(data or b""):
-                    ack, changed = control.apply(request_id, mode)
+                for command in receiver.feed(data or b""):
+                    ack, changed = control.apply(*command)
                     if changed:
                         cached_qrs, cached_qr_left = [], 0
                         fps_count, fps_value, fps_started = 0, 0.0, time.ticks_ms()
-                        if mode == 1 and control.request_id == request_id:
+                        if modes.mode == config.MODE_QR and control.request_id == command[0]:
                             task.reset()  # 只有成功的新扫码请求清任务；同号重试不清。
-                    send_packet(serial, ack)  # 必须先确认实际模式，再取新图和发新结果。
+                    ack_attempted = True
+                    pending_ack = ack
+                    if send_packet(serial, ack):
+                        control.ack_sent(ack)
+                        pending_ack = None
+                    else:
+                        print("[CONTROL] ACK write incomplete; business paused request={}".format(command[0]))
+                if pending_ack is None and control.request_id is not None and not control.acknowledged:
+                    pending_ack = control.last_ack
+                if pending_ack is not None and not ack_attempted:
+                    if send_packet(serial, pending_ack):
+                        control.ack_sent(pending_ack)
+                        pending_ack = None
             # 接管后 USER 短按/长按均不覆盖电控，避免识别中途被人为退出。
             take_exit = getattr(button, "take_exit_request", None)
             if take_exit is not None and take_exit() and not control.remote_owned:
@@ -65,7 +79,7 @@ def main():
                         raise
                     print("[MODE] switch failed; old mode continues:", exc)
 
-            if modes.mode == "IDLE" or (control.remote_owned and control.request_id is None):
+            if pending_ack is not None or modes.mode == "IDLE" or (control.remote_owned and (control.request_id is None or not control.acknowledged)):
                 time.sleep_ms(10)
                 continue
             loop_started = time.ticks_ms()  # 切换/命令处理耗时不计入单帧处理。
@@ -88,22 +102,23 @@ def main():
                     cached_qrs, cached_qr_left = qrs, config.QR_KEEP_FRAMES
                     for qr in qrs:
                         print("[QR] payload={} {} center=({}, {})".format(qr["payload"], qr["text"], qr["x"] + qr["w"] // 2, qr["y"] + qr["h"] // 2))
-                # 每帧只回有效任务码状态；任务码文字和二维码框仅供视觉端内部使用。
+                # 重发本轮锁存任务码至换模式，目标坐标绝不沿用旧帧。
                 if serial is not None:
                     uart_started = time.ticks_ms()
-                    if send_packet(serial, control.result(build_qr_packet(sequence, task.payload is not None))):
-                        sequence = (sequence + 1) & 0xFFFF
+                    packet = build_qr_packet(sequence, task.payload)
+                    sequence = (sequence + 1) & 0xFFFF  # 分配给新帧；尾包完成与新帧不能共用seq。
+                    send_packet(serial, control.result(packet))
                     uart_ms = time.ticks_ms() - uart_started
             else:
                 objects, work_ms = modes.detector.detect(img)
-                selected_objects = task.select(objects)
+                selected_objects = task.select(objects, control.target_class_id)
                 vision_ms = time.ticks_ms() - loop_started
-                # 每帧发送任务指定类别与中心坐标；靶子只带X，黑桶持续发送。
+                # 0x63只发当前任务；通用0x60 OBJECT保留三任务加桶诊断。
                 if serial is not None:
                     uart_started = time.ticks_ms()
-                    packet = build_object_packet(sequence, selected_objects, width, height)
-                    if send_packet(serial, control.result(packet)):
-                        sequence = (sequence + 1) & 0xFFFF
+                    packet = build_object_packet(sequence, selected_objects, width, height, capture_ms, work_ms, vision_ms)
+                    sequence = (sequence + 1) & 0xFFFF
+                    send_packet(serial, control.result(packet))
                     uart_ms = time.ticks_ms() - uart_started
 
             draw_started = time.ticks_ms()

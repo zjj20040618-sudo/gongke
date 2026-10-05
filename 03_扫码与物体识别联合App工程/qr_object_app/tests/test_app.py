@@ -116,6 +116,7 @@ class AppTests(unittest.TestCase):
         mud.read(APP_DIR / config.MODEL_FILE, encoding="utf-8")
         self.assertEqual(tuple(s.strip() for s in mud["extra"]["labels"].split(",")), config.CLASS_NAMES_CN)
         self.assertEqual(mud["extra"]["model_type"], "yolo26")
+        self.assertEqual(config.MODEL_FILE, "model_9564.mud")
         self.assertEqual(len(config.CLASS_NAMES_CN), 10)
         self.assertEqual(config.CLASS_NAMES_CN[9], "黑桶")
         self.assertTrue((APP_DIR / mud["basic"]["model"]).is_file())
@@ -251,31 +252,31 @@ class AppTests(unittest.TestCase):
     def test_black_barrel_packet_and_crc(self):
         packet = build_object_packet(65536, [raw_object()], 320, 320)
         self.assertEqual(packet[:2], b"\xaa\x55")
-        self.assertEqual(struct.unpack("<BHBHH", packet[2:10]), (2, 0, 1, 320, 320))
-        self.assertEqual(struct.unpack("<BHH", packet[10:15]), (9, 25, 40))
+        self.assertEqual(struct.unpack("<BHBHHHHH", packet[2:16]), (1, 0, 1, 320, 320, 0, 0, 0))
+        self.assertEqual(struct.unpack("<BHHHHH", packet[16:27]), (9, 820, 25, 40, 30, 40))
         self.assertEqual(struct.unpack("<H", packet[-2:])[0], crc16_ccitt(packet[2:-2]))
 
-    def test_target_packet_contains_center_x_without_y(self):
+    def test_target_packet_preserves_full_geometry(self):
         packet = build_object_packet(1, [raw_object(8)], 320, 320)
-        self.assertEqual(packet[2], 0x02)
-        self.assertEqual(struct.unpack("<BHBHH", packet[2:10]), (2, 1, 1, 320, 320))
-        self.assertEqual(struct.unpack("<BH", packet[10:13]), (8, 25))
-        self.assertEqual(len(packet), 15)
+        self.assertEqual(packet[2], 0x01)
+        self.assertEqual(struct.unpack("<BHBHHHHH", packet[2:16]), (1, 1, 1, 320, 320, 0, 0, 0))
+        self.assertEqual(struct.unpack("<BHHHHH", packet[16:27]), (8, 820, 25, 40, 30, 40))
+        self.assertEqual(len(packet), 29)
 
     def test_empty_detection_packet(self):
         packet = build_object_packet(1, [], 320, 320)
-        self.assertEqual(len(packet), 12)
+        self.assertEqual(len(packet), 18)
         self.assertEqual(packet[5], 0)
 
     def test_crc_reference_vector(self):
         self.assertEqual(crc16_ccitt(b"123456789"), 0x29B1)
 
-    def test_qr_packet_reports_status_without_payload_or_geometry(self):
-        packet = build_qr_packet(4, True)
-        self.assertEqual(packet[:6], b"\xaa\x55\x52\x04\x00\x01")
-        self.assertEqual(len(packet), 8)
+    def test_qr_packet_contains_three_digits_without_geometry(self):
+        packet = build_qr_packet(4, "123")
+        self.assertEqual(packet[:9], b"\xaa\x55\x53\x04\x00\x01" + b"123")
+        self.assertEqual(len(packet), 11)
         self.assertEqual(struct.unpack("<H", packet[-2:])[0], crc16_ccitt(packet[2:-2]))
-        self.assertEqual(build_qr_packet(5, False)[5], 0)
+        self.assertEqual(build_qr_packet(5, None)[5], 0)
 
     def test_qr_roi_and_task_text(self):
         self.assertEqual(center_roi(FakeImage()), [400, 225, 800, 450])
@@ -396,9 +397,9 @@ class AppTests(unittest.TestCase):
         for packet in (sent[3], sent[5]):
             self.assertEqual(packet[2], 0x62)
             self.assertEqual(struct.unpack("<H", packet[3:5])[0], 2)
-            self.assertEqual(packet[7], 0x02)
+            self.assertEqual(packet[7], 0x01)
             self.assertEqual(packet[10], 2)
-            self.assertEqual({packet[15], packet[20]}, {9, 4})
+            self.assertEqual({packet[21], packet[32]}, {9, 4})
         self.assertEqual(len(sent), 7)
 
     def test_only_black_barrel_sends_class9_frame(self):
@@ -428,8 +429,9 @@ class AppTests(unittest.TestCase):
         build_spec.loader.exec_module(builder)
         files = builder.manifest()
         self.assertIn("control_session.py", files)
-        self.assertIn("model_9541.mud", files)
-        self.assertIn("model_9541.cvimodel", files)
+        self.assertIn("model_9564.mud", files)
+        self.assertIn("model_9564.cvimodel", files)
+        self.assertNotIn("model_9541.cvimodel", files)
         self.assertNotIn("model_9302.cvimodel", files)
 
 
@@ -516,21 +518,61 @@ class AppTests(unittest.TestCase):
             main.main()
         def object_ids(packet):
             ids = []
-            offset = 15
+            offset = 21
             for _ in range(packet[10]):
                 class_id = packet[offset]
                 ids.append(class_id)
-                offset += 3 if class_id in (6, 7, 8) else 5
+                offset += 11
             return tuple(ids)
 
         rows = []
         for packet in sent:
-            if packet[2] == 0x62 and packet[7] == 0x02:
+            if packet[2] == 0x62 and packet[7] == 0x01:
                 request = struct.unpack("<H", packet[3:5])[0]
                 rows.append((request, object_ids(packet)))
         self.assertEqual(rows, [(2, (4, 8, 0, 9)), (4, (4, 8, 0, 9)), (6, (3, 8, 1, 9))])
-        qr_packets = [packet for packet in sent if packet[2] == 0x62 and packet[7] == 0x52]
+        qr_packets = [packet for packet in sent if packet[2] == 0x62 and packet[7] == 0x53]
         self.assertEqual([packet[10] for packet in qr_packets], [1, 1, 1])
+        self.assertEqual([packet[11:14] for packet in qr_packets], [b"123", b"123", b"321"])
+
+    def test_main_task_requests_and_ack_retry_gate(self):
+        main = importlib.import_module("main")
+        from protocol import build_control_packet, build_task_packet
+        commands = iter((build_task_packet(1, 1, 1), b"", build_task_packet(2, 4, 0),
+                         build_task_packet(2, 4, 0), build_task_packet(3, 2, 2),
+                         build_task_packet(4, 3, 3), build_control_packet(5, 0)))
+        turns, reads, attempts, delivered = [0], [], [], []
+        class TrackingCamera(FakeCamera):
+            def read(self):
+                reads.append(turns[0])
+                return super().read()
+        def need_exit():
+            turns[0] += 1
+            return turns[0] > 7
+        def send(serial, packet):
+            attempts.append((turns[0], packet))
+            if turns[0] == 1:  # First ACK write incomplete; no MCU retry follows.
+                return False
+            delivered.append((turns[0], packet))
+            return True
+        serial = types.SimpleNamespace(read=lambda **kwargs: next(commands))
+        with patch.object(main, "init_uart", return_value=serial), \
+             patch.object(main, "send_packet", side_effect=send), \
+             patch.object(maix.camera, "Camera", TrackingCamera, create=True), \
+             patch.object(maix.app, "need_exit", side_effect=need_exit, create=True), \
+             patch.object(maix.time, "sleep_ms", lambda ms: None, create=True), \
+             patch.object(config, "DISPLAY_ENABLED", False), \
+             patch.object(FakeModel, "detect", return_value=[raw_object(i) for i in range(10)]):
+            main.main()
+        self.assertEqual(reads, [2, 3, 4, 5, 6])
+        self.assertEqual(attempts[0][1], attempts[1][1])
+        rows = []
+        for turn, packet in delivered:
+            if packet[2] == 0x62:
+                self.assertEqual(packet[7], 0x01)
+                self.assertEqual(packet[10], 1)
+                rows.append((turn, struct.unpack("<H", packet[3:5])[0], packet[21]))
+        self.assertEqual(rows, [(2, 1, 4), (3, 2, 9), (4, 2, 9), (5, 3, 8), (6, 4, 0)])
 
 if __name__ == "__main__":
     unittest.main()

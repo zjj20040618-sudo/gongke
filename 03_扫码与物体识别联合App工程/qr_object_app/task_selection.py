@@ -1,4 +1,4 @@
-"""三位二维码选择三类任务目标；黑桶不依赖任务码，持续上报当前坐标。"""
+"""63单任务筛选；60诊断选三任务加桶，均只使用当前帧坐标。"""
 import config
 
 
@@ -27,9 +27,18 @@ class TaskSelection:
         print("[TASK] code={} ball={} target={} hostage={} barrel=9".format(payload, *self.class_ids))
         return True
 
-    def select(self, objects):
+    @classmethod
+    def class_id_for_request(cls, task_id, digit):
+        if task_id == 4 and digit == 0:
+            return cls.BLACK_BARREL_ID
+        maps = {1: cls.BALL_IDS, 2: cls.TARGET_IDS, 3: cls.HOSTAGE_IDS}
+        if task_id not in maps or digit not in (1, 2, 3):
+            raise ValueError("invalid task_id/qr_digit")
+        return maps[task_id][str(digit)]
+
+    def select(self, objects, requested_class_id=None):
         # 与电控一样按类别挑置信度最高的一个；仅处理本帧，不保存坐标。
-        allowed = self.class_ids + (self.BLACK_BARREL_ID,)
+        allowed = self.class_ids + (self.BLACK_BARREL_ID,) if requested_class_id is None else (requested_class_id,)
         best = {}
         for obj in objects:
             if obj.class_id in allowed and (obj.class_id not in best or obj.score > best[obj.class_id].score):
