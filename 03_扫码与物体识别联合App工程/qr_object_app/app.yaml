@@ -1,11 +1,11 @@
 id: qr_object_switch
 name: QR and Object Switch
 name[zh]: 扫码与物体识别切换
-version: 2.1.14
+version: 2.1.15
 icon: app.png
 author: Bellator
-desc: Automatic QR to object handoff with task-filtered UART results
-desc[zh]: 三码确认自动识别任务目标；MCU握手绑定回传，保留USER切换
+desc: Task-filtered object coordinates and locked hostage encounter order
+desc[zh]: 任务目标坐标与人质首次出现顺序回传，编号本轮锁定
 exclude: [__pycache__, .backup, tests, dist]
 files:
   - app.yaml
@@ -20,6 +20,7 @@ files:
   - protocol.py
   - qr_reader.py
   - task_selection.py
+  - hostage_order.py
   - touch_inspector.py
   - display_cache.py
   - frame_pair.py

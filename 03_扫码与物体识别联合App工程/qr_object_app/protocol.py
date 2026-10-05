@@ -1,4 +1,4 @@
-"""UART组包：0x01目标、0x53三位任务码、0x60/0x63控制请求。"""
+"""UART组包：0x01坐标、0x53任务码、0x54人质顺序、0x60/0x63请求。"""
 import struct
 from utils import clamp_u16, crc16_ccitt
 
@@ -73,4 +73,20 @@ def build_qr_packet(sequence, payload):
     if payload is not None:
         body += payload.encode("ascii")
     return _packet(body)
+
+
+def build_hostage_order_packet(sequence, target_class_id, order):
+    """0x54 为本轮历史顺序，不是当前可见目标或物体坐标。
+
+    0 表示目标尚未出现；空站位填 FF。编号一经分配，本轮不改变。
+    与同一检测帧的 01 使用相同 seq，由 62 绑定人质请求号。
+    """
+    if (type(target_class_id) is not int or target_class_id not in (0, 1, 2)
+            or len(order) > 3 or any(type(cid) is not int or cid not in (0, 1, 2) for cid in order)
+            or len(set(order)) != len(order)):
+        raise ValueError("invalid hostage order")
+    rank = order.index(target_class_id) + 1 if target_class_id in order else 0
+    slots = list(order) + [0xFF] * (3 - len(order))
+    return _packet(struct.pack("<BHBBB3B", 0x54, sequence & 0xFFFF,
+                              target_class_id, rank, len(order), *slots))
 

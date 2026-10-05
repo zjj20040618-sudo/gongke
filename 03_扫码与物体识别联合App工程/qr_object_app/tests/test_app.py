@@ -397,8 +397,8 @@ class AppTests(unittest.TestCase):
     def test_stage_36_package_and_device_log_share_version(self):
         import uart_log
 
-        self.assertEqual(uart_log.APP_VERSION, "2.1.14")
-        self.assertIn("version: 2.1.14", (APP_DIR / "app.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(uart_log.APP_VERSION, "2.1.15")
+        self.assertIn("version: 2.1.15", (APP_DIR / "app.yaml").read_text(encoding="utf-8"))
 
     def test_idle_retains_model_and_reuses_it(self):
         cam = FakeCamera()
@@ -675,10 +675,17 @@ class AppTests(unittest.TestCase):
         rows = []
         for turn, packet in delivered:
             if packet[2] == 0x62:
+                if packet[7] == 0x54:
+                    self.assertEqual(turn, 6)
+                    self.assertEqual(struct.unpack('<H', packet[3:5])[0], 4)
+                    self.assertEqual(struct.unpack('<BHBBB3B', packet[7:-2])[2:],
+                                     (0, 1, 3, 0, 1, 2))
+                    continue
                 self.assertEqual(packet[7], 0x01)
                 self.assertEqual(packet[10], 1)
                 rows.append((turn, struct.unpack("<H", packet[3:5])[0], packet[21]))
         self.assertEqual(rows, [(2, 1, 4), (3, 2, 9), (4, 2, 9), (5, 3, 8), (6, 4, 0)])
+        self.assertEqual(sum(packet[2] == 0x62 and packet[7] == 0x54 for _, packet in delivered), 1)
 
 if __name__ == "__main__":
     unittest.main()

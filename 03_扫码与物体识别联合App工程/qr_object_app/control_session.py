@@ -94,6 +94,13 @@ class ControlSession:
             return None
         # 手动/异常状态下也不得把QR结果绑定到OBJECT请求，或反过来。
         expected_type = 0x53 if self.modes.mode == "QR" or self.qr_handoff else 0x01
-        if packet is None or len(packet) < 3 or packet[2] != expected_type:
+        if packet is None or len(packet) < 3:
+            return None
+        if packet[2] == 0x54:
+            # 顺序仅属于明确的63人质任务；不在扫码预加载、手动或通用诊断时报。
+            if (not self.remote_owned or self.task_id != 3 or self.modes.mode != "OBJECT"
+                    or self.qr_handoff):
+                return None
+        elif packet[2] != expected_type:
             return None
         return bind_result(packet, self.request_id) if self.remote_owned else packet

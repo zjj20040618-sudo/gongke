@@ -13,7 +13,7 @@ APP_DIR = Path(__file__).resolve().parents[1]
 ROOT = APP_DIR.parents[1]
 sys.path.insert(0, str(APP_DIR))
 from protocol import (bind_result, build_ack_packet, build_control_packet,
-                      build_object_packet, build_qr_packet)
+                      build_object_packet, build_qr_packet, build_hostage_order_packet)
 
 
 def detection(class_id, score=0.875, x=10):
@@ -133,6 +133,17 @@ class CurrentMcuProtocolTests(unittest.TestCase):
         frames, stats = self.replay(bytes(damaged) + packet)
         self.assertEqual(frames, ["OBJ,1,1,25,40,30,40,88,8,320,320"])
         self.assertEqual(stats[:4], (1, 0, 1, 1))
+
+    def test_old_mcu_rejects_new_order_but_next_coordinates_still_parse(self):
+        order = bind_result(build_hostage_order_packet(0, 2, [1, 0, 2]), 1)
+        empty = bind_result(build_object_packet(0, [], 320, 320), 1)
+        target = bind_result(build_object_packet(1, [detection(2)], 320, 320), 1)
+        frames, stats = self.replay([(0, '@2'), (1, build_ack_packet(1, 2)),
+                                    (2, empty + order + target), (3, '?')])
+        self.assertEqual([row for row in frames if row.startswith('OBJ,')],
+                         ['OBJ,2,4,25,40,30,40,88,1,320,320'])
+        self.assertIn('STATUS,1', frames)
+        self.assertGreater(stats[4], 0)  # 未实现54：记录不支持，不能冒充端到端成功。
 
 
 if __name__ == "__main__":

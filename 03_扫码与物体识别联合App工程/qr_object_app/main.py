@@ -8,7 +8,7 @@ from maix import app, camera, display, image, time
 import config
 from hardware import init_uart, send_packet
 from mode_controller import ModeController
-from protocol import build_object_packet, build_qr_packet, CommandReceiver
+from protocol import build_object_packet, build_qr_packet, build_hostage_order_packet, CommandReceiver
 from control_session import ControlSession
 from qr_reader import QrReader
 from ui import draw_header, draw_objects, draw_qrs, make_qr_preview
@@ -18,6 +18,7 @@ from task_selection import TaskSelection
 from touch_inspector import ObjectInspector
 from display_cache import DisplayCache
 from frame_pair import FramePair
+from hostage_order import HostageOrder
 
 
 def main():
@@ -34,6 +35,7 @@ def main():
         modes, qr_reader = ModeController(cam), QrReader()
         receiver, control = CommandReceiver(), ControlSession(modes)
         task = TaskSelection()
+        hostage_order = HostageOrder()
         sequence = frame_count = fps_count = 0
         fps_value, fps_started = 0.0, time.ticks_ms()
         cached_qrs, cached_qr_left = [], 0
@@ -43,7 +45,7 @@ def main():
         modes.enter(config.START_MODE)
         manual_object_view = modes.mode == config.MODE_OBJECT
         print("[APP] ready {}; model={} classes=10; UART controls recognition".format(modes.mode, config.MODEL_FILE))
-        print("[UART] QR=0x53 three ASCII digits; OBJECT=0x01; task request=0x63; MCU QR/task update required")
+        print("[UART] QR=0x53; OBJECT=0x01; HOSTAGE ORDER=0x54; task request=0x63; MCU order parser update required")
         for class_id, name in enumerate(config.CLASS_NAMES_CN):
             print("[CLASS] {} {} ({})".format(class_id, name, class_name(class_id)))
 
@@ -56,6 +58,8 @@ def main():
                 for command in receiver.feed(data or b""):
                     ack, changed = control.apply(*command)
                     if changed:
+                        hostage_order.reset(control.target_class_id if control.request_id == command[0]
+                                            and control.task_id == 3 else None)
                         pending_auto_object = auto_object_failed = False
                         frame_pair.reset()  # 新请求，即使仍是OBJECT，也拒绝前任务的流水线结果。
                         manual_object_view = False
@@ -89,6 +93,7 @@ def main():
                 gc.collect()
                 try:
                     control.manual_toggle()
+                    hostage_order.reset()  # 手动预览不记录场外物体，也不冒充本轮任务结果。
                     pending_ack = None  # 不继续确认已被人工暂停的业务请求。
                     frame_pair.reset()
                     manual_object_view = modes.mode == config.MODE_OBJECT
@@ -177,15 +182,25 @@ def main():
                     width, height = img.width(), img.height()
                 selected_objects = task.select(objects, control.target_class_id,
                     include_barrel=control.remote_owned or task.payload is not None, img_w=width, img_h=height)
+                if result_ready:
+                    # 使用全部新检测结果；若先筛成抓取目标，就无法知道另外两种谁先出现。
+                    hostage_order.observe(objects, width, height)
                 vision_ms = time.ticks_ms() - source_started if result_ready else 0
                 # 0x63只发当前任务；通用0x60 OBJECT保留三任务加桶诊断。
                 if serial is not None and (result_ready or control.qr_handoff):
                     uart_started = time.ticks_ms()
                     # QR请求下只能回53，重复报码覆盖扫码结果丢包；不冒用QR号发01。
-                    packet = (build_qr_packet(sequence, task.payload) if control.qr_handoff else
+                    frame_sequence = sequence
+                    packet = (build_qr_packet(frame_sequence, task.payload) if control.qr_handoff else
                               build_object_packet(sequence, selected_objects, width, height, capture_ms, work_ms, vision_ms))
                     sequence = (sequence + 1) & 0xFFFF
                     send_packet(serial, control.result(packet))
+                    if hostage_order.active and result_ready:
+                        # 每个新检测帧重报锁定序号，丢包后可恢复；01仍只含本帧目标坐标。
+                        # 两种包共用本帧seq，不能让旧01的帧序号因54而跳号。
+                        order_packet = build_hostage_order_packet(frame_sequence,
+                            hostage_order.target_class_id, hostage_order.order)
+                        send_packet(serial, control.result(order_packet))
                     uart_ms = time.ticks_ms() - uart_started
 
             draw_started = time.ticks_ms()
@@ -209,6 +224,9 @@ def main():
                 task_status += " PIPELINE WARMUP"
             if control.qr_handoff:
                 task_status += " WAIT MCU OBJECT REQUEST"
+            if hostage_order.active:
+                task_status += " ORDER:{} TARGET#{}".format(
+                    ",".join(str(cid) for cid in hostage_order.order) or "NONE", hostage_order.target_rank)
             status = "{} {}".format(task_status, status or "").strip()
             if modes.mode == config.MODE_QR:
                 # 原始灰度图只解码；与07相同，先缩到屏幕再转RGB绘制预览。
