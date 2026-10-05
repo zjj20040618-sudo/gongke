@@ -1,11 +1,11 @@
 id: qr_object_switch
 name: QR and Object Switch
 name[zh]: 扫码与物体识别切换
-version: 2.1.8
+version: 2.1.9
 icon: app.png
 author: Bellator
-desc: Per-object info toggles and manual ten-class recognition; MCU task reports
-desc[zh]: 点击物体逐个开关信息；手动识别十类，保留扫码筛选和电控任务回传
+desc: Short display-only box retention; live MCU task reports
+desc[zh]: 漏检画框暂留200毫秒；保留信息开关、十类识别与实时任务回传
 exclude: [__pycache__, .backup, tests, dist]
 files:
   - app.yaml
@@ -21,6 +21,7 @@ files:
   - qr_reader.py
   - task_selection.py
   - touch_inspector.py
+  - display_cache.py
   - ui.py
   - user_button.py
   - utils.py

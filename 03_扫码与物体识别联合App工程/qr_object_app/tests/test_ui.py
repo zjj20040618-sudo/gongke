@@ -112,6 +112,17 @@ class UiTests(unittest.TestCase):
         self.assertEqual(hidden.strings, [])
         self.assertEqual(hidden.crosses, img.crosses)
 
+    def test_held_detection_info_is_marked_and_live_detection_is_not(self):
+        held = self.obj()
+        held.held = True
+        img = RecordingImage(1600, 900)
+        self.ui.draw_objects(img, [held], display_size=(1600, 900))
+        self.assertTrue(any(row.text.startswith("HOLD ") for row in img.strings))
+        held.held = False
+        live = RecordingImage(1600, 900)
+        self.ui.draw_objects(live, [held], display_size=(1600, 900))
+        self.assertFalse(any(row.text.startswith("HOLD ") for row in live.strings))
+
     def test_wide_image_keeps_coordinates_on_one_line(self):
         img = RecordingImage(1600, 900)
         self.ui.draw_objects(img, [self.obj()], display_size=(1600, 900))

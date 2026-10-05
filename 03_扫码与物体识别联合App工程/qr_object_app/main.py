@@ -16,6 +16,7 @@ from user_button import UserButton
 from utils import class_name
 from task_selection import TaskSelection
 from touch_inspector import ObjectInspector
+from display_cache import DisplayCache
 
 
 def main():
@@ -25,6 +26,7 @@ def main():
         screen = display.Display() if config.DISPLAY_ENABLED else None
         display_size = (screen.width(), screen.height()) if screen is not None else (config.OBJECT_WIDTH, config.OBJECT_HEIGHT)
         inspector = ObjectInspector(display_size, enabled=screen is not None)
+        object_display = DisplayCache(config.OBJECT_BOX_HOLD_MS)
         serial, button = init_uart(), UserButton()
         modes, qr_reader = ModeController(cam), QrReader()
         receiver, control = CommandReceiver(), ControlSession(modes)
@@ -54,6 +56,7 @@ def main():
                     if changed:
                         manual_object_view = False
                         inspector.reset()
+                        object_display.reset()
                         cached_qrs, cached_qr_left = [], 0
                         fps_count, fps_value, fps_started = 0, 0.0, time.ticks_ms()
                         if modes.mode == config.MODE_QR and control.request_id == command[0]:
@@ -86,6 +89,7 @@ def main():
                     modes.toggle()
                     manual_object_view = modes.mode == config.MODE_OBJECT
                     inspector.reset()
+                    object_display.reset()
                     if modes.mode == config.MODE_QR:
                         task.reset()
                     cached_qrs, cached_qr_left = [], 0
@@ -102,6 +106,7 @@ def main():
                     modes.enter(config.MODE_OBJECT)
                     manual_object_view = False
                     inspector.reset()
+                    object_display.reset()
                     cached_qrs, cached_qr_left = [], 0
                     fps_count, fps_value, fps_started = 0, 0.0, time.ticks_ms()
                 except Exception as exc:
@@ -163,8 +168,13 @@ def main():
             # 所有检测框都能点击；默认文字与UART筛选是两套列表，互不影响。
             # USER手动识别默认显示全部；自动/电控任务只默认显示任务目标。
             default_info = objects if manual_object_view and not control.remote_owned else selected_objects
-            visible_objects = inspector.choose(objects, (width, height), tap,
-                default_visible=default_info) if modes.mode == config.MODE_OBJECT else []
+            display_objects, visible_objects = [], []
+            if modes.mode == config.MODE_OBJECT:
+                # 先完成本帧推理和UART，再更新显示缓存；旧框不会进入模型或串口。
+                display_objects, display_defaults = object_display.update(
+                    objects, default_info, (width, height), time.ticks_ms())
+                visible_objects = inspector.choose(display_objects, (width, height), tap,
+                    default_visible=display_defaults)
             status = inspector.status if modes.mode == config.MODE_OBJECT else None
             task_status = "TASK:{} DIGIT:{}".format(control.task_id, control.qr_digit) if control.target_class_id is not None else task.message
             if manual_object_view and not control.remote_owned:
@@ -178,7 +188,7 @@ def main():
                     cached_qr_left -= 1
             else:
                 # 单独的显示列表；上面的任务筛选和UART已完成，不受触摸影响。
-                draw_objects(img, objects, display_size, header_bottom, inspector.selected,
+                draw_objects(img, display_objects, display_size, header_bottom, inspector.selected,
                              info_objects=visible_objects)
             if screen is not None:
                 screen.show(img)

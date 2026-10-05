@@ -15,10 +15,13 @@ from protocol import build_control_packet, build_task_packet, build_ack_packet, 
 
 class MainLoopTests(unittest.TestCase):
     def run_loop(self, commands, qr_results=(), detections=(), writes=(), fail_object=False,
-                 start_mode="IDLE", manual_toggles=None, displayed=None, taps=()):
+                 start_mode="IDLE", manual_toggles=None, displayed=None, taps=(),
+                 frame_times=None, displayed_boxes=None):
         sent, captures, events, modes_entered = [], [], [], []
         incoming, decoded, detected, write_results = map(iter, (commands, qr_results, detections, writes))
         loops = [0]
+        def ticks_ms():
+            return frame_times[loops[0] - 1] if frame_times is not None and loops[0] else max(0, loops[0] - 1) * 50
         def need_exit():
             loops[0] += 1
             return loops[0] > len(commands)
@@ -31,7 +34,12 @@ class MainLoopTests(unittest.TestCase):
             toggle_calls = 0
             def __init__(self, cam):
                 self.mode = None
-                self.detector = SimpleNamespace(detect=lambda img: (next(detected, []), 7))
+                def detect(img):
+                    if getattr(img, "annotated", False):
+                        raise AssertionError("model must receive unpainted camera image")
+                    events.append(("detect", self.mode))
+                    return next(detected, []), 7
+                self.detector = SimpleNamespace(detect=detect)
                 cam.modes = self
             def enter(self, mode):
                 modes_entered.append(mode)
@@ -66,9 +74,14 @@ class MainLoopTests(unittest.TestCase):
         def noop(*args):
             pass
         def draw_objects(img, objects, *args, **kwargs):
+            img.annotated = True
+            events.append(("draw", "OBJECT"))
             if displayed is not None:
                 displayed.append([obj.class_id for obj in kwargs["info_objects"]])
+            if displayed_boxes is not None:
+                displayed_boxes.append([(obj.class_id, obj.x, obj.held) for obj in objects])
         from touch_inspector import ObjectInspector
+        from display_cache import DisplayCache  # 先载入实际缓存，避免设备替身遮住几何函数。
         touch_points = iter(taps)
         def inspector_factory(display_size, enabled):
             inspector = ObjectInspector(display_size, enabled=False)
@@ -78,7 +91,7 @@ class MainLoopTests(unittest.TestCase):
             "maix": SimpleNamespace(app=SimpleNamespace(need_exit=need_exit),
                 camera=SimpleNamespace(Camera=Camera), display=SimpleNamespace(),
                 image=SimpleNamespace(Format=SimpleNamespace(FMT_RGB888=0)),
-                time=SimpleNamespace(ticks_ms=lambda: 0, sleep_ms=noop)),
+                time=SimpleNamespace(ticks_ms=ticks_ms, sleep_ms=noop)),
             "hardware": SimpleNamespace(init_uart=lambda: Serial(), send_packet=send),
             "mode_controller": SimpleNamespace(ModeController=Modes),
             "qr_reader": SimpleNamespace(QrReader=lambda: SimpleNamespace(decode=lambda img: next(decoded, []))),
@@ -137,7 +150,35 @@ class MainLoopTests(unittest.TestCase):
         self.assertEqual(sent[:3], [build_qr_packet(0, None), build_qr_packet(1, None), build_qr_packet(2, "331")])
         self.assertEqual(sent[3], build_object_packet(3, [candidates[-1], candidates[7], candidates[1]], 640, 480, 0, 7, 0))
         self.assertEqual(sent[4], build_object_packet(4, [], 640, 480, 0, 7, 0))
-        self.assertEqual(displayed, [[1, 7, 3], []])  # 信息沿检测顺序，UART仍按任务顺序。
+        self.assertEqual(displayed, [[1, 7, 3], [1, 7, 3]])  # 漏检只暂留屏幕，UART本帧为空。
+
+    def test_missing_bucket_holds_display_but_uart_immediately_sends_empty_frame(self):
+        bucket = SimpleNamespace(class_id=9, score=.9, x=20, y=30, w=30, h=40)
+        boxes = []
+        sent, _, events, _ = self.run_loop([build_task_packet(1, 4, 0), b"", b""],
+            detections=[[bucket], [], []], frame_times=[0, 100, 200], displayed_boxes=boxes)
+        self.assertEqual(boxes, [[(9, 20, False)], [(9, 20, True)], []])
+        self.assertEqual([p for p in sent if p[2] == 0x62], [
+            bind_result(build_object_packet(seq, objects, 640, 480, 0, 7, 0), 1)
+            for seq, objects in enumerate(([bucket], [], []))])
+        self.assertEqual([event[0] for event in events],
+            ["write"] + ["capture", "detect", "write", "draw"] * 3)
+
+    def test_same_request_retry_keeps_held_box_but_new_request_discards_it(self):
+        bucket = SimpleNamespace(class_id=9, score=.9, x=20, y=30, w=30, h=40)
+        boxes = []
+        self.run_loop([build_task_packet(1, 4, 0), build_task_packet(1, 4, 0), build_task_packet(2, 1, 1)],
+            detections=[[bucket], [], []], displayed_boxes=boxes)
+        self.assertEqual(boxes, [[(9, 20, False)], [(9, 20, True)], []])
+
+    def test_returning_bucket_replaces_held_box_and_uart_uses_new_coordinates(self):
+        bucket = SimpleNamespace(class_id=9, score=.9, x=20, y=30, w=30, h=40)
+        moved = SimpleNamespace(class_id=9, score=.9, x=25, y=30, w=30, h=40)
+        boxes = []
+        sent, _, _, _ = self.run_loop([build_task_packet(1, 4, 0), b"", b""],
+            detections=[[bucket], [], [moved]], displayed_boxes=boxes)
+        self.assertEqual(boxes, [[(9, 20, False)], [(9, 20, True)], [(9, 25, False)]])
+        self.assertEqual(sent[-1], bind_result(build_object_packet(2, [moved], 640, 480, 0, 7, 0), 1))
 
     def test_default_idle_user_enters_qr_and_unconfirmed_object_mode_sends_no_coordinates(self):
         objects = [SimpleNamespace(class_id=9, score=.9, x=10, y=20, w=30, h=40)]

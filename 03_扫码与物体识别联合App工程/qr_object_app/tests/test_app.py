@@ -363,8 +363,8 @@ class AppTests(unittest.TestCase):
     def test_stage_36_package_and_device_log_share_version(self):
         import uart_log
 
-        self.assertEqual(uart_log.APP_VERSION, "2.1.8")
-        self.assertIn("version: 2.1.8", (APP_DIR / "app.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(uart_log.APP_VERSION, "2.1.9")
+        self.assertIn("version: 2.1.9", (APP_DIR / "app.yaml").read_text(encoding="utf-8"))
 
     def test_idle_retains_model_and_reuses_it(self):
         cam = FakeCamera()

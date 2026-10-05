@@ -135,7 +135,9 @@ def draw_objects(img, objects, display_size=None, min_y=0, details=False, info_o
             labels.append((obj, color, cx, cy))
     for obj, color, cx, cy in labels:
         coordinates = "x={}, y={}".format(cx, cy)
-        lines = ["{} {:.2f}".format(class_name(obj.class_id), obj.score)]
+        # HOLD是短时暂留的旧检测信息，不表示本帧仍然识别到了该物体。
+        prefix = "HOLD " if getattr(obj, "held", False) else ""
+        lines = ["{}{} {:.2f}".format(prefix, class_name(obj.class_id), obj.score)]
         if _text_size(coordinates, scale)[0] <= img.width() - 2 * max(2, round(scale)):
             lines.append(coordinates)
         else:
