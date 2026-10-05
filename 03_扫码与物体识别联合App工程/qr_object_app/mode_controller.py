@@ -12,8 +12,11 @@ class ModeController:
         self.format = cam.format()
 
     def _configure_camera(self, width, height, pixel_format):
-        # set_resolution不能改格式；同一个句柄关闭后按官方open接口重开。
-        self.cam.close()
+        # open 不只是首次打开：相机已打开时，它会重新配置 VI 通道。
+        # 直接改变分辨率、像素格式和采集缓冲，保留 main 使用的同一相机对象。
+        # 这里不能先 close：部分 MaixCAM 固件释放 MMF 后，旧句柄仍认为已打开，
+        # 再 open 会跳过 VI 初始化，报 "mmf add vi channel failed"，回滚也会失败。
+        # 真正的 close 只在 App 退出清理时执行；set_resolution 则不能改变像素格式。
         buffers = (config.QR_CAMERA_BUFFERS if pixel_format == image.Format.FMT_GRAYSCALE
                    else config.OBJECT_CAMERA_BUFFERS)
         result = self.cam.open(width, height, format=pixel_format, buff_num=buffers)

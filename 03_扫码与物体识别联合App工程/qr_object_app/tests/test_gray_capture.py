@@ -48,7 +48,7 @@ class GrayCaptureTests(unittest.TestCase):
         self.assertEqual(cam.calls, [(1920, 1440)])
         self.assertEqual(cam.warmups, [2])
         modes.enter("QR")
-        self.assertEqual(cam.close_count, 1)
+        self.assertEqual(cam.close_count, 0)
         modes.enter("OBJECT")
         self.assertEqual(cam.format(), fixture.maix.image.Format.FMT_RGB888)
         self.assertEqual(cam.calls[-1], (320, 320))
@@ -56,7 +56,7 @@ class GrayCaptureTests(unittest.TestCase):
         modes.enter("QR")
         self.assertEqual(cam.warmups, [2, 2])
         modes.close()
-        self.assertEqual(cam.close_count, 4)
+        self.assertEqual(cam.close_count, 1)
 
     def test_failed_open_restores_previous_gray_format_and_resolution(self):
         cam = fixture.FakeCamera()

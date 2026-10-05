@@ -1,7 +1,7 @@
 id: qr_object_switch
 name: QR and Object Switch
 name[zh]: 扫码与物体识别切换
-version: 2.1.13
+version: 2.1.14
 icon: app.png
 author: Bellator
 desc: Automatic QR to object handoff with task-filtered UART results
