@@ -10,7 +10,7 @@ LOG_DIR = "/root/vision_uart_logs"
 PART_BYTES = 1024 * 1024
 SESSION_BYTES = 16 * 1024 * 1024
 DIRECTORY_BYTES = 64 * 1024 * 1024
-APP_VERSION = "2.1.12"
+APP_VERSION = "2.1.13"
 
 
 class DeviceUartLog:

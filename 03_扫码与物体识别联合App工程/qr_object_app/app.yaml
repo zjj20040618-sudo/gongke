@@ -1,11 +1,11 @@
 id: qr_object_switch
 name: QR and Object Switch
 name[zh]: 扫码与物体识别切换
-version: 2.1.12
+version: 2.1.13
 icon: app.png
 author: Bellator
-desc: MCU handshake with USER mode toggle and per-object touch information
-desc[zh]: MCU握手切任务；USER短按扫码识别切换、长按退出；逐个点选物体信息
+desc: Automatic QR to object handoff with task-filtered UART results
+desc[zh]: 三码确认自动识别任务目标；MCU握手绑定回传，保留USER切换
 exclude: [__pycache__, .backup, tests, dist]
 files:
   - app.yaml

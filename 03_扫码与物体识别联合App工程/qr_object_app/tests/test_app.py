@@ -397,8 +397,8 @@ class AppTests(unittest.TestCase):
     def test_stage_36_package_and_device_log_share_version(self):
         import uart_log
 
-        self.assertEqual(uart_log.APP_VERSION, "2.1.12")
-        self.assertIn("version: 2.1.12", (APP_DIR / "app.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(uart_log.APP_VERSION, "2.1.13")
+        self.assertIn("version: 2.1.13", (APP_DIR / "app.yaml").read_text(encoding="utf-8"))
 
     def test_idle_retains_model_and_reuses_it(self):
         cam = FakeCamera()
@@ -447,7 +447,7 @@ class AppTests(unittest.TestCase):
              patch.object(config, "PRINT_EVERY_N_FRAMES", 1), \
              patch.object(FakeModel, "detect", return_value=[raw_object(9), raw_object(4, 0.91)]):
             main.main()
-        self.assertEqual(shown, [(480, 320)] * 3 + [(320, 320)] * 2)
+        self.assertEqual(shown, [(480, 320)] + [(320, 320)] * 4)
         self.assertEqual(sent[0], build_ack_packet(1, 1))
         self.assertEqual(sent[4], build_ack_packet(2, 2))
         self.assertEqual(sent[6], sent[4])  # 同请求重发ACK，不变请求号。
@@ -600,7 +600,7 @@ class AppTests(unittest.TestCase):
         commands = iter([build_control_packet(1, 1), build_control_packet(1, 1), b"", b"",
                          build_control_packet(2, 2), build_control_packet(3, 0), build_control_packet(4, 2),
                          build_control_packet(5, 1), b"", b"", build_control_packet(6, 2)])
-        qr_codes = iter(("123", "123", "123", "111", "321", "321", "321"))
+        qr_codes = iter(("123", "321"))  # 自动OBJECT后重发锁存码，不再采QR图。
         turns = [0]
         def need_exit():
             turns[0] += 1

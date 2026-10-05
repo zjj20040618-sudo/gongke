@@ -14,6 +14,21 @@ class ControlSession:
         self.task_id = self.qr_digit = self.target_class_id = None
         self.acknowledged = False
         self.manual_override = False
+        self.qr_handoff = False  # 已自动打开OBJECT，但电控仍持有原QR请求。
+
+    def auto_object_after_qr(self):
+        """预加载OBJECT；不擅自改变电控请求模式、编号或ACK。
+
+        电控QR请求期间仍只回锁存53；坐标须等新OBJECT/63请求。
+        独立模式则直接回三码所选物体。
+        """
+        if self.manual_override or self.modes.mode != "QR":
+            return False
+        if self.remote_owned and (not self.acknowledged or self.request_id is None):
+            return False
+        self.modes.enter("OBJECT")
+        self.qr_handoff = self.remote_owned
+        return True
 
     def manual_toggle(self):
         """USER只切视觉预览；接管后手动查看不能产生本轮任务结果。
@@ -23,6 +38,7 @@ class ControlSession:
         这不是MCU急停，实车应先从电控停止运动再手动诊断。
         """
         self.modes.toggle()
+        self.qr_handoff = False
         if self.remote_owned:
             self.manual_override = True
             self.acknowledged = False
@@ -44,6 +60,7 @@ class ControlSession:
             print("[CONTROL] stale request={} current={} rejected".format(request_id, self.last_command[0]))
             return build_ack_packet(request_id, actual, 1), False
         self.remote_owned = True
+        self.qr_handoff = False
         self.request_id = None  # a failed switch must never report old results under new request
         self.acknowledged = False
         status = 0
@@ -76,7 +93,7 @@ class ControlSession:
         if self.manual_override or self.modes.mode == "IDLE" or (self.remote_owned and (self.request_id is None or not self.acknowledged)):
             return None
         # 手动/异常状态下也不得把QR结果绑定到OBJECT请求，或反过来。
-        expected_type = 0x53 if self.modes.mode == "QR" else 0x01
+        expected_type = 0x53 if self.modes.mode == "QR" or self.qr_handoff else 0x01
         if packet is None or len(packet) < 3 or packet[2] != expected_type:
             return None
         return bind_result(packet, self.request_id) if self.remote_owned else packet

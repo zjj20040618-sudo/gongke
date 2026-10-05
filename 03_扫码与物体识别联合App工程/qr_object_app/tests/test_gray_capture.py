@@ -86,6 +86,8 @@ class GrayCaptureTests(unittest.TestCase):
         events, packets = [], []
         test = self
         class Frame(fixture.FakeImage):
+            def copy(self):
+                return Frame(self.width(), self.height(), self.pixel_format)
             def find_qrcodes(self, roi, **kwargs):
                 test.assertEqual(self.format(), fixture.maix.image.Format.FMT_GRAYSCALE)
                 events.append("decode")
@@ -101,13 +103,17 @@ class GrayCaptureTests(unittest.TestCase):
                 return super().to_format(pixel_format)
         class Camera(fixture.FakeCamera):
             def read(self, **kwargs):
-                test.assertEqual(kwargs, {"block": True, "block_ms": 2000})
+                test.assertEqual(kwargs, {"block": True, "block_ms": 2000} if
+                                 self.pixel_format == fixture.maix.image.Format.FMT_GRAYSCALE else {})
+                if self.pixel_format == fixture.maix.image.Format.FMT_RGB888:
+                    events.append("object_read")
                 return Frame(self.width, self.height, self.pixel_format)
         incoming = iter([build_control_packet(5, 1), b""])
         exits = iter((False, False, True))
         def show(img):
             test.assertEqual((img.width(), img.height(), img.format()),
-                             (480, 320, fixture.maix.image.Format.FMT_RGB888))
+                             ((480, 320) if len(events) < 5 else (320, 320)) +
+                             (fixture.maix.image.Format.FMT_RGB888,))
             events.append("show")
         with patch.object(fixture.maix.camera, "Camera", Camera, create=True), \
              patch.object(fixture.maix.display, "Display", return_value=SimpleNamespace(width=lambda: 480, height=lambda: 320, show=show), create=True), \
@@ -116,7 +122,7 @@ class GrayCaptureTests(unittest.TestCase):
              patch.object(main, "send_packet", side_effect=lambda serial, packet: packets.append(packet) or True), \
              patch.multiple(config, DISPLAY_ENABLED=True, START_MODE="IDLE"):
             main.main()
-        self.assertEqual(events, ["decode", "resize", "preview_rgb", "show"] * 2)
+        self.assertEqual(events, ["decode", "resize", "preview_rgb", "show", "object_read", "show"])
         self.assertEqual(packets, [build_ack_packet(5, 1)] +
                          [bind_result(build_qr_packet(seq, "123"), 5) for seq in range(2)])
 

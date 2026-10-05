@@ -102,6 +102,30 @@ class CurrentMcuProtocolTests(unittest.TestCase):
         self.assertEqual(stats[:3], (1, 0, 1))
         self.assertEqual(stats[4], 0)
 
+    def test_auto_object_handoff_retries_qr_then_real_mcu_accepts_new_object_request(self):
+        from control_session import ControlSession
+        modes = SimpleNamespace(mode="QR")
+        modes.enter = lambda mode: setattr(modes, "mode", mode)
+        control = ControlSession(modes)
+        ack, _ = control.apply(1, 1)
+        control.ack_sent(ack)
+        qr = build_qr_packet(0, "331")
+        first = control.result(qr)
+        self.assertTrue(control.auto_object_after_qr())
+        retry_ack, changed = control.apply(1, 1)
+        self.assertFalse(changed)
+        repeated = control.result(build_qr_packet(1, "331"))
+        self.assertIsNone(control.result(build_object_packet(2, [detection(3)], 320, 320)))
+        next_ack, _ = control.apply(2, 2, 1, 3)
+        control.ack_sent(next_ack)
+        result = control.result(build_object_packet(2, [detection(3)], 320, 320))
+        frames, stats = self.replay([(0, "@1"), (1, ack), (2, first),
+            (3, retry_ack), (4, repeated), (5, "@2"), (6, next_ack), (7, result)])
+        self.assertEqual([row for row in frames if row.startswith("QR,")], ["QR,3,3,1,0", "QR,3,3,1,1"])
+        self.assertEqual([row for row in frames if row.startswith("OBJ,")],
+                         ["OBJ,0,2,25,40,30,40,88,2,320,320"])
+        self.assertEqual(stats[:4], (3, 2, 1, 0))
+
     def test_bad_object_crc_rejected_then_valid_frame_recovers(self):
         packet = build_object_packet(8, [detection(8)], 320, 320)
         damaged = bytearray(packet)

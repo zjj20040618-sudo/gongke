@@ -148,12 +148,12 @@ class MainLoopTests(unittest.TestCase):
         commands = [build_control_packet(1, 1), b"", build_control_packet(1, 1), b"", b"",
                     build_control_packet(2, 1), b"", b"", b"", build_control_packet(3, 0)]
         sent, captures, _, entered = self.run_loop(commands,
-            [self.qr("123")] * 3 + [[], self.qr("321")] + [self.qr("222")] * 3 + [[]])
+            [self.qr("123"), self.qr("222")])
         qr_packets = [packet for packet in sent if packet[2] == 0x62]
         self.assertEqual([packet[11:-2] for packet in qr_packets], [b"123"] * 5 + [b"222"] * 4)
         self.assertTrue(all(len(packet) in (13, 16) and packet[7] == 0x53 for packet in qr_packets))
-        self.assertEqual(captures, ["QR"] * 9)
-        self.assertEqual(entered, ["IDLE", "QR", "QR", "IDLE"])
+        self.assertEqual(captures, ["QR"] + ["OBJECT"] * 4 + ["QR"] + ["OBJECT"] * 3)
+        self.assertEqual(entered, ["IDLE", "QR", "OBJECT", "QR", "OBJECT", "IDLE"])
 
     def test_standalone_confirms_waits_for_short_press_then_shows_all_classes(self):
         obj = lambda cid, score, x: SimpleNamespace(class_id=cid, score=score, x=x, y=20, w=30, h=40)
@@ -164,7 +164,7 @@ class MainLoopTests(unittest.TestCase):
         self.assertEqual(captures, ["QR"] + ["OBJECT"] * 2)
         self.assertEqual(entered, ["QR", "OBJECT"])
         self.assertEqual(sent[0], build_qr_packet(0, "331"))
-        self.assertEqual(sent[1], build_object_packet(1, [candidates[-1], candidates[7], candidates[1]], 640, 480, 0, 7, 0))
+        self.assertEqual(sent[1], build_object_packet(1, [candidates[-1], candidates[7], candidates[1], candidates[9]], 640, 480, 0, 7, 0))
         self.assertEqual(sent[2], build_object_packet(2, [], 640, 480, 0, 7, 0))
         self.assertEqual(displayed, [list(range(10)) + [3]] * 2)
 
@@ -245,13 +245,13 @@ class MainLoopTests(unittest.TestCase):
         self.assertEqual(captures, ["QR", "OBJECT", "QR", "QR", "OBJECT"])
         self.assertEqual(entered, ["QR", "OBJECT", "QR", "OBJECT"])
         self.assertEqual(sent[2], build_qr_packet(2, None))
-        self.assertEqual(sent[-1], build_object_packet(4, [objects[4], objects[8], objects[0]], 640, 480, 0, 7, 0))
+        self.assertEqual(sent[-1], build_object_packet(4, [objects[4], objects[8], objects[0], objects[9]], 640, 480, 0, 7, 0))
 
     def test_remote_request_wins_over_pending_standalone_auto_switch(self):
         sent, captures, _, entered = self.run_loop([b"", build_control_packet(1, 1), b""],
             [self.qr("331"), self.qr("123"), self.qr("123")], start_mode="QR", manual_toggles=())
-        self.assertEqual(captures, ["QR"] * 3)
-        self.assertEqual(entered, ["QR", "QR"])
+        self.assertEqual(captures, ["QR", "QR", "OBJECT"])
+        self.assertEqual(entered, ["QR", "QR", "OBJECT"])
         self.assertEqual(sent[-2:], [bind_result(build_qr_packet(1, "123"), 1), bind_result(build_qr_packet(2, "123"), 1)])
 
     def test_manual_load_failure_keeps_locked_qr_and_does_not_retry_forever(self):
@@ -304,12 +304,52 @@ class MainLoopTests(unittest.TestCase):
         self.assertEqual(entered, ["IDLE", "OBJECT"])
         self.assertEqual(len(sent), 2)
 
-    def test_scanned_standalone_does_not_auto_leave_qr(self):
+    def test_scanned_standalone_auto_object_only_returns_selected_and_barrel(self):
+        objects = [SimpleNamespace(class_id=cid, score=.9, x=cid * 40, y=100, w=30, h=40)
+                   for cid in range(10)]
         sent, captures, _, entered = self.run_loop([b""] * 3,
-            [self.qr("331"), [], []], start_mode="QR", manual_toggles=())
+            [self.qr("331")], [objects, []], start_mode="QR", manual_toggles=())
+        self.assertEqual(captures, ["QR", "OBJECT", "OBJECT"])
+        self.assertEqual(entered, ["QR", "OBJECT"])
+        self.assertEqual(sent, [build_qr_packet(0, "331"),
+            build_object_packet(1, [objects[3], objects[7], objects[1], objects[9]], 640, 480, 0, 7, 0),
+            build_object_packet(2, [], 640, 480, 0, 7, 0)])
+
+    def test_qr_partial_write_delays_auto_switch_until_complete(self):
+        sent, captures, _, entered = self.run_loop([b""] * 4,
+            [self.qr("331"), []], writes=[False, True, True, True], start_mode="QR")
+        self.assertEqual(captures, ["QR", "QR", "OBJECT", "OBJECT"])
+        self.assertEqual(entered, ["QR", "OBJECT"])
+        self.assertEqual(sent[0], build_qr_packet(1, "331"))
+
+    def test_remote_auto_preloads_objects_repeats_qr_until_new_task_ack(self):
+        objects = [SimpleNamespace(class_id=cid, score=.9, x=cid * 40, y=100, w=30, h=40)
+                   for cid in range(10)]
+        commands = [build_control_packet(1, 1), b"", build_control_packet(1, 1),
+                    build_task_packet(2, 1, 3), b""]
+        sent, captures, _, entered = self.run_loop(commands, [self.qr("331")],
+            [objects] * 4, dual_buffer=True)
+        self.assertEqual(captures, ["QR"] + ["OBJECT"] * 4)
+        self.assertEqual(entered, ["IDLE", "QR", "OBJECT", "OBJECT"])
+        results = [p for p in sent if p[2] == 0x62]
+        self.assertEqual([p[7] for p in results], [0x53, 0x53, 0x53, 0x01])
+        self.assertEqual([struct.unpack_from("<H", p, 3)[0] for p in results], [1, 1, 1, 2])
+        self.assertEqual(results[-1][10], 1)
+        self.assertEqual(results[-1][21], 3)
+
+    def test_automatic_load_failure_stays_qr_without_unbounded_retries(self):
+        sent, captures, _, entered = self.run_loop([b""] * 4, [self.qr("331"), [], [], []],
+            start_mode="QR", fail_object=True)
+        self.assertEqual(captures, ["QR"] * 4)
+        self.assertEqual(entered, ["QR", "OBJECT"])
+        self.assertEqual(sent, [build_qr_packet(seq, "331") for seq in range(4)])
+
+    def test_invalid_or_conflicting_qr_does_not_auto_switch(self):
+        sent, captures, _, entered = self.run_loop([b""] * 3,
+            [self.qr("11"), self.qr("123") + self.qr("321"), []], start_mode="QR")
         self.assertEqual(captures, ["QR"] * 3)
         self.assertEqual(entered, ["QR"])
-        self.assertEqual(sent, [build_qr_packet(seq, "331") for seq in range(3)])
+        self.assertEqual(sent, [build_qr_packet(seq, None) for seq in range(3)])
 
     def test_dual_buffer_pairs_previous_input_and_missing_target_sends_empty(self):
         bucket = SimpleNamespace(class_id=9, score=.9, x=100, y=20, w=30, h=40)

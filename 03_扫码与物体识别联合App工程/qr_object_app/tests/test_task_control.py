@@ -40,6 +40,33 @@ class TaskControlTests(unittest.TestCase):
         self.control = ControlSession(self.modes)
         self.empty = build_object_packet(1, [], 320, 320)
 
+    def test_auto_object_preserves_qr_request_retry_and_needs_new_object_ack(self):
+        ack, _ = self.control.apply(1, 1)
+        self.assertFalse(self.control.auto_object_after_qr())
+        self.control.ack_sent(ack)
+        self.assertTrue(self.control.auto_object_after_qr())
+        self.assertEqual(self.modes.mode, "OBJECT")
+        self.assertEqual(self.control.apply(1, 1), (ack, False))
+        self.assertEqual(self.control.result(build_qr_packet(1, "331")),
+                         bind_result(build_qr_packet(1, "331"), 1))
+        self.assertIsNone(self.control.result(self.empty))
+        new_ack, _ = self.control.apply(2, 2, 1, 3)
+        self.assertFalse(self.control.qr_handoff)
+        self.assertIsNone(self.control.result(self.empty))
+        self.control.ack_sent(new_ack)
+        self.assertEqual(self.control.result(self.empty), bind_result(self.empty, 2))
+
+    def test_auto_object_failure_preserves_ack_and_qr_business(self):
+        ack, _ = self.control.apply(1, 1)
+        self.control.ack_sent(ack)
+        self.modes.fail = True
+        with self.assertRaises(RuntimeError):
+            self.control.auto_object_after_qr()
+        self.assertFalse(self.control.qr_handoff)
+        self.assertEqual(self.modes.mode, "QR")
+        self.assertEqual(self.control.result(build_qr_packet(1, "331")),
+                         bind_result(build_qr_packet(1, "331"), 1))
+
     def test_task_wire_body_and_crc(self):
         packet = build_task_packet(0x1234, 4, 0)
         self.assertEqual(packet[:7], b"\xaa\x55\x63\x34\x12\x04\x00")
