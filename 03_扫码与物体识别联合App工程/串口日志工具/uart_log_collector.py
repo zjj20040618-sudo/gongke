@@ -132,22 +132,31 @@ class FrameStream:
 def analyze(text, source):
     events = []
     rx_stream = FrameStream()
+    write_stream = FrameStream()
     for number, line in enumerate(text.splitlines(), 1):
         direction, evidence, stream = "", "", None
         if "[UART RX]" in line:
             direction, evidence, stream = "RX", "相机read读到的字节", rx_stream
+        elif "[UART WRITE]" in line:
+            direction, evidence, stream = "TX写入片段", "驱动报告写入的片段，不证明对端收到", write_stream
         elif "[UART TX]" in line:
             direction, evidence, stream = "TX", "相机发送日志；HEX是整帧意图，不是逐次write字节", FrameStream()
         elif re.search(r"\bVW req=", line):
             direction, evidence = "RX/TX统计", "MCU累计快照，不是逐包原文；重启可能清零"
         elif re.search(r"\bVR type=", line):
             direction, evidence = "RX前缀", "MCU接收缓存前缀；可能截断，不作完整帧CRC检验"
-        elif any(tag in line for tag in ("VD33", "[CONTROL", "READY", "DIAG FW", "OK QR=")):
+        elif "[LOG GAP]" in line:
+            direction, evidence = "记录缺口", "后台日志队列溢出；不能用缺失日志判断UART丢包"
+            rx_stream.buffer.clear()
+            write_stream.buffer.clear()
+        elif any(tag in line for tag in ("VD33", "[CONTROL", "READY", "DIAG FW", "OK QR=", "[SESSION", "[UART CLOSE]", "[UART RX ERROR]")):
             direction, evidence = "状态", "设备状态原文"
         if not direction:
             continue
         event = {"source": source, "line": number, "direction": direction, "evidence": evidence,
                  "raw": line, "frames": [], "warnings": []}
+        if direction == "记录缺口":
+            event["warnings"].append("记录不完整，已停止跨缺口拼帧")
         if "[UART TX]" in line:
             match = re.search(r"\bstatus=(\w+)", line)
             event["write_status"] = match.group(1) if match else "unknown"
@@ -163,12 +172,14 @@ def analyze(text, source):
                         event["warnings"].append("TX日志中的HEX不完整")
                 except ValueError:
                     event["warnings"].append("HEX格式不完整")
-                    if direction == "RX":
-                        rx_stream.buffer.clear()
+                    if direction in ("RX", "TX写入片段"):
+                        stream.buffer.clear()
             else:
-                event["warnings"].append("没有HEX，仅保留写入状态/原文")
-                if direction == "RX":
-                    rx_stream.buffer.clear()
+                zero_write = direction == "TX写入片段" and re.search(r"\breturned=0\s+bytes=0\b", line)
+                if not zero_write:
+                    event["warnings"].append("没有HEX，仅保留写入状态/原文")
+                    if direction in ("RX", "TX写入片段"):
+                        stream.buffer.clear()
         if evidence.startswith("MCU累计"):
             event["counters"] = dict(re.findall(r"\b(\w+)=(-?\d+)", line))
         events.append(event)
@@ -210,7 +221,7 @@ def make_report(events, camera, mcu, note):
         "- 工具不连接COM、不发送指令、不监听实体导线。相机日志需复制MaixVision DEVICE；MCU日志需手机BLE导出。",
         "- RX指该设备读到的字节；相机TX complete只代表驱动报告整帧写入，不等于MCU收到/解析/执行。",
         "- 相机TX partial/blocked的HEX是整帧发送意图，不是实际完整上线路径；见events.jsonl警告。",
-        "- 相机业务TX默认首帧及每10帧打印；没日志不等于没发送。VR仅是缓存前缀，不作为完整帧。",
+        "- 控制台业务TX默认首帧及每10帧打印；App2.1.3本机文件不采样，但队列溢出/容量限额可能缺记录。VR仅是前缀。",
         "- CRC通过只证明日志内该帧校验正确；不证明几何、任务、阶段门控、时效或硬件动作验收。",
         "- 两端时间没有自动同步，保存时间是电脑收集时间；保持原始顺序，结合请求ID/序号人工核对。",
         "- 上传前审查设备标识、电话号码、个人路径及其他隐私；本工具不会自动上传或联网。", ""]

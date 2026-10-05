@@ -149,6 +149,13 @@ def main():
                 print("[PERF] mode={} request={} task={} frame={} size={}x{} fps={:.2f} obj={} sent_ids=[{}] qr={} cap={}ms work={}ms draw/display={}ms uart={}ms loop={}ms {}".format(modes.mode, control.request_id, task.payload, frame_count, width, height, fps_value, len(objects), selected_ids, len(qrs), capture_ms, work_ms, draw_ms, uart_ms, loop_ms, details))
     finally:
         img = None
+        if serial is not None:
+            close_uart = getattr(serial, "close", None)
+            if close_uart is not None:
+                try:
+                    close_uart()  # 先收尾本机日志，再释放视觉资源。
+                except Exception as exc:
+                    print("[UART] close failed:", exc)
         if modes is not None:
             modes.close()
         if button is not None:

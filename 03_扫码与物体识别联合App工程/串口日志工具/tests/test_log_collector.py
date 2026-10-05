@@ -85,6 +85,16 @@ class LogTests(unittest.TestCase):
     def test_missing_hex_does_not_bridge_fragments(self):
         events = tool.analyze("[UART RX] hex=AA\n[UART RX] bytes=1\n[UART RX] hex=55 60 01 00 01 03 FA", "camera")
         self.assertFalse(any(e["frames"] for e in events))
+
+    def test_device_file_write_fragments_and_gap(self):
+        events = tool.analyze("2026-10-05T12:00:00Z [UART WRITE] bytes=3 hex=AA 55 60\n"
+            "[UART WRITE] returned=0 bytes=0 receiver=unconfirmed hex=\n"
+            "[UART WRITE] bytes=5 hex=01 00 01 03 FA", "camera")
+        self.assertEqual(events[2]["frames"][0]["request"], 1)
+        self.assertEqual(events[2]["direction"], "TX写入片段")
+        self.assertIn("不证明对端收到", events[2]["evidence"])
+        events = tool.analyze("[UART RX] hex=AA\n[LOG GAP] dropped_records=1\n[UART RX] hex=55 60 01 00 01 03 FA", "camera")
+        self.assertFalse(any(e["frames"] for e in events))
         _, warnings = tool.FrameStream().feed(b"\xaa\x55\xff\x00")
         self.assertTrue(warnings)
 

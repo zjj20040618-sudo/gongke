@@ -1,39 +1,43 @@
 # 本次本地更新说明
 
-更新：2026-10-05。源码基线：`58950a6`；App仍为2.1.2，电控接口基线包含 `20261005-ROUTE34-NOQR`。本轮只新增电脑端日志工具，未改视觉运行代码、电控代码、模型、协议或框架。
+更新：2026-10-05。修改前基线 `a81f4c5`，视觉App **2.1.3**。已将相机日志改为MC本机自动记录，不再要求用户复制终端。用户要求先本地测试，暂不上传源码或日志。
 
-用户要求先记录本地测试数据，暂不上传。Git提交是本地回滚点，不代表云端发布、设备部署或实机验收。
+## 改动与不变项
 
-## 改了什么
-
-新增 [双端日志记录器](03_扫码与物体识别联合App工程/串口日志工具/README.md)，位于视觉工程内、相机App目录外，不打进相机安装包：
-
-- 左栏粘贴或导入MaixVision DEVICE原文，右栏导入手机BLE TXT。
-- 每轮保存唯一目录，包含双端原文、RX/TX CSV、结构化记录、核对报告和SHA-256。
-- 解码60/63请求、61 ACK、62包装、01物体、53三码；按相机RX顺序拼接碎片，记录CRC/格式异常。
-- MCU VW保留累计快照，VR只标记缓存前缀，不伪装逐帧抓包。
-- 使用已有yolo_train Python/Tkinter，不安装依赖，不占用UART，不发动作指令，不联网。
-- 同步 [VISION_TO_CONTROL.md](VISION_TO_CONTROL.md) 的收集方法和验收边界；未改对方的CONTROL_TO_VISION.md。
-
-保留用户未提交的 `qr_object_app/config.py` 字号修改，不纳入本轮提交。先前电控集成和视觉UI改动的详细记录见Git历史及现有方向文档，不冒充本轮验证。
+- 新增 `qr_object_app/uart_log.py`：启动UART即创建持久目录 `/root/vision_uart_logs` 下唯一会话文件。后台写入RX全部字节、WRITE驱动报告的片段、TX整帧意图/完成状态，文件不按帧采样。
+- 256条队列、0.5秒flush、1MiB分片、16MiB每轮、64MiB目录；明确标记记录缺口。限额/磁盘错误停止日志但不停止通信，不删除旧文件。强杀/突然断电可能损失尾部。
+- `hardware.py`只增加诊断记录，UART短写仍只续尾部；`main.py`正常退出关闭串口并收尾日志；`app.yaml`纳入新模块并升版本。识别算法、ACK门控、业务包字节、模型9564、任务顺序不变；没有改电控App/Src/Inc。
+- 电脑日志工具保留为下载后分析器，支持MC日志中的WRITE碎片与LOG GAP；零字节write不会错误截断已知拼帧。
+- 同步本说明、App README及VISION_TO_CONTROL.md；CONTROL_TO_VISION.md作为输入未改。用户config.py字号2的未提交差异保留、不暂存；本机安装包采用当前配置。
 
 ## 本轮验证
 
-在工具目录执行：
+**131项通过**：相机App103项（含7项本机日志新增测试）、真实主循环7项、真实Python53组包与电控C解析器回放5项、电脑分析器16项。日志测试使用临时目录与合成帧，不是实机记录。
+
+验证覆盖完整/短写/零写保持原始字节、所有业务帧记录、磁盘错误不阻断通信、队列溢出、配额不删除旧日志、分片和独立会话、GUI导入保存及CRC边界。
+
+运行入口：
 
 ```powershell
-& 'E:\setup\anaconda\envs\yolo_train\python.exe' -X utf8 -B -m unittest discover -s tests -v
+# 在视觉工程目录，GCC按已有主机测试配置加入PATH
+python -B -m unittest discover -s qr_object_app/tests
+# 在仓库根
+python -B -m unittest discover -s tests -p test_vision_control_main.py
+python -B -m unittest discover -s tests -p test_vision_qr53_replay.py
+# 在串口日志工具目录
+python -B -m unittest discover -s tests
 ```
 
-15项通过：已知CRC向量、请求/任务/ACK/QR/黑桶/空码、RX碎片、坏CRC重同步、缺HEX不误拼接、部分写入边界、MCU统计/前缀、三种编码、唯一保存和哈希，以及真实Tk窗口的粘贴/导入/保存回调。GUI测试临时目录使用合成日志并自动删除，不是实机证据。命令行帮助入口通过。
+本机已生成并逐文件/ZIP校验 `dist/maix-qr_object_switch-v2.1.3.zip`（17个App成员，含uart_log.py；日志/电脑工具不入包）。
+SHA-256：`0fbe4d12b0ebf568aef8e3ed1c160b1ae69cc99c0ce554c5628961065644fe39`。
 
-未进行硬件测试、烧录、相机部署或云端上传。没有修改运行代码，因此未重跑电控/相机全套测试；既有集成结果不计入上述15项。
+## 未验证与下一步
 
-## 现场下一步
+设备 **未部署、未启动日志、未进行实机测试**。用户提供设备IP且授权MaixVision，但本轮没有可调用的Windows电脑操控接口；SSH公钥认证失败，未确认密码，因此未继续尝试默认凭据。不能把已打包说成已部署，也不能把MaixVision连接视为SSH登录已确认。
 
-1. 双击工具内的“启动双端日志记录器.bat”。
-2. 两端先开启日志，保留设备版本；优先用33静止诊断，不误启动运动/激光测试。
-3. 测试后复制MaixVision DEVICE完整文本、导入同一轮手机BLE TXT，填写现象并保存。
-4. 把保存目录路径交给Codex。核对请求、ACK、结果与MCU快照；用户确认后再审查隐私并发布该轮证据。
+1. 通过MaixVision运行整个更新后的qr_object_app，或安装2.1.3完整包。不能只传main.py。
+2. DEVICE出现 `[UART FILE] saving /root/vision_uart_logs/...`，再做33静止诊断，保持运动/激光安全隔离。
+3. 正常停止App并等待收尾；从设备文件管理器下载本轮所有同前缀分片，或配置合法SSH后由Codex读取。手机仍导出同轮BLE状态。
+4. Codex核对两端真实证据、审查隐私后再上传指定云端，更新方向交接文件。不自动上传原始个人日志。
 
-本地 `sessions/` 被Git忽略，不能直接自动推送。TX complete只代表驱动写入，不证明MCU收到；业务TX默认每10帧采样。CRC通过不代表阶段门控、坐标/机械动作或实体通信验收。设备状态与需求继续以 [CONTROL_TO_VISION.md](CONTROL_TO_VISION.md) 为输入。
+操作细节：[App README的MC自动日志节](03_扫码与物体识别联合App工程/qr_object_app/README.md)。本机write全长不证明MCU收到/接受；相机日志不能代替电控的VW/VR/ACK接收状态。

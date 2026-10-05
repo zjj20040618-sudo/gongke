@@ -1,11 +1,11 @@
-# 扫码与十类识别 App 2.1.2
+# 扫码与十类识别 App 2.1.3
 
-更新：2026-10-05。检测框外优先显示带黑底白字的类别、置信度和中心坐标，避开彩色框；空间不足时在框内使用黑底白字保证可读。结果字号、QR显示、模型9564、四阶段筛选和串口01/53/63不变。电控已集成53/63软件解析；真实UART与实机显示仍待确认。
+更新：2026-10-05。新增MC本机自动UART日志，不再需要复制MaixVision终端。默认启用，启动串口时自动创建独立会话文件。模型9564、字号、四阶段筛选、ACK门控和协议字节不变。
 
 ## 1. 怎么运行
 
 1. MaixVision连接MaixCAM Pro，打开整个 `qr_object_app`，运行整个项目，不只传main.py。
-2. 或安装上一级 `dist/maix-qr_object_switch-v2.1.2.zip`。App ID仍为 `qr_object_switch`，安装会替换同ID旧App；需要保留旧设备应用时先自行备份。
+2. 或安装上一级 `dist/maix-qr_object_switch-v2.1.3.zip`。App ID仍为 `qr_object_switch`，安装会替换同ID旧App；需要保留旧设备应用时先自行备份。
 3. 默认IDLE；`UART_ENABLED=True`。电控发请求才识别，正式流程不需按USER。接管前USER短按QR/OBJECT、长按1.5秒退出；接管后忽略按键。
 4. 115200、8N1、共地、3.3V：A19/TX→MCU PD6/RX，MCU PD5/TX→A18/RX。实际引脚按板型核对。
 
@@ -42,6 +42,20 @@
 
 终端RX打印原始HEX；ACK完整日志；业务HEX默认每10帧。`[PERF] sent_ids`是筛入发送包的ID；`[UART TX] complete`仅证明本机write全长，**不证明MCU收到或接受**。
 
+## MC自动日志：只需运行新版工程
+
+1. 运行整个新版`qr_object_app`，不能只运行main.py；`uart_log.py`必须随工程上传。
+2. DEVICE出现`[UART FILE] saving /root/vision_uart_logs/uart_..._001.txt`即说明日志已创建。IDLE也会记录收到的请求和ACK，不需按USER开启记录。
+3. 做同一轮33静止诊断。测试后正常停止App，等待日志收尾，**不要直接断电**。
+4. 在MaixVision的**设备文件管理器**进入`/root/vision_uart_logs`并刷新。每次启动有独立前缀；下载该轮所有`_001.txt/_002.txt/...`。或者告诉Codex设备IP和合法SSH登录，由Codex直接下载。
+5. 电控端仍需同一轮手机BLE导出文件。MC只能证明自身UART调用，不能代替MCU接收器内部状态。取回两端日志后再审查、分析并上传云端；设备程序不会自己向GitHub发日志。
+
+文件每条带UTC时间与本机单调毫秒，含App版本、UART配置、模型名、RX完整HEX、每次WRITE驱动报告的实际片段以及TX整帧意图/写入状态。文件**不按每10帧采样**；控制台采样设置不影响本机文件。WRITE返回负值/异常不能确定额外字节是否已上线路，不能误作对端接收确认。
+
+后台写入，有界256条队列，约0.5秒flush；队列满时丢日志但不中断串口，并记录`[LOG GAP]`。每片1MiB、每轮16MiB、目录64MiB；达到限额或磁盘失败就停止日志并提示，识别与通信继续。**不会删除旧日志**，下载后由用户清理。突然断电/强杀可能丢掉队列、缓存或文件系统尚未持久化的尾部，不能保证完整；日志缺失不等于UART丢包。
+
+路径为MC持久目录，不是会被下次运行替换的`/tmp/maixpy_run`。文件管理方式见[Sipeed官方MaixVision说明](https://wiki.sipeed.com/maixpy/doc/zh/basic/maixvision.html#传输文件到设备)。
+
 ## 4. 验证与构建
 
 主机验证需要完整gongke仓库（C回放依赖根App/tests），不是仅解压App源码包。在上一级 `03_扫码与物体识别联合App工程` 运行：
@@ -53,6 +67,6 @@ python -B build_packages.py
 
 仓库根的 `tests/test_vision_control_main.py` 检查真实主循环ACK/采集/结果顺序。新版真实C回放入口和本轮结果见 [README_本次更新.md](../../README_本次更新.md)，历史回放不代表新QR兼容。
 
-下一步：电控补53解析与63请求，部署配套程序后先做无运动静止UART检查，再测工作点/动作。源码已上传、包已生成、设备已部署、实机已通过是四件不同的事。
+下一步：电控已补53/63；部署双方配套程序后先做无运动静止UART检查，再测工作点/动作。源码已上传、包已生成、设备已部署、实机已通过是四件不同的事。
 
 显示实现依据：[Sipeed Display API](https://wiki.sipeed.com/maixpy/api/maix/display.html) 的屏幕尺寸/FIT_CONTAIN及 [Image API](https://en.wiki.sipeed.com/maixpy/api/maix/image.html) 的string_size测量。软件布局测试不代替实际相机屏幕和MaixVision观感确认。

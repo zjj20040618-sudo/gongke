@@ -1,6 +1,7 @@
 """MaixCAM Pro UART1初始化。失败时视觉程序仍继续。"""
 from maix import err, pinmap, uart
 import config
+from uart_log import start_log
 
 
 def _hex(data):
@@ -15,8 +16,9 @@ class UartLink:
     offset. Neither a complete write nor an error proves what the MCU received.
     """
 
-    def __init__(self, serial):
+    def __init__(self, serial, logger=None):
         self.serial = serial
+        self.logger = logger
         self._pending_packet = None
         self._offset = 0
         self._write_calls = 0
@@ -24,13 +26,37 @@ class UartLink:
         self._business_frames = 0
 
     def read(self, *args, **kwargs):
-        data = self.serial.read(*args, **kwargs)
-        if data and getattr(config, "UART_TRACE", True):
-            print("[UART RX] bytes={} hex={}".format(len(data), _hex(data)))
+        try:
+            data = self.serial.read(*args, **kwargs)
+        except Exception as exc:
+            self._record("[UART RX ERROR] {}".format(exc))
+            raise
+        if data:
+            line = "[UART RX] bytes={} hex={}".format(len(data), _hex(data))
+            self._record(line)
+            if getattr(config, "UART_TRACE", True):
+                print(line)
         return data
 
+    def _record(self, line):
+        if self.logger is not None:
+            try:
+                self.logger.record(line)
+            except Exception as exc:
+                print("[UART FILE] record failed; UART continues:", exc)
+                self.logger = None
+
     def close(self):
-        return self.serial.close()
+        try:
+            self._record("[UART CLOSE] pending_written={} pending_total={}".format(self._offset,
+                len(self._pending_packet) if self._pending_packet is not None else 0))
+            return self.serial.close()
+        finally:
+            if self.logger is not None:
+                try:
+                    self.logger.close()
+                except Exception as exc:
+                    print("[UART FILE] close failed:", exc)
 
     def _begin_packet(self, packet):
         self._pending_packet = packet
@@ -47,10 +73,12 @@ class UartLink:
     def _log(self, status, counts, reason=""):
         packet = self._pending_packet
         frame_type = "{:02X}".format(packet[2]) if len(packet) >= 3 else "unknown"
-        detail = " hex={}".format(_hex(packet)) if self._pending_trace else ""
-        print("[UART TX] type={} status={} written={}/{} calls={} counts={} reason={} receiver=unconfirmed{}".format(
+        line = "[UART TX] type={} status={} written={}/{} calls={} counts={} reason={} receiver=unconfirmed".format(
             frame_type, status, self._offset, len(packet), self._write_calls,
-            counts, reason, detail))
+            counts, reason)
+        self._record(line + " hex=" + _hex(packet))
+        if status != "complete" or self._pending_trace:
+            print(line + (" hex=" + _hex(packet) if self._pending_trace else ""))
 
     def send(self, packet):
         if packet is None:
@@ -69,9 +97,15 @@ class UartLink:
                 count = self.serial.write(suffix)
             except Exception as exc:
                 counts.append("exception")
+                self._record("[UART WRITE] offset={} total={} returned=exception reason={} receiver=unconfirmed".format(
+                    self._offset, len(self._pending_packet), exc))
                 self._log("blocked", counts, "write exception: {}".format(exc))
                 return False
             counts.append(count)
+            valid_count = isinstance(count, int) and not isinstance(count, bool) and 0 < count <= len(suffix)
+            self._record("[UART WRITE] offset={} total={} returned={} bytes={} receiver=unconfirmed hex={}".format(
+                self._offset, len(self._pending_packet), count, count if valid_count else 0,
+                _hex(suffix[:count]) if valid_count else ""))
             if not isinstance(count, int) or isinstance(count, bool) or count > len(suffix):
                 self._log("blocked", counts, "invalid write count")
                 return False
@@ -83,8 +117,7 @@ class UartLink:
                 self._log("partial", counts)
                 continue
             completed = self._pending_packet
-            if self._pending_trace:
-                self._log("complete", counts)
+            self._log("complete", counts)
             self._pending_packet = None
             if completed == requested:
                 return True
@@ -105,7 +138,7 @@ def init_uart():
         err.check_raise(pinmap.set_pin_function(config.UART_RX_PIN, "UART1_RX"), "set UART1_RX failed")
         serial = uart.UART(config.UART_DEVICE, config.UART_BAUDRATE)
         print("[UART] {} TX={} RX={} baud={}".format(config.UART_DEVICE, config.UART_TX_PIN, config.UART_RX_PIN, config.UART_BAUDRATE))
-        return UartLink(serial)
+        return UartLink(serial, start_log(config))
     except Exception as exc:
         print("[UART] init failed; vision continues:", exc)
         return None
