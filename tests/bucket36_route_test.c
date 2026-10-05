@@ -177,9 +177,9 @@ static int check_mode31_34_integrated_recipe_isolation(void)
     static const unsigned modes[15] = {17,16,20,16,15,16,30,0,16,20,15,20,15,20,15};
     static const unsigned distances[15] = {530,650,0,650,80,190,0,0,0,0,780,0,2450,0,2125};
     static const float speeds[15] = {100,100,100,300,20,100,100,50,100,100,100,100,100,100,100};
-    for (unsigned mode = 31u; mode <= 34u; mode += 3u) {
-        CHECK(wire_boot() == 0); run_cmd(mode == 31u ? "31" : "34");
-        CHECK(s_seq_mode == mode && route_seq_stage_count() == 15u && ROUTE_TEST_STAGES == 15u);
+    {
+        CHECK(wire_boot() == 0); run_cmd("34");
+        CHECK(s_seq_mode == 34u && route_seq_stage_count() == 15u && ROUTE_TEST_STAGES == 15u);
         for (unsigned stage = 0u; stage < 15u; ++stage) {
             s_seq_stage = (uint8_t)stage;
             const RouteTestLeg *leg = route_seq_leg();
@@ -190,6 +190,22 @@ static int check_mode31_34_integrated_recipe_isolation(void)
         }
         CHECK(ROUTE_TEST_ALIGN_STAGE == 7u && ROUTE_TEST_BACK_STAGE == 8u);
     }
+    {
+        static const unsigned modes31[12] = {17,16,20,16,15,16,18,16,30,15,20,15};
+        static const unsigned distances31[12] = {520,650,0,650,70,190,730,780,0,2450,0,2125};
+        CHECK(wire_boot() == 0); run_cmd("31");
+        CHECK(s_seq_mode == 31u && route_seq_stage_count() == 12u && ROUTE31_STAGES == 12u);
+        CHECK(!route_seq_bucket_enabled());
+        for (unsigned stage = 0u; stage < 12u; ++stage) {
+            s_seq_stage = (uint8_t)stage;
+            const RouteTestLeg *leg = route_seq_leg();
+            CHECK(leg == &s_route31_plan[stage]);
+            CHECK(leg->mode == modes31[stage] && leg->distance_mm == distances31[stage]);
+            CHECK(leg->speed_mms == (stage == 3u ? 300.0f : stage == 4u ? 20.0f : 100.0f));
+            CHECK(leg->heading_hold == (stage == 3u || stage == 4u ? 0u : 1u));
+            CHECK(leg->mode != 0u && ((leg->distance_mm != 0u) == (leg->mode != 20u && leg->mode != 30u)));
+        }
+    }
     CHECK(s_route_test_plan[3].speed_mms == 300.0f && s_bucket36_plan[3].speed_mms == 300.0f);
     CHECK(s_route_test_plan[4].mode == 15u && s_route_test_plan[4].distance_mm == 80u);
     CHECK(s_bucket36_plan[4].mode == 15u && s_bucket36_plan[4].distance_mm == 80u);
@@ -197,7 +213,11 @@ static int check_mode31_34_integrated_recipe_isolation(void)
           s_bucket36_plan[7].speed_mms == 100.0f && s_bucket36_plan[7].heading_hold == 1u);
     CHECK(s_bucket36_plan[8].mode == 30u && s_bucket36_plan[9].mode == 15u);
     CHECK(BUCKET_ROUTE_STAGES == 10u);
-    puts("bucket isolation:31/34 retain15-node bucket/manual-d route;36 has ten motion-only nodes,37 three; no bucket gate reassigned to36 passed");
+    CHECK(s_cross37_plan[1].distance_mm == 80u && CROSS37_STAGES == 3u);
+    CHECK(s_route_test_plan[0].distance_mm == 530u && s_bucket36_plan[0].distance_mm == 530u);
+    CHECK(wire_boot() == 0); run_cmd("36");
+    CHECK(route_seq_leg()->distance_mm == 530u && route_seq_leg()->speed_mms == 100.0f);
+    puts("recipe isolation:31 independent12/left520/board70/right730/back780; no bucket/manuald;34 retains15-node bucket/530/80,36 ten/530/80,37 three/80; global left92 unchanged passed");
     return 0;
 }
 

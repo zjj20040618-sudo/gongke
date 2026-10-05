@@ -73,27 +73,17 @@ static int check_defaults_and_direct_values(void)
 
 static int check_all_route_legs(void)
 {
-    static const int modes[15] = {17,16,20,16,15,16,30,0,16,20,15,20,15,20,15};
-    static const int commands[15] = {-530,-650,90,-650,80,-190,-92,0,-730,90,780,90,2450,90,2125};
-    static const float speeds[15] = {100,100,100,300,20,100,100,50,100,100,100,100,100,100,100};
+    static const int modes[12] = {17,16,20,16,15,16,18,16,30,15,20,15};
+    static const int commands[12] = {-520,-650,90,-650,70,-190,730,-780,-90,2450,90,2125};
+    static const float speeds[12] = {100,100,100,300,20,100,100,100,100,100,100,100};
     const float direct_ff = 0.01f;
     unsigned forward_legs = 0u, translation_legs = 0u, ff_legs = 0u, heading_legs = 0u;
     reset_fixture(); run_cmd("31"); run_cmd("fff0.01000"); run_cmd("g");
-    CHECK(ROUTE_TEST_STAGES == 15u && ROUTE_TEST_ALIGN_STAGE == 7u && ROUTE_TEST_BACK_STAGE == 8u);
-    for (unsigned stage = 0; stage < 15u; ++stage) {
-        if (stage == 7u) {
-            CHECK(s_seq_state == SQ_BUCKET_ALIGN && s_msel == 31 && host_target_calls == 1);
-            CHECK(sequence_finish_bucket_stub() == 0);
-            CHECK(ff_equal(s_route_forward_ff_ratio, direct_ff) && test_forward_ff_ratio() == 0.0125f);
-            continue;
-        }
-        if (stage == 8u) {
-            CHECK(s_seq_state == SQ_MANUAL_D_WAIT && s_bucket36_back_mm == 0u);
-            run_cmd("d730");
-        }
+    CHECK(ROUTE31_STAGES == 12u && route_seq_stage_count() == 12u && !route_seq_bucket_enabled());
+    for (unsigned stage = 0; stage < 12u; ++stage) {
         CHECK(s_seq_stage == stage && sequence_start_stage() == 0);
         CHECK(s_msel == modes[stage]);
-        CHECK(s_route_test_plan[stage].heading_hold == (stage == 3u || stage == 4u ? 0u : 1u));
+        CHECK(s_route31_plan[stage].heading_hold == (stage == 3u || stage == 4u ? 0u : 1u));
         CHECK(ff_equal(s_route_forward_ff_ratio, direct_ff) && test_forward_ff_ratio() == 0.0125f);
         if (dist_mode()) {
             ++translation_legs;
@@ -102,8 +92,8 @@ static int check_all_route_legs(void)
             CHECK(s_dist_heading_kp == expected_kp && s_route_heading_kp == 0.3f);
             if (expected_kp != 0.0f) ++heading_legs;
             CHECK(step_heading_kp_deg() == 0.3f);
-            CHECK(ff_equal(s_dist_ff_ratio, stage == 10u || stage == 12u || stage == 14u ? direct_ff :
-                  stage == 1u || stage == 5u || stage == 8u ? 0.00625f : 0.0f));
+            CHECK(ff_equal(s_dist_ff_ratio, stage == 9u || stage == 11u ? direct_ff :
+                  stage == 1u || stage == 5u || stage == 7u ? 0.00625f : 0.0f));
             if (s_dist_ff_ratio != 0.0f) ++ff_legs;
             if (s_msel == 15) {
                 ++forward_legs;
@@ -111,7 +101,7 @@ static int check_all_route_legs(void)
             } else if (s_msel == 16) {
                 CHECK(last_x == -speeds[stage] && last_y == -s_dist_ff_ratio * speeds[stage]);
             } else {
-                CHECK(last_x == 0.0f && last_y == -100.0f);
+                CHECK(last_x == 0.0f && last_y == (s_msel == 18 ? 100.0f : -100.0f));
             }
             host_yaw = 3.0f; tick();
             CHECK(ff_equal(last_w, -expected_kp * 3.0f * 0.0174533f));
@@ -122,8 +112,9 @@ static int check_all_route_legs(void)
             CHECK(turn_target_deg() == (float)commands[stage]);
         }
         CHECK(sequence_finish_stage() == 0);
+        CHECK(!host_target_calls && s_seq_state != SQ_BUCKET_ALIGN && s_seq_state != SQ_MANUAL_D_WAIT);
     }
-    CHECK(forward_legs == 4u && ff_legs == 6u && translation_legs == 9u && heading_legs == 7u && s_seq_state == SQ_DONE);
+    CHECK(forward_legs == 3u && ff_legs == 5u && translation_legs == 9u && heading_legs == 7u && s_seq_state == SQ_DONE);
     CHECK(s_route_heading_kp == 0.3f && step_heading_kp_deg() == 0.3f);
     CHECK(ff_equal(s_route_forward_ff_ratio, direct_ff) && test_forward_ff_ratio() == 0.0125f);
     CHECK(check_report("0.01000", 1) == 0);
@@ -148,9 +139,9 @@ static int check_route_ff_sign_dispatch(void)
             reset_fixture(); run_cmd(selections[mode]);
             if (commands[input][0]) run_cmd(commands[input]);
             CHECK(ff_equal(s_route_forward_ff_ratio, ratios[input]) && test_forward_ff_ratio() == 0.0125f);
-            run_cmd("g"); s_seq_stage = 10u; route_seq_prepare();
+            run_cmd("g"); s_seq_stage = mode == 0u ? 9u : 10u; route_seq_prepare();
             CHECK(sequence_start_stage() == 0);
-            CHECK(s_msel == 15 && s_dist_target == 780.0f && s_v == 100.0f);
+            CHECK(s_msel == 15 && s_dist_target == (mode == 0u ? 2450.0f : 780.0f) && s_v == 100.0f);
             CHECK(ff_equal(s_dist_ff_ratio, ratios[input]) && last_x == 100.0f && ff_equal(last_y, lateral[input]));
             CHECK(step_heading_kp_deg() == 0.3f && s_forward_ff_ratio == -0.00625f);
             run_cmd("g"); run_cmd("0"); test_init();
@@ -212,23 +203,16 @@ static int check_invalid_inputs_and_phase_locks(void)
         CHECK(strstr(last_message, "ERR ") != NULL);
         CHECK(s_route_heading_kp == 2.0f && step_heading_kp_deg() == 0.3f);
     }
-    /* Four ordinary phases at 14 motion nodes and four bucket phases. */
-    for (unsigned stage = 0; stage < 15u; ++stage) {
+    /* Four ordinary phases at all 12 motion-only nodes. */
+    for (unsigned stage = 0; stage < 12u; ++stage) {
         for (unsigned phase = 0; phase < 4u; ++phase) {
             reset_fixture(); run_cmd("31"); run_cmd("fff0.01000"); run_cmd("ykp2"); run_cmd("g");
             s_seq_stage = (uint8_t)stage; route_seq_prepare();
-            if (stage == 7u) CHECK(sequence_bucket_stub_phase(phase) == 0);
-            else {
-                if (stage == 8u) {
-                    CHECK(s_seq_state == SQ_MANUAL_D_WAIT);
-                    run_cmd("d730");
-                }
-                if (phase == 1u) {
-                    host_tick += T_DIST_STILL_MS; test_poll(); CHECK(s_seq_state == SQ_WAIT);
-                }
-                if (phase >= 2u) CHECK(sequence_start_stage() == 0);
+            if (phase == 1u) {
+                host_tick += T_DIST_STILL_MS; test_poll(); CHECK(s_seq_state == SQ_WAIT);
             }
-            if (phase == 3u && stage != 7u) {
+            if (phase >= 2u) CHECK(sequence_start_stage() == 0);
+            if (phase == 3u) {
                 if (dist_mode()) {
                     if (dist_lateral()) host_lateral = s_dist_odo0 + s_dist_target;
                     else host_fore = s_dist_odo0 + s_dist_target;
@@ -241,7 +225,7 @@ static int check_invalid_inputs_and_phase_locks(void)
             run_cmd("ykp4");
             CHECK(strstr(last_message, "ERR ROUTE_SEQ_ACTIVE") != NULL);
             CHECK(s_route_heading_kp == 2.0f && step_heading_kp_deg() == 0.3f);
-            if (stage != 7u && dist_mode() && phase >= 2u)
+            if (dist_mode() && phase >= 2u)
                 CHECK(s_dist_heading_kp == (stage == 3u || stage == 4u ? 0.0f : 2.0f));
             CHECK(s_seq_stage == stage && route_seq_active());
             run_cmd("g"); CHECK(s_seq_state == SQ_STOPPED);
@@ -253,7 +237,7 @@ static int check_invalid_inputs_and_phase_locks(void)
 static int check_direction_exclusion(void)
 {
     static const int modes[] = {16,15,16};
-    static const float targets[] = {-650.0f,80.0f,-190.0f};
+    static const float targets[] = {-650.0f,70.0f,-190.0f};
     static const float velocities[] = {-300.0f,20.0f,-100.0f};
     /* Crossing/contact have no FF. Clearance uses the independent BFF,
      * never the caller's forward FFF. */
@@ -329,6 +313,6 @@ int main(void)
     CHECK(check_direction_exclusion() == 0);
     CHECK(check_heading_slot_direct_values_and_isolation() == 0);
     CHECK(check_route_cross_heading_restart(31u) == 0);
-    puts("route31 tuning scope:15 nodes inclbucket/NEW d730, fff-.00625/bff+.00625/ykp.3 trialseeds; seven heading-feedback/six FFlegs; crossing/contact yaw/FF disabled; freshback190 restoresykp+BFF; overrides/mission32 isolation, RAM reset, reports, invalid/60phase locks and distances/90/180 preserved passed");
+    puts("route31 tuning scope:12 motion-only nodes withoutbucket/WAIT_D, board70; fff-.00625/bff+.00625/ykp.3 trialseeds; seven heading-feedback/five FFlegs; crossing/contact yaw/FF disabled; freshback190 restoresykp+BFF; overrides/mission32 isolation, RAM reset, reports, invalid/48phase locks and route-only90 turn targets passed");
     return 0;
 }

@@ -44,6 +44,17 @@ try {
         throw 'Grab XY stack contract: MissionTask needs at least 2 KB and matching IOC words'
     }
     Write-Output 'grab XY task stack contract: at least 2 KB and matching IOC configuration'
+    # 38..41 run in the existing DefaultTask; keep its existing 2 KB stack
+    # in CubeMX as well, so regeneration cannot revert it to the old 512 B.
+    $xyTaskAttr = [regex]::Match($taskRtos, 'defaultTask_attributes\s*=\s*\{(?<body>.*?)\};', 'Singleline').Groups['body'].Value
+    $xyTaskStack = [regex]::Match($xyTaskAttr, '\.stack_size\s*=\s*(?<words>\d+)\s*\*\s*4')
+    $xyIocStack = [regex]::Match($taskIoc, 'defaultTask,24,(?<words>\d+),StartDefaultTask,')
+    if (-not $xyTaskStack.Success -or -not $xyIocStack.Success -or
+        [int]$xyTaskStack.Groups['words'].Value -lt 512 -or
+        $xyTaskStack.Groups['words'].Value -ne $xyIocStack.Groups['words'].Value) {
+        throw 'Independent XY stack contract: DefaultTask needs at least 2 KB and matching IOC words'
+    }
+    Write-Output 'independent XY task stack contract: existing 2 KB DefaultTask and matching IOC configuration'
     Invoke-HostPythonCase 'dedicated laser pin/init/fault contracts' 'tests/test_laser_tb_contract.py'
     Invoke-HostCase 'eod_laser_tb6612_test' @('tests/laser_tb6612_test.c') @('tests/laser_stubs', 'App')
     Invoke-HostCase 'eod_arm_task_flow_test' @('tests/arm_task_flow_test.c', 'App/task_eod.c', 'App/task_rescue.c') @('App')
@@ -70,6 +81,9 @@ try {
     Invoke-HostCase 'eod_route31_bucket_integration_test' @('tests/route31_bucket_integration_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_target35_trial_test' @('tests/target35_trial_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_target35_parser_replay_test' @('tests/target35_parser_replay_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_vision_align_test_test' @('tests/vision_align_test_test.c', 'App/vision_align_test.c', 'App/proto.c') @('tests/stubs', 'App') @('-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_vision_align_fastmath_test' @('tests/vision_align_test_test.c', 'App/vision_align_test.c', 'App/proto.c') @('tests/stubs', 'App') @('-O2', '-ffast-math', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_vision_align_bluetooth_test' @('tests/vision_align_bluetooth_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_mission_departure_route_test' @('tests/mission_departure_route_test.c') @('tests/stubs', 'App') @('-lm')
     Invoke-HostCase 'eod_mission_trial_plan_test' @('tests/mission_trial_plan_test.c', 'App/mission_trial_plan.c') @('App') @('-lm')
     Invoke-HostCase 'eod_mission_trial_flow_test' @('tests/mission_trial_flow_test.c', 'App/mission_trial.c', 'App/mission_trial_plan.c') @('tests/stubs', 'App') @('-lm')

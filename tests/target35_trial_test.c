@@ -46,7 +46,7 @@ static int target_ready(void)
 {
     reset_fixture(); target_sequence = 0u;
     run_cmd("35");
-    CHECK(TARGET_TRIAL_MODE == 35 && T_MODE_MAX == 37);
+    CHECK(TARGET_TRIAL_MODE == 35 && T_MODE_MAX == 41);
     CHECK(s_msel == TARGET_TRIAL_MODE && s_target35_phase == TA_READY);
     CHECK(target_stopped() && !laser_state && !s_go && !pulse_calls && !servo_calls);
     CHECK(host_target_calls == 0);

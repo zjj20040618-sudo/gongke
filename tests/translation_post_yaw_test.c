@@ -369,7 +369,7 @@ static int check_every_route_normal_leg_and_crossing_exemptions(void)
                 normal_checked++;
             } else {
                 CHECK((leg->mode == 16u && leg->distance_mm == 650u && leg->speed_mms == 300.0f) ||
-                      (leg->mode == 15u && leg->distance_mm == 80u && leg->speed_mms == 20.0f));
+                      (leg->mode == 15u && leg->distance_mm == (owners[n] == 31u ? 70u : 80u) && leg->speed_mms == 20.0f));
                 unsigned dispatch_before = host_precise_calls;
                 yaw_elapsed(T_DIST_STILL_MS);
                 CHECK((unsigned)zero_calls == before + 1u && yaw_stopped());
@@ -378,8 +378,8 @@ static int check_every_route_normal_leg_and_crossing_exemptions(void)
             }
         }
     }
-    CHECK(normal_checked == 19u && exempt_checked == 8u);
-    printf("post-yaw:31/34/36/37 all%u ordinary distance nodes correct before advance; all%u back650/forward80 heading-disabled crossing/contact nodes remain exempt passed\n",normal_checked,exempt_checked);
+    CHECK(normal_checked == 20u && exempt_checked == 8u);
+    printf("post-yaw:31/34/36/37 all%u ordinary distance nodes correct before advance; all%u back650/forward31only70-else80 heading-disabled crossing/contact nodes remain exempt passed\n",normal_checked,exempt_checked);
     return 0;
 }
 

@@ -8,8 +8,8 @@
  * the board, BACK190/v100. No lateral d35 offset.
  * Body reversed: old LEFT730/FWD780/RIGHT90 becomes RIGHT730/BACK780/LEFT92.
  * Preserve the bench entry FWD200 then STOP, not a full task corridor.
- * Bucket alignment constants below remain used only by route31/34 while
- * their separate bucket/manual-d tail remains unchanged by this update. */
+ * Bucket alignment constants below remain used only by legacy route34;
+ * mode31 has an independent direct route without bucket/manual-d stages. */
 #define BUCKET_ROUTE_MODE       36
 #define BUCKET_ROUTE_STAGES     10u
 #define CROSS_ONLY_MODE         37

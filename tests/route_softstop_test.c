@@ -93,8 +93,8 @@ static int start_stage(unsigned stage, const MotionProfileTune *global)
 static int check_local_profile_and_distance(void)
 {
     static const MotionProfileTune globals[] = { { 0.0f, 0.0f }, { 42.0f, 84.0f } };
-    static const unsigned stages[] = { 0u, 1u, 3u, 4u, 5u, 10u };
-    static const float targets[] = { -530.0f, -650.0f, -650.0f, 80.0f, -190.0f, 780.0f };
+    static const unsigned stages[] = { 0u, 1u, 3u, 4u, 5u, 7u };
+    static const float targets[] = { -520.0f, -650.0f, -650.0f, 70.0f, -190.0f, -780.0f };
     static const float speeds[] = { 100.0f, 100.0f, 300.0f, 20.0f, 100.0f, 100.0f };
     for (unsigned p = 0; p < sizeof globals / sizeof globals[0]; ++p) {
         for (unsigned s = 0; s < sizeof stages / sizeof stages[0]; ++s) {
@@ -196,7 +196,7 @@ static int check_lateral_reverse_and_ff_wheel_dispatch(void)
     const MotionProfileTune global = { 0.0f, 0.0f };
     float baseline[4];
     CHECK(start_stage(0u, &global) == 0);
-    CHECK(s_msel == 17 && s_dist_target == -530.0f && s_v == 100.0f);
+    CHECK(s_msel == 17 && s_dist_target == -520.0f && s_v == 100.0f);
     CHECK(last_x == 0.0f && last_y < 0.0f && last_w == 0.0f && s_dist_ff_ratio == 0.0f);
     delivered_mask = 0u;
     real_motion_vel_set_precise(last_x, last_y, last_w);
@@ -229,7 +229,7 @@ static int check_lateral_reverse_and_ff_wheel_dispatch(void)
     CHECK(delivered_mask == 15u);
     for (int motor = 0; motor < 4; ++motor) CHECK(delivered_rpm[motor] < 0.0f);
     run_cmd("g");
-    CHECK(start_stage(10u, &global) == 0);
+    CHECK(start_stage(9u, &global) == 0);
     CHECK(s_dist_ff_ratio == -0.00625f && last_x > 0.0f && last_y > 0.0f && last_w == 0.0f);
     CHECK(close_to(last_y, last_x * 0.00625f));
     real_motion_ik_precise(last_x, 0.0f, 0.0f, baseline);
@@ -241,7 +241,7 @@ static int check_lateral_reverse_and_ff_wheel_dispatch(void)
     CHECK(delivered_rpm[1] > baseline[1] && delivered_rpm[3] > baseline[3]);
     CHECK(close_to(delivered_rpm[0], delivered_rpm[2]) && close_to(delivered_rpm[1], delivered_rpm[3]));
     run_cmd("g");
-    puts("real precise IK: route left530/manual right35 signed lateral targets; reverse190 negative axis with separateleftBFF; defaultfrontFFFnegative ->positive lateral and four changed forwardRPM targets passed");
+    puts("real precise IK: route31 left520/manual right35 signed lateral targets; reverse190 negative axis with separateleftBFF; defaultfrontFFFnegative ->positive lateral and four changed forwardRPM targets passed");
     return 0;
 }
 

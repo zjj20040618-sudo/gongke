@@ -6,11 +6,25 @@
 #include <math.h>
 #include "../App/test.c"
 
+/* Include the new bench engine in this existing single-translation-unit
+ * fixture. Production Keil links it as a separate source file. */
+static int host_xy_filter(ProtoTask task, uint8_t digit, int *cls, int *label)
+{
+    if (task == PROTO_TASK_BUCKET && digit == 0u) { *cls = CLS_BUCKET; *label = -1; return 1; }
+    if (digit < 1u || digit > 3u) return 0;
+    if (task == PROTO_TASK_BALL) { *cls = CLS_BALL; *label = digit - 1; return 1; }
+    if (task == PROTO_TASK_HOSTAGE) { *cls = CLS_HOSTAGE; *label = digit + 2; return 1; }
+    return 0;
+}
+#define proto_target_filter host_xy_filter
+#include "../App/vision_align_test.c"
+#undef proto_target_filter
+
 static uint32_t host_tick;
 static MissionState host_state;
 static int host_abort, start_calls, brake_calls, pulse_calls, gate_closed;
 static int host_imu_valid;
-static float host_yaw, last_x, last_y, last_w;
+static float host_yaw, host_absolute_yaw, last_x, last_y, last_w;
 static float host_heading_kp;
 static unsigned host_precise_calls, host_integer_calls;
 static float host_fore, host_lateral;
@@ -40,6 +54,7 @@ static int (*host_target_hook)(ProtoTask task, uint8_t digit);
 static void (*host_qr_begin_hook)(void), (*host_qr_cancel_hook)(void);
 static void (*host_receive_end_hook)(void);
 static int (*host_qr_get_hook)(int32_t out[3]);
+static void (*host_wire_diag_hook)(ProtoWireDiag *out);
 static char host_messages[8192];
 static MotionProfileTune host_motion_profile;
 
@@ -97,7 +112,7 @@ void arm_claw_close(void) { host_servo = 1800u; }
 void arm_stepper_dir(int axis, int dir) { (void)axis; (void)dir; }
 void arm_stepper_step(int axis) { (void)axis; pulse_calls++; }
 float imu_yaw_deg(void) { return 0.0f; }
-float imu_heading_deg(void) { return 0.0f; }
+float imu_heading_deg(void) { return host_absolute_yaw; }
 float imu_leg_heading_deg(void) { return host_yaw; }
 float imu_pitch_deg(void) { return 0.0f; }
 float imu_roll_deg(void) { return 0.0f; }
@@ -155,7 +170,8 @@ int mission_trial_set_grab_y(int cls, int cy, int sign)
 }
 void robot_diag_report(void) { }
 void proto_stats_get(ProtoStats *out) { *out = host_proto_stats; }
-void proto_wire_diag_get(ProtoWireDiag *out) { memset(out, 0, sizeof *out); }
+void proto_wire_diag_get(ProtoWireDiag *out)
+{ if (host_wire_diag_hook) host_wire_diag_hook(out); else memset(out, 0, sizeof *out); }
 int proto_scene_status(void) { return host_scene_status; }
 void proto_send_scene(ProtoScene scene)
 {
@@ -208,7 +224,8 @@ static void reset_fixture(void)
 {
     host_tick = 100u; host_state = MS_BOOT;
     host_abort = start_calls = brake_calls = pulse_calls = gate_closed = 0;
-    host_imu_valid = 1; host_yaw = last_x = last_y = last_w = 0.0f;
+    host_imu_valid = 1; host_yaw = host_absolute_yaw = last_x = last_y = last_w = 0.0f;
+    host_wire_diag_hook = NULL;
     host_heading_kp = 0.3f; host_precise_calls = host_integer_calls = 0u;
     host_fore = host_lateral = 0.0f; memset(host_counts, 0, sizeof host_counts);
     host_counts_hook = NULL;
@@ -341,6 +358,18 @@ static int sequence_finish_bucket_stub(void)
     return 0;
 }
 
+static int check_retained34_bucket_stub(void)
+{
+    reset_fixture(); run_cmd("34"); run_cmd("g");
+    s_seq_stage = ROUTE_TEST_ALIGN_STAGE; route_seq_prepare();
+    CHECK(route_seq_bucket_enabled() && s_seq_state == SQ_BUCKET_ALIGN);
+    CHECK(sequence_finish_bucket_stub() == 0);
+    run_cmd("d730"); CHECK(sequence_start_stage() == 0);
+    CHECK(s_msel == 16 && s_dist_target == -730.0f && s_v == 100.0f);
+    run_cmd("g"); CHECK(s_seq_state == SQ_STOPPED && s_msel == 34);
+    return 0;
+}
+
 /* Two runs without power cycling pin that the disabled cross/contact gains
  * never leak into the next leg, manual profiles or a later route run. */
 static int check_route_cross_heading_restart(unsigned mode)
@@ -360,7 +389,7 @@ static int check_route_cross_heading_restart(unsigned mode)
         CHECK(s_route_heading_kp == 1.2f && step_heading_kp_deg() == 0.3f);
         CHECK(sequence_finish_stage() == 0 && s_seq_stage == 4u);
         CHECK(sequence_start_stage() == 0);
-        CHECK(s_msel == 15 && s_dist_target == 80.0f && s_v == 20.0f && s_dist_heading_kp == 0.0f);
+        CHECK(s_msel == 15 && s_dist_target == (mode == 31u ? 70.0f : 80.0f) && s_v == 20.0f && s_dist_heading_kp == 0.0f);
         CHECK(last_x == 20.0f && last_y == 0.0f && s_dist_ff_ratio == 0.0f);
         host_yaw = 6.0f; tick(); CHECK(last_w == 0.0f);
         host_yaw = -6.0f; tick(); CHECK(last_w == 0.0f);
@@ -401,16 +430,16 @@ static int check_route_cross_heading_restart(unsigned mode)
     CHECK(s_dist_heading_kp == 0.3f && s_route_heading_kp == 1.2f);
     run_cmd("g"); run_cmd("32");
     CHECK(dist_heading_kp_get(NULL) == 0.3f && step_heading_kp_deg() == 0.3f);
-    printf("route%u two-run post-cross: back650/v300 ->forward80/v20 yaw/FF disabled; wheel-still/node zero/750ms wait ->fresh back190/v100 restoresykp + independentBFF; manual/32 unchanged passed\n", mode);
+    printf("route%u two-run post-cross: back650/v300 ->forward%u/v20 yaw/FF disabled; wheel-still/node zero/750ms wait ->fresh back190/v100 restoresykp + independentBFF; manual/32 unchanged passed\n", mode, mode == 31u ? 70u : 80u);
     return 0;
 }
 
 static int check_route_sequence(void)
 {
     /* Independent expectation, not copied from the live recipe at runtime. */
-    static const int expected_modes[15] = {17,16,20,16,15,16,30,0,16,20,15,20,15,20,15};
-    static const int expected_commands[15] = {-530,-650,90,-650,80,-190,-92,0,-730,90,780,90,2450,90,2125};
-    static const float expected_speeds[15] = {100,100,100,300,20,100,100,50,100,100,100,100,100,100,100};
+    static const int expected_modes[12] = {17,16,20,16,15,16,18,16,30,15,20,15};
+    static const int expected_commands[12] = {-520,-650,90,-650,70,-190,730,-780,-90,2450,90,2125};
+    static const float expected_speeds[12] = {100,100,100,300,20,100,100,100,100,100,100,100};
     static const char *const stop_keys[] = {"g", "a", "0"};
     reset_fixture();
     host_fore = 4321.0f; host_lateral = -1234.0f; host_yaw = 47.0f;
@@ -419,63 +448,46 @@ static int check_route_sequence(void)
     for (int i = 0; i < 5; i++) { host_tick += 100u; test_poll(); }
     CHECK(s_seq_state == SQ_READY && last_x == 0.0f && last_y == 0.0f && last_w == 0.0f);
     run_cmd("g"); CHECK(s_seq_run == 1u && s_seq_stage == 0u);
-    CHECK(ROUTE_TEST_STAGES == 15u && ROUTE_TEST_ALIGN_STAGE == 7u && ROUTE_TEST_BACK_STAGE == 8u);
-    for (int i = 0; i < 15; i++) {
-        if (i == 7) {
-            CHECK(s_seq_stage == 7u && s_active_test == 8u && s_msel == 31 &&
-                  host_target_calls == 1 && s_route_leg == 8u);
-            CHECK(sequence_finish_bucket_stub() == 0);
-            continue;
-        }
-        if (i == 8) {
-            CHECK(s_seq_state == SQ_MANUAL_D_WAIT && s_bucket36_back_mm == 0u);
-            run_cmd("d730");
-            CHECK(s_seq_state == SQ_STILL && s_bucket36_back_mm == 730u);
-        }
+    CHECK(ROUTE31_STAGES == 12u && route_seq_stage_count() == 12u && !route_seq_bucket_enabled());
+    for (int i = 0; i < 12; i++) {
         CHECK(s_seq_stage == i && sequence_start_stage() == 0);
         CHECK(s_msel == expected_modes[i] && s_route_leg == i + 1 && s_active_test == (uint32_t)i + 1u);
-        CHECK(s_route_test_plan[i].heading_hold == (i == 3 || i == 4 ? 0u : 1u));
+        CHECK(s_route31_plan[i].heading_hold == (i == 3 || i == 4 ? 0u : 1u));
         if (dist_mode()) {
             CHECK(s_dist_target == (float)expected_commands[i] && s_v == expected_speeds[i]);
             CHECK(s_dist_ramp.acc == 700.0f && s_dist_ramp.dec == 350.0f && s_dist_precise == 1u);
-            CHECK(s_dist_ff_ratio == (i == 10 || i == 12 || i == 14 ? -0.00625f :
-                  i == 1 || i == 5 || i == 8 ? 0.00625f : 0.0f));
+            CHECK(s_dist_ff_ratio == (i == 9 || i == 11 ? -0.00625f :
+                  i == 1 || i == 5 || i == 7 ? 0.00625f : 0.0f));
             CHECK(s_dist_heading_kp == (i == 3 || i == 4 ? 0.0f : 0.3f));
             CHECK(last_w == 0.0f);
-            if (dist_lateral()) CHECK(last_x == 0.0f && last_y == -100.0f);
+            if (dist_lateral()) CHECK(last_x == 0.0f && last_y == (s_msel == 18 ? 100.0f : -100.0f));
             else CHECK(last_x == (s_msel == 16 ? -expected_speeds[i] : expected_speeds[i]) &&
                        last_y == -s_dist_ff_ratio * expected_speeds[i]);
         } else {
             CHECK(turn_target_deg() == (float)expected_commands[i] && last_x == 0.0f && last_y == 0.0f);
-            CHECK(last_w == (i == 6 ? -T_TURN_MAX_W : T_TURN_MAX_W));
+            CHECK(last_w == (i == 8 ? -T_TURN_MAX_W : T_TURN_MAX_W));
         }
         CHECK(start_calls == 0 && pulse_calls == 0 && servo_calls == 0 && !s_go);
         CHECK(sequence_finish_stage() == 0);
-        CHECK(i == 14 ? s_seq_state == SQ_DONE : i == 6 ? s_seq_state == SQ_BUCKET_ALIGN : s_seq_state == SQ_STILL);
+        CHECK(i == 11 ? s_seq_state == SQ_DONE : s_seq_state == SQ_STILL);
+        CHECK(!host_target_calls && s_seq_state != SQ_BUCKET_ALIGN && s_seq_state != SQ_MANUAL_D_WAIT);
     }
-    CHECK(zero_calls == 24 && prepare_calls == 0); /* 15 node zeros + 9 distance-report resets */
+    CHECK(zero_calls == 21 && prepare_calls == 0); /* 12 node zeros + 9 distance-report resets */
     CHECK(s_msel == 31 && s_round == R_DONE && strstr(last_message, "status=DONE") != NULL);
     for (int i = 0; i < 10; i++) { host_tick += 1000u; test_poll(); }
     run_cmd("g"); CHECK(s_seq_state == SQ_DONE && last_x == 0.0f && last_y == 0.0f && last_w == 0.0f);
     run_cmd("31"); run_cmd("g"); CHECK(s_seq_run == 2u && s_seq_state == SQ_STILL);
     run_cmd("g"); CHECK(s_seq_state == SQ_STOPPED);
 
-    /* All 14 motion nodes plus all four bucket phases, every stop key. */
-    for (int stage = 0; stage < 15; stage++) {
+    /* All 12 motion-only nodes, every phase and stop key. */
+    for (int stage = 0; stage < 12; stage++) {
         for (int key = 0; key < 3; key++) {
             for (int phase = 0; phase < 4; phase++) {
                 reset_fixture(); run_cmd("31"); run_cmd("g");
                 s_seq_stage = (uint8_t)stage; route_seq_prepare();
-                if (stage == 7) CHECK(sequence_bucket_stub_phase((unsigned)phase) == 0);
-                else {
-                    if (stage == 8) {
-                        CHECK(s_seq_state == SQ_MANUAL_D_WAIT);
-                        run_cmd("d730");
-                    }
-                    if (phase == 1) { host_tick += T_DIST_STILL_MS; test_poll(); CHECK(s_seq_state == SQ_WAIT); }
-                    if (phase >= 2) CHECK(sequence_start_stage() == 0);
-                }
-                if (phase == 3 && stage != 7) {
+                if (phase == 1) { host_tick += T_DIST_STILL_MS; test_poll(); CHECK(s_seq_state == SQ_WAIT); }
+                if (phase >= 2) CHECK(sequence_start_stage() == 0);
+                if (phase == 3) {
                     if (dist_mode()) {
                         if (dist_lateral()) host_lateral = s_dist_odo0 + s_dist_target;
                         else host_fore = s_dist_odo0 + s_dist_target;
@@ -507,19 +519,15 @@ static int check_route_sequence(void)
         for (size_t k = 0; k < sizeof writes / sizeof writes[0]; k++) {
             run_cmd(writes[k]);
             CHECK(strstr(last_message, "ERR ROUTE_SEQ_ACTIVE") != NULL && s_v == 100.0f &&
-                  s_d == 530.0f && s_seq_stage == 0u && s_msel == 17 && servo_calls == 0);
+                  s_d == 520.0f && s_seq_stage == 0u && s_msel == 17 && servo_calls == 0);
         }
         CHECK(route_seq_active()); run_cmd("g");
     }
     /* All failed sensor/turn statuses cancel rather than advancing a ready/done submode. */
-    for (int stage = 0; stage < 15; stage++) {
+    for (int stage = 0; stage < 12; stage++) {
         reset_fixture(); run_cmd("31"); run_cmd("g");
         s_seq_stage = (uint8_t)stage; route_seq_prepare();
-        if (stage == 7) CHECK(sequence_bucket_stub_phase(2u) == 0);
-        else {
-            if (stage == 8) run_cmd("d730");
-            CHECK(sequence_start_stage() == 0);
-        }
+        CHECK(sequence_start_stage() == 0);
         host_imu_valid = 0; test_poll();
         CHECK(s_seq_state == SQ_STOPPED && s_seq_stage == stage && strstr(last_message, "status=IMUERR") != NULL);
     }
@@ -543,7 +551,7 @@ static int check_route_sequence(void)
     reset_fixture(); run_cmd("31"); run_cmd("g"); CHECK(sequence_start_stage() == 0);
     dist_begin_finish(0u); host_tick += T_DIST_STILL_MS; test_poll();
     CHECK(s_seq_state == SQ_STOPPED && s_seq_stage == 0u);
-    puts("route31: exact15-node traversal incl crossing/contact yaw/FF disabled; QR gate/bucket align/NEW d730, three forwardFFF and three backwardBFF legs, post-yaw-before-next, terminal/no-restart,180 g/a/0 cancellations, locks and IMU/abort/turn failure passed");
+    puts("route31: exact12 motion-only traversal incl board70 and crossing/contact yaw/FF disabled; QRgate/right730/back780/left90 withoutbucket/manuald, two forwardFFF and three backwardBFF legs, post-yaw-before-next, terminal/no-restart,144 g/a/0 cancellations, locks and IMU/abort/turn failure passed");
     return 0;
 }
 
@@ -902,7 +910,7 @@ int main(void)
     CHECK(s_round == R_READY && last_w == 0.0f);
     reset_fixture(); run_cmd("30"); run_cmd("g"); tick(); run_cmd("0");
     CHECK(s_round == R_READY && last_w == 0.0f);
-    reset_fixture(); run_cmd("38"); CHECK(s_msel == R_FREE && strstr(last_message, "MODE_RANGE") != NULL);
+    reset_fixture(); run_cmd("42"); CHECK(s_msel == R_FREE && strstr(last_message, "MODE_RANGE") != NULL);
     for (int mode = 20; mode <= 22; mode += 2) {
         reset_fixture(); s_msel = mode; run_cmd("g"); tick();
         CHECK(s_round == R_RUN && last_w == T_TURN_MAX_W);
@@ -947,6 +955,7 @@ int main(void)
     CHECK(check_forward_compensation() == 0);
     CHECK(check_shared_turn_hold() == 0);
     CHECK(check_route_sequence() == 0);
+    CHECK(check_retained34_bucket_stub() == 0);
     CHECK(check_route_cross_heading_restart(31u) == 0);
     CHECK(check_route_cross_heading_restart(34u) == 0);
     CHECK(check_trial32_router() == 0);

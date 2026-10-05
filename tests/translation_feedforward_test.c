@@ -247,7 +247,7 @@ static int check_route_strafe_seed_report_and_manual_isolation(void)
 static int check_all_route_owners_precise_ff_at_all_speeds(void)
 {
     static const struct {unsigned owner,stage; int mode;} cases[] = {
-        {31u,0u,17},{31u,1u,16},{31u,10u,15},
+        {31u,0u,17},{31u,1u,16},{31u,6u,18},{31u,7u,16},{31u,9u,15},
         {34u,0u,17},{34u,1u,16},{34u,10u,15},
         {36u,0u,17},{36u,1u,16},{36u,6u,18},{36u,9u,15},
         {37u,2u,16}

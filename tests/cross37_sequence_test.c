@@ -9,7 +9,7 @@ static int cross37_boot(void)
     CHECK(wire_boot() == 0);
     run_cmd("37"); wire_sync();
     CHECK(CROSS_ONLY_MODE == 37 && CROSS37_STAGES == 3u);
-    CHECK(T_MODE_MAX == 37 && s_msel == 37 && s_seq_mode == 37 && s_seq_state == SQ_READY);
+    CHECK(T_MODE_MAX == 41 && s_msel == 37 && s_seq_mode == 37 && s_seq_state == SQ_READY);
     CHECK(route_seq_stage_count() == 3u && stopped() && !s_receiving && !s_due && !proto_qr_get(NULL));
     CHECK(!host_target_calls && !pulse_calls && !servo_calls && !host_laser_on_calls && !s_go);
     return 0;
@@ -195,7 +195,8 @@ static int check_mode36_ten_step_recipe_and_shared_crossing(void)
     CHECK(ROUTE_POST_CROSS_CLEAR_MM == 190u && ROUTE_POST_CROSS_CLEAR_V_MMS == 100.0f);
     CHECK(!route_seq_bucket_enabled());
     CHECK(s_cross37_plan[0].speed_mms == 300.0f && s_bucket36_plan[3].speed_mms == 300.0f);
-    puts("cross37 current recipe:31/34/36/37 share back650v300/forward80v20/back190v100;36 ten motion-only nodes and37 three, no bucket/manual-d gates;31/34 retain separate bucket tail passed");
+    CHECK(s_route31_plan[4].distance_mm == 70u && ROUTE31_STAGES == 12u);
+    puts("cross37 current recipe:34/36/37 retain back650v300/forward80v20/back190v100;31-only board70 and12 motionnodes;36 ten and37 three withoutbucket/manuald;34 retainsbucket tail passed");
     return 0;
 }
 

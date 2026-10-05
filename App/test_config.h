@@ -10,7 +10,7 @@
 #define T_IDLE_MS    20u
 #define T_V_MAX      600
 #define T_D_MAX      20000
-#define T_MODE_MAX   37
+#define T_MODE_MAX   41
 #define T_JOG_MAX_STEPS 50u
 #define T_JOG_RETURN_WAIT_MS 2000u
 #define T_SERVO_RETURN_WAIT_MS 2000u
@@ -42,7 +42,7 @@
 /* Modes 19-23: 19 is an elevated sign check; 20 is the +90 turn family.
  * Mode 22's +180 profile remains a bench candidate, not the mission tune.
  * 2026-10-05 user keeps right90 and changes the left trial to92.
- * Modes20/30 command +90/-92; mode31 shares these bench targets.
+ * Modes20/30 command +90/-92; active mode31 locally uses +90/-90 only.
  * Mode22 is explicitly 180, not twice this compensated target. */
 #define T_TURN_SIGN_DUTY 45
 #define T_TURN_SIGN_MS 250u

@@ -77,7 +77,7 @@ static int check_complete_recipe_without_qr(void)
     CHECK(s_seq_run == run_number + 1u && s_seq_state == SQ_STILL);
     CHECK(wire_commands == background_commands + 1u && !s_receiving && !wire_bad);
     run_cmd("g"); CHECK(s_seq_state == SQ_STOPPED && stopped() && s_msel == 34);
-    puts("route34: shared31 15-node recipe, reverse650/v300, forward80/v20, back190/yaw/BFF, real bucket4/0 ACK/five frames/1s/manual d730, no QR/arm/laser, post-yaw-before-next, terminal restart passed");
+    puts("retained route34: 15-node recipe, reverse650/v300, forward80/v20, back190/yaw/BFF, real bucket4/0 ACK/five frames/1s/manual d730, no QR/arm/laser, post-yaw-before-next, terminal restart passed");
     return 0;
 }
 
@@ -213,7 +213,7 @@ static int check_shared_tuning_and_legacy_isolation(void)
     run_cmd("30"); CHECK(turn_target_deg() == -92.0f);
     CHECK(wire_boot() == 0); run_cmd("34");
     CHECK(s_route_heading_kp == 0.3f && s_route_forward_ff_ratio == -0.00625f);
-    run_cmd("38"); CHECK(s_msel == 34 && strstr(last_message, "MODE_RANGE") != NULL);
+    run_cmd("42"); CHECK(s_msel == 34 && strstr(last_message, "MODE_RANGE") != NULL);
     puts("route34 tuning: shared31 RAM ykp/fff, explicit MODE34 report,31 reopens QR; manual/32/global/90/180 unchanged and power-on defaults passed");
     return 0;
 }
