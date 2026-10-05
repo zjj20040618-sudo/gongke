@@ -6,10 +6,12 @@
 
 1. MaixVision连接MaixCAM Pro，打开整个 `qr_object_app`，运行整个项目，不只传main.py。
 2. 或安装上一级 `dist/maix-qr_object_switch-v2.1.3.zip`。App ID仍为 `qr_object_switch`，安装会替换同ID旧App；需要保留旧设备应用时先自行备份。
-3. 默认IDLE；`UART_ENABLED=True`。电控发请求才识别，正式流程不需按USER。接管前USER短按QR/OBJECT、长按1.5秒退出；接管后忽略按键。
+3. 默认IDLE；`UART_ENABLED=True`。电控发请求才识别，正式流程不需按USER。接管前USER短按QR/OBJECT；接管后短按仍被忽略。USER长按1.5秒在接管前后都可人为退出；主循环处理按键时停止视觉业务并执行资源清理。一次加载/推理不能被同步打断，退出视觉不是电机急停，须由电控独立停车。
 4. 115200、8N1、共地、3.3V：A19/TX→MCU PD6/RX，MCU PD5/TX→A18/RX。实际引脚按板型核对。
 
 只拉Git不会更新相机/MCU。不要混装旧1.1.0安装包、本版源码和未适配电控固件。
+
+本轮USER长按退出补丁仅更新源码，旧dist安装包不含此改动；请运行更新后的完整项目，或重新构建完整包。App元数据版本未递增，部署时还需记录源码提交。
 
 ## 2. 运行流程
 
