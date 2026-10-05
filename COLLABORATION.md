@@ -4,7 +4,7 @@
 
 电控主要改根目录 `App/`；视觉主要改 `03_扫码与物体识别联合App工程/qr_object_app/`。旧的 `jiejie` 演示仓库不再使用，但本仓库 Keil 工程文件依然叫 `MDK-ARM/jiejie.uvprojx`，不要混淆。
 
-2026-10-05当前交接见 [README_本次更新.md](README_本次更新.md) 与 [CONTROL_TO_VISION.md](CONTROL_TO_VISION.md)：电控ROUTE34-NOQR、视觉6a20efe/App2.1.1；53/63已补、34无码路线已加，真实QR/ACK仍未接通。下方10月4日为历史快照，不作为最新固件或测试数量。
+2026-10-06当前交接见 [README_本次更新.md](README_本次更新.md) 与 [CONTROL_TO_VISION.md](CONTROL_TO_VISION.md)：电控`20261006-GRAB-XY-LASER-PC12`，保留审核的视觉`7a2ab10`/App2.1.2源码。球/人质新增XY循环，35仍X-only且PC12激光持续亮；用户已反馈补共GND后QR正常。工作点、夹持及实体投影仍待实测，下方10月4日为历史快照，不作为当前固件/设备验收。
 
 ## 电控框架与调参边界（2026-10-01）
 

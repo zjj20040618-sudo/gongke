@@ -14,9 +14,10 @@
 void test_init(void);           /* 清行缓冲/复位测试态(robot_init 调) */
 void test_feed(uint8_t c);      /* 每字节喂入(BT RX 轮询里调,g/a 也走这,统一成行) */
 void test_poll(void);           /* 每周期调:收不完整的行按"空闲成行"关线 + 执行命令 */
-/* Mode31/34 share the complete 12-leg recipe/local tuning. Only31 gates R2 on
- * QR;34 closes RX locally and needs no camera. g/a/0 cancel with no return. */
-void test_vision_feed_frame(const ProtoFrame *f); /* RX ISR: mode33 cache only; startup QR cache is owned by proto. */
-float test_forward_ff_ratio(void); /* Current RAM fff; +left, no mutation or save. */
+/* Mode31/34 share the15-node reverse-cross/bucket recipe and local tuning.
+ * Only31 gates R2 on QR; both request bucket4/0 and wait for NEW d after
+ * alignment. g/a/0 cancel with no return. Independent36/37 stay isolated. */
+void test_vision_feed_frame(const ProtoFrame *f); /* RX ISR caches33/35 and31/34 bucket frames; motion-only36/37 do not receive targets. */
+float test_forward_ff_ratio(void); /* Mode32 RAM fff; bench/route candidates are isolated. */
 
 #endif /* APP_TEST_H */

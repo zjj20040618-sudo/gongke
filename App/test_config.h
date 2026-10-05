@@ -10,7 +10,7 @@
 #define T_IDLE_MS    20u
 #define T_V_MAX      600
 #define T_D_MAX      20000
-#define T_MODE_MAX   34
+#define T_MODE_MAX   37
 #define T_JOG_MAX_STEPS 50u
 #define T_JOG_RETURN_WAIT_MS 2000u
 #define T_SERVO_RETURN_WAIT_MS 2000u
@@ -18,6 +18,26 @@
 #define T_ENC_REPORT_MS 1000u
 #define T_DIST_TRACE_MS 500u
 #define T_YKP_PROFILE_SLOTS 32u /* RAM-only exact (mode15..18, cruise mm/s) keys */
+/* Normal distance DONE only: restore the ORIGINAL leg heading before zeroing.
+ * Bench candidates, not a promise of physical 0.3-degree accuracy. */
+#define T_DIST_ALIGN_TOL_DEG    TURN_HOLD_TOL_DEG
+#define T_DIST_ALIGN_STABLE_MS  TURN_HOLD_SETTLE_MS
+#define T_DIST_ALIGN_STILL_DEG  TURN_HOLD_STILL_DEG
+#define T_DIST_ALIGN_MAX_MS     TURN_HOLD_MAX_MS
+#define T_DIST_ALIGN_KP         TURN_HOLD_KP_RADS_DEG
+#define T_DIST_ALIGN_MAX_W      0.30f
+#define T_DIST_ALIGN_MIN_W      0.08f
+
+/* Mode35: isolated QR-selected target aim/fire trial, camera faces LEFT.
+ * User measured x=255; below250 goes backward, above260 goes forward.
+ * These settings do not change mode32/formal task calibration. */
+#define T_TARGET35_V_MMS       50.0f
+#define T_TARGET35_CX          255
+#define T_TARGET35_LOW_CX      250
+#define T_TARGET35_HIGH_CX     260
+#define T_TARGET35_GOOD_FRAMES 5u
+#define T_TARGET35_FRESH_MS    300u
+#define T_TARGET35_REPORT_MS   500u
 
 /* Modes 19-23: 19 is an elevated sign check; 20 is the +90 turn family.
  * Mode 22's +180 profile remains a bench candidate, not the mission tune.
@@ -57,11 +77,15 @@
 #define T_LEFT_FF_SEED (35.0f / 1500.0f)
 #define T_RIGHT_FF_SEED T_LEFT_FF_SEED
 
-/* Forward only: user reports 10..15mm right drift per metre, 2026-10-03.
- * Positive fff requests body-left vy. Start at the midpoint, RAM-tunable.
- * Apply at current route v100 and legacy trial v200 only; no reverse/strafe.
- * This is a nominal velocity ratio; integer wheel RPM quantizes it. */
-#define T_FORWARD_FF_SEED (12.5f / 1000.0f)
+/* 2026-10-06 loaded-car trial: forward drifts body-left, reverse body-right.
+ * fff/bff are independent RAM ratios; POSITIVE always requests body-left vy.
+ * Small +/-6.25mm/m trial seeds, NOT newly measured final coefficients.
+ * Ordinary straight distance legs apply them at all supported speeds;
+ * crossing/mechanical contact legs explicitly bypass both. */
+#define T_FORWARD_FF_SEED (-6.25f / 1000.0f)
+#define T_BACKWARD_FF_SEED (6.25f / 1000.0f)
+/* Preserve mode32's pre-existing tune until its separate integration review. */
+#define T_MISSION_FORWARD_FF_SEED (12.5f / 1000.0f)
 
 /* Power-on safety: never spin wheels automatically. A bench run needs an
  * explicit mode and g. Keep BENCH_AUTO at 0 for normal builds. */

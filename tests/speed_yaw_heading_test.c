@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <float.h>
 #include "steps.h"
 #include "motion.h"
 #include "control.h"
@@ -41,6 +42,7 @@ void arm_claw_close(void) { unexpected_path(); }
 void bp_laser_set(int on) { (void)on; unexpected_path(); }
 void proto_send_scene(ProtoScene scene) { (void)scene; unexpected_path(); }
 void proto_receive_end(void) { } /* heading-test stop has no camera TX */
+void proto_stats_get(ProtoStats *out) { (void)out; unexpected_path(); }
 int proto_scene_status(void) { unexpected_path(); return 0; }
 int proto_target_filter(ProtoTask task, uint8_t digit, int *cls, int *label)
 { (void)task; (void)digit; (void)cls; (void)label; unexpected_path(); return 0; }
@@ -113,10 +115,48 @@ static int check_actual_wheel_correction(void)
     return 0;
 }
 
+static int check_nonfinite_overflow_and_huge_headings(void)
+{
+    static const float bad[] = {NAN,INFINITY,-INFINITY};
+    for (unsigned n = 0u; n < sizeof bad / sizeof bad[0]; ++n) {
+        host_yaw = bad[n];
+        CHECK(step_heading_hold_w_kp(0.0f,2.0f) == 0.0f);
+        CHECK(step_heading_hold_w(0.0f) == 0.0f);
+        host_yaw = 0.0f;
+        CHECK(step_heading_hold_w_kp(bad[n],2.0f) == 0.0f);
+    }
+    /* Both operands are finite, but their subtraction is not. */
+    host_yaw = FLT_MAX;
+    CHECK(step_heading_hold_w_kp(-FLT_MAX,2.0f) == 0.0f);
+    host_yaw = -FLT_MAX;
+    CHECK(step_heading_hold_w_kp(FLT_MAX,2.0f) == 0.0f);
+
+    /* These enormous finite differences must return promptly, not iterate once
+     * per full revolution; then only bounded finite targets may reach IK. */
+    static const float huge[] = {1.0e10f,-1.0e10f,1.0e20f,-1.0e20f,FLT_MAX,-FLT_MAX};
+    for (unsigned n = 0u; n < sizeof huge / sizeof huge[0]; ++n) {
+        host_yaw = huge[n];
+        float w = step_heading_hold_w_kp(0.0f,2.0f);
+        CHECK(isfinite(w) && fabsf(w) <= 2.0f);
+        delivered_mask = precise_calls = integer_calls = 0u;
+        motion_vel_set_precise(0.0f,0.0f,w);
+        CHECK(delivered_mask == 15u && precise_calls == 4u && integer_calls == 0u);
+        for (unsigned m = 0u; m < 4u; ++m) CHECK(isfinite(delivered[m]));
+    }
+    host_yaw = 721.0f;
+    CHECK(fabsf(step_heading_hold_w_kp(0.0f,2.0f) + 2.0f*0.0174533f) < 0.000001f);
+    host_yaw = -721.0f;
+    CHECK(fabsf(step_heading_hold_w_kp(0.0f,2.0f) - 2.0f*0.0174533f) < 0.000001f);
+    CHECK(step_heading_kp_deg() == 0.3f);
+    puts("real heading helper: NaN/Inf inputs and finite subtraction overflow return0; six huge finite differences return bounded targets without revolution loops passed");
+    return 0;
+}
+
 int main(void)
 {
     CHECK(check_helper() == 0);
     CHECK(check_actual_wheel_correction() == 0);
+    CHECK(check_nonfinite_overflow_and_huge_headings() == 0);
     puts("real injected yaw/IK: sign, zero, wrapping, clamp, global isolation, 12 direction/velocity targets and fractional propagation passed");
     return 0;
 }

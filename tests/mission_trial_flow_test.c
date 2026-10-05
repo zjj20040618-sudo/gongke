@@ -62,6 +62,7 @@ static int aborted, laser_on, all_missing, in_context, scene_in_progress, sensor
 static const char *abort_name;
 static int abort_context, abort_kind, selected_cls, selected_label;
 static unsigned align_index, align_signs[4], first_turn_seen, positive_180;
+static unsigned grab_align_calls[4], grab_y_locks;
 static float abort_fore, abort_lat, abort_w;
 static uint32_t next_frame_at;
 static char last_report[180];
@@ -96,6 +97,8 @@ static void observe(void)
         if (strcmp(name, "STOP") != 0 && strcmp(name, "ROUTE_END") != 0) {
             if (mission_trial_set_alignment(0, 241, 1)) issues++;
             else tuning_locks++;
+            if (mission_trial_set_grab_y(CLS_BALL, 151, 1)) issues++;
+            else grab_y_locks++;
             if (mission_trial_set_first_leg(1111u)) issues++;
             else first_leg_locks++;
         }
@@ -361,6 +364,7 @@ int step_object_take(ProtoFrame *out)
     memset(out, 0, sizeof *out);
     out->type = PF_OBJ; out->cls = selected_cls; out->label = selected_label;
     out->conf = 90; out->img_w = 480; out->img_h = 320; out->w = 30; out->h = 40;
+    out->cy = 150 + selected_cls * 10;
     if (strstr(mission_trial_phase(), "ALIGN")) {
         if (now_ms < next_frame_at) return 0;
         /* Two out-of-window frames require +36 then -18 mm/s for 100 ms.
@@ -378,6 +382,63 @@ int step_object_take(ProtoFrame *out)
     if (is_phase("TARGET_SINGLE_PASS")) return at >= target_at_mm;
     if (is_phase("HOSTAGE_SINGLE_PASS")) return at >= hostage_at_mm;
     return 0;
+}
+/* Shared real XY loop is covered by grab_xy_alignment_test. This mock checks
+ * mode32 supplies BOTH measured workpoints/signs to that loop and preserves
+ * the synthetic road ledger while consuming independent current frames. */
+int step_align_xy(int cls, int label, const GrabAlignConfig *cfg,
+                  float absolute_heading_deg, uint32_t to)
+{
+    uint32_t started = now_ms, last_frame = now_ms, still_at = now_ms;
+    unsigned good = 0u;
+    uint16_t previous_sequence = 0u;
+    int seen = 0, moving = 0;
+    float heading_error = absolute_heading_deg - heading_deg;
+    while (heading_error > 180.0f) heading_error -= 360.0f;
+    while (heading_error < -180.0f) heading_error += 360.0f;
+    if ((cls != CLS_BALL && cls != CLS_HOSTAGE) || !cfg ||
+        cfg->cx != 200 + cls * 10 || cfg->cy != 150 + cls * 10 ||
+        cfg->x_sign != 1 || cfg->y_sign != 1 ||
+        cfg->x_tol_px != GRAB_XY_TOL_PX || cfg->y_tol_px != GRAB_XY_TOL_PX ||
+        !isfinite(absolute_heading_deg) || fabsf(heading_error) > 0.31f || to != 0u) {
+        issues++; return 0;
+    }
+    grab_align_calls[cls]++;
+    step_object_select(cls, label);
+    while (!aborted) {
+        ProtoFrame f;
+        if (!sensor_ok || (to && now_ms - started >= to)) break;
+        if (step_object_take(&f)) {
+            float ex = (float)f.cx - (float)cfg->cx;
+            float ey = (float)f.cy - (float)cfg->cy;
+            int x_bad = fabsf(ex) > cfg->x_tol_px;
+            int y_bad = fabsf(ey) > cfg->y_tol_px;
+            if (f.cls != cls || f.label != label || !f.img_w || !f.img_h ||
+                cfg->cx >= f.img_w || cfg->cy >= f.img_h ||
+                (seen && (uint16_t)(f.sequence - previous_sequence) != 1u)) {
+                issues++; break;
+            }
+            seen = 1; previous_sequence = f.sequence; last_frame = now_ms;
+            if (x_bad || y_bad) {
+                float v = 0.6f * (x_bad ? ex * (float)cfg->x_sign : ey * (float)cfg->y_sign);
+                if (v > 80.0f) v = 80.0f;
+                if (v < -80.0f) v = -80.0f;
+                if (fabsf(v) < 12.0f) v = v > 0.0f ? 12.0f : -12.0f;
+                good = 0u; moving = 1;
+                motion_vel_set_precise(x_bad ? v : 0.0f, x_bad ? 0.0f : v, 0.0f);
+            } else {
+                motion_brake();
+                if (moving) { still_at = now_ms; good = 0u; moving = 0; }
+                if (++good >= GRAB_XY_GOOD_FRAMES && now_ms - still_at >= GRAB_XY_STILL_MS) {
+                    step_vision_receive_end(); return 1;
+                }
+            }
+        } else if (now_ms - last_frame > GRAB_XY_FRESH_MS) {
+            motion_brake(); good = 0u; moving = 0;
+        }
+        osDelay(5u);
+    }
+    motion_brake(); return 0;
 }
 int step_fire(uint32_t ms)
 {
@@ -418,6 +479,7 @@ static void reset_fixture(void)
     memset(align_signs, 0, sizeof align_signs); memset(last_report, 0, sizeof last_report);
     memset(last_split_report, 0, sizeof last_split_report); memset(return_commands, 0, sizeof return_commands);
     memset(align_anchors, 0, sizeof align_anchors);
+    memset(grab_align_calls, 0, sizeof grab_align_calls); grab_y_locks = 0u;
     memset(scenes, 0, sizeof scenes); memset(target_requests, 0, sizeof target_requests);
     target_request_count = 0u; qr_digits[0] = 2; qr_digits[1] = 3; qr_digits[2] = 1;
     vision_abort_marker = -1;
@@ -439,6 +501,8 @@ static void reset_fixture(void)
     mission_trial_init();
     for (int cls = 0; cls < 4; ++cls)
         if (!mission_trial_set_alignment(cls, 200 + cls * 10, 1)) issues++;
+    if (!mission_trial_set_grab_y(CLS_BALL, 150, 1) ||
+        !mission_trial_set_grab_y(CLS_HOSTAGE, 170, 0)) issues++;
     if (!mission_trial_set_first_leg(SYNTHETIC_FIRST_MM)) issues++;
 }
 
@@ -475,6 +539,8 @@ static int test_success(void)
         && target_requests[1].at < event("BUCKET_ALIGN")->at
         && close_value(target_requests[1].heading, 207.0f, 0.31f));
     CHECK(hold_count == 3u && tuning_locks > 15u && first_leg_locks == tuning_locks);
+    CHECK(grab_y_locks == tuning_locks && grab_align_calls[CLS_BALL] == 1u &&
+        grab_align_calls[CLS_HOSTAGE] == 1u && !grab_align_calls[CLS_TARGET] && !grab_align_calls[CLS_BUCKET]);
     for (unsigned i = 0u; i < 3u; ++i) CHECK(holds[i].duration == 10000u);
     for (unsigned i = 0u; i < 4u; ++i) CHECK(align_signs[i] == 3u);
     CHECK(strcmp(holds[0].name, "BALL_HOLD10S") == 0 && strcmp(holds[1].name, "BUCKET_HOLD10S") == 0
@@ -518,6 +584,7 @@ static int test_success(void)
     a = event("RESCUE_REMAINDER2125"); b = event("ROUTE_END"); CHECK(a && b && a->road > 401.0f && a->road < 403.0f && close_value(b->road, 2125.0f, 0.7f) && close_value(b->total, 2125.0f, 0.01f));
     CHECK(b->fore - a->fore < 1800.0f && close_value(b->heading, 472.0f, 0.31f));
     CHECK(mission_trial_set_alignment(0, 200, 1)); /* unlocked only after run */
+    CHECK(mission_trial_set_grab_y(CLS_BALL, 150, 1));
     CHECK(mission_trial_set_first_leg(1001u));
     return 0;
 }
@@ -733,10 +800,15 @@ static int test_configuration_and_pending_abort(void)
 {
     reset_fixture(); mission_trial_init();
     CHECK(strcmp(mission_trial_config_missing(), "vsg1_or_vsg2") == 0);
-    CHECK(!mission_trial_set_alignment(0, 480, 1) && !mission_trial_set_alignment(4, 200, 1) && !mission_trial_set_alignment(0, 200, 2));
+    CHECK(!mission_trial_set_alignment(0, 65535, 1) && !mission_trial_set_alignment(4, 200, 1) && !mission_trial_set_alignment(0, 200, 2));
+    CHECK(mission_trial_set_alignment(CLS_BALL, 480, 0)); /* Actual frame width decides validity at alignment. */
+    CHECK(!mission_trial_set_grab_y(CLS_TARGET, 150, 1) &&
+        !mission_trial_set_grab_y(CLS_BUCKET, 150, 1) && !mission_trial_set_grab_y(-2, 150, 1) &&
+        !mission_trial_set_grab_y(CLS_BALL, -2, 1) && !mission_trial_set_grab_y(CLS_BALL, 65535, 1) &&
+        !mission_trial_set_grab_y(CLS_BALL, 150, 2));
     CHECK(mission_trial_run() == 0 && commands == 0u);
     CHECK(mission_trial_set_alignment(-1, -1, -1));
-    CHECK(strcmp(mission_trial_config_missing(), "bcx") == 0);
+    CHECK(strcmp(mission_trial_config_missing(), "tcx") == 0);
     for (int i = 0; i < 4; ++i) CHECK(mission_trial_set_alignment(i, 200 + i * 10, 0));
     CHECK(strcmp(mission_trial_config_missing(), "b1d") == 0);
     mission_trial_report(); CHECK(strstr(last_split_report, "first=0 second=0 bucket_anchor=UNSET"));
@@ -744,6 +816,16 @@ static int test_configuration_and_pending_abort(void)
     CHECK(!mission_trial_set_first_leg(0u) && !mission_trial_set_first_leg(2450u) && !mission_trial_set_first_leg(65535u));
     CHECK(mission_trial_set_first_leg(1u)); mission_trial_report(); CHECK(strstr(last_split_report, "first=1 second=2449"));
     CHECK(mission_trial_set_first_leg(2449u)); mission_trial_report(); CHECK(strstr(last_split_report, "first=2449 second=1"));
+    CHECK(strcmp(mission_trial_config_missing(), "ysg1_or_ysg2") == 0);
+    CHECK(mission_trial_run() == 0 && commands == 0u && scene_count == 0u);
+    CHECK(mission_trial_set_grab_y(-1, -1, 1));
+    CHECK(strcmp(mission_trial_config_missing(), "bcy") == 0);
+    CHECK(mission_trial_run() == 0 && commands == 0u && scene_count == 0u);
+    CHECK(mission_trial_set_grab_y(CLS_BALL, 150, 0));
+    CHECK(strcmp(mission_trial_config_missing(), "hcy") == 0);
+    CHECK(mission_trial_run() == 0 && commands == 0u && scene_count == 0u);
+    CHECK(mission_trial_set_grab_y(CLS_HOSTAGE, 170, 0));
+    CHECK(mission_trial_set_grab_y(-1, -1, -1)); /* Both polarity routes are accepted in RAM. */
     CHECK(mission_trial_config_missing() == 0);
     run_abort(); CHECK(mission_trial_run() == 0 && commands == 0u && scene_count == 0u && now_ms == 0u);
     return 0;
@@ -762,6 +844,6 @@ int main(void)
     CHECK(test_cancellations() == 0);
     CHECK(test_return_imu_failure() == 0);
     CHECK(test_configuration_and_pending_abort() == 0);
-    puts("mission trial flow: real runner/ledger, 27 QR task selections and 4 ordered target requests (bucket only after +180), cached/new QR valid wait and request failure, 3 arm holds, target stopped1s then laser2s/off before return, common-bucket split, signed net returns, capped road-end return, 72 stop injections, 2 return IMU failures and config gates passed (synthetic host only)");
+    puts("mission trial flow: real runner/ledger, BALL/HOSTAGE shared XY config and running lock, 27 QR task selections and 4 ordered target requests (bucket only after +180), cached/new QR valid wait and request failure, 3 arm holds, target stopped1s then laser2s/off before return, common-bucket split, signed net returns, capped road-end return, 72 stop injections, 2 return IMU failures and X/Y config gates passed (synthetic host only)");
     return 0;
 }

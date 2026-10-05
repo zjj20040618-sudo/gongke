@@ -30,6 +30,7 @@ TIM_HandleTypeDef htim3;
 TIM_HandleTypeDef htim4;
 TIM_HandleTypeDef htim8;
 TIM_HandleTypeDef htim12;
+TIM_HandleTypeDef htim11;
 
 /* TIM1 init function */
 void MX_TIM1_Init(void)
@@ -318,6 +319,28 @@ void MX_TIM12_Init(void)
 
 }
 
+/* Dedicated laser PWM: APB2 timer clock168MHz /84 /200 =10kHz.
+ * CCR=0 is OFF; CCR=ARR+1 is constant HIGH for a supply-matched module.
+ * No interrupts, no shared encoder/wheel/servo timer. */
+void MX_TIM11_Init(void)
+{
+  TIM_OC_InitTypeDef sConfigOC = {0};
+  htim11.Instance = TIM11;
+  htim11.Init.Prescaler = 83;
+  htim11.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim11.Init.Period = 199;
+  htim11.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim11.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_PWM_Init(&htim11) != HAL_OK) Error_Handler();
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim11, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+    Error_Handler();
+  HAL_TIM_MspPostInit(&htim11);
+}
+
 void HAL_TIM_PWM_MspInit(TIM_HandleTypeDef* tim_pwmHandle)
 {
 
@@ -331,6 +354,10 @@ void HAL_TIM_PWM_MspInit(TIM_HandleTypeDef* tim_pwmHandle)
   /* USER CODE BEGIN TIM1_MspInit 1 */
 
   /* USER CODE END TIM1_MspInit 1 */
+  }
+  else if(tim_pwmHandle->Instance==TIM11)
+  {
+    __HAL_RCC_TIM11_CLK_ENABLE();
   }
   else if(tim_pwmHandle->Instance==TIM12)
   {
@@ -473,6 +500,16 @@ void HAL_TIM_MspPostInit(TIM_HandleTypeDef* timHandle)
 
   /* USER CODE END TIM1_MspPostInit 1 */
   }
+  else if(timHandle->Instance==TIM11)
+  {
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    GPIO_InitStruct.Pin = LASER_PWMA_Pin;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    GPIO_InitStruct.Alternate = GPIO_AF3_TIM11;
+    HAL_GPIO_Init(LASER_PWMA_GPIO_Port, &GPIO_InitStruct);
+  }
   else if(timHandle->Instance==TIM12)
   {
   /* USER CODE BEGIN TIM12_MspPostInit 0 */
@@ -510,6 +547,12 @@ void HAL_TIM_PWM_MspDeInit(TIM_HandleTypeDef* tim_pwmHandle)
   /* USER CODE BEGIN TIM1_MspDeInit 1 */
 
   /* USER CODE END TIM1_MspDeInit 1 */
+  }
+  else if(tim_pwmHandle->Instance==TIM11)
+  {
+    HAL_GPIO_WritePin(LASER_STBY_GPIO_Port, LASER_STBY_Pin, GPIO_PIN_RESET);
+    __HAL_RCC_TIM11_CLK_DISABLE();
+    HAL_GPIO_DeInit(LASER_PWMA_GPIO_Port, LASER_PWMA_Pin);
   }
   else if(tim_pwmHandle->Instance==TIM12)
   {

@@ -160,10 +160,11 @@ static int check_turn_and_route_isolation(void)
         CHECK(last_x == 0.0f && last_y == 0.0f && host_heading_kp == 0.3f);
     }
     reset_fixture(); select_speed(17, 100); set_gain(5.0f);
+    host_messages[0] = '\0';
     run_cmd("31"); run_cmd("g"); CHECK(sequence_start_stage() == 0);
     CHECK(s_msel == 17 && s_v == 100.0f && s_dist_heading_profile == 0);
     CHECK(s_dist_heading_kp == 0.3f && host_precise_calls > 0u && host_integer_calls == 0u);
-    CHECK(strstr(last_message, "source=ROUTE31") != NULL && strstr(last_message, "ykp=0.300") != NULL);
+    CHECK(strstr(host_messages, "ykp=0.300 source=ROUTE31") != NULL);
     host_yaw = 3.0f; tick();
     CHECK(fabsf(last_w + 0.3f * 3.0f * 0.0174533f) < 0.000001f);
     set_gain(4.0f); CHECK(strstr(last_message, "ERR ROUTE_SEQ_ACTIVE") != NULL);

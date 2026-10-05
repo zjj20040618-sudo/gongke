@@ -32,6 +32,12 @@ void motion_vel_set(float x, float y, float w)
     if (drive_calls++ == 0u) first_w = w;
     run_abort(); /* stop immediately after the first commanded turn direction */
 }
+void motion_vel_set_precise(float x, float y, float w)
+{
+    (void)x; (void)y; (void)w;
+    fputs("legacy rotation unexpectedly requested a grab XY drive\n", stderr);
+    abort();
+}
 void motion_brake(void) { brake_calls++; }
 /* Other steps.c functions are linked in this host build; these inert stubs
  * satisfy their dependencies but are never called by this test. */
@@ -54,6 +60,12 @@ void arm_claw_open(void) { }
 void arm_claw_close(void) { }
 void bp_laser_set(int on) { (void)on; }
 void proto_receive_end(void) { } /* abort closes local RX without a camera command */
+void proto_stats_get(ProtoStats *out)
+{
+    (void)out;
+    fputs("legacy rotation unexpectedly read vision statistics\n", stderr);
+    abort();
+}
 /* Rotation-only cases must never enter the recognition handshake. */
 void proto_send_scene(ProtoScene scene)
 {

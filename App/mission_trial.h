@@ -13,8 +13,12 @@ const char *mission_trial_phase(void);
 void mission_trial_get_progress(float *done, float *total);
 void mission_trial_get_qr(int32_t out[3]);
 /* RAM-only. cls=-1: sign only; sign=0: retain sign; cx=-1: retain cx.
- * Nonzero sign must be +1/-1, cx must be measured on the actual 480px image. */
+ * Nonzero sign must be +1/-1; cx is checked against the actual received image. */
 int mission_trial_set_alignment(int cls, int cx, int sign);
+/* Grab Y only: cls=-1 sign only, or BALL/HOSTAGE; cy=-1 retains coordinate.
+ * sign +1: cy too large -> body RIGHT, -1 -> LEFT. Unset after startup.
+ * No camera-center guess and no effect on target/bucket/35 X-only aiming. */
+int mission_trial_set_grab_y(int cls, int cy, int sign);
 /* RAM-only entry-to-common-bucket leg, 1..2449 wheel-command mm;
  * the bucket-based second leg is 2450-first, not a ball search limit.
  * Unset after init; writes are rejected while the trial is running. */

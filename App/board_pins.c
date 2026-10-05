@@ -1,6 +1,6 @@
 #include "board_pins.h"
 #include "main.h"       /* HAL 全部已启用(hal_conf)；含 TIM/UART/GPIO 宏 */
-#include "tim.h"        /* htim1/2/3/4/8/12 */
+#include "tim.h"        /* htim1/2/3/4/8/12; dedicated laser htim11 */
 #include "usart.h"      /* huart2/3/4 */
 #include <string.h>
 
@@ -25,8 +25,7 @@ static volatile int32_t s_enc_raw_total[4];
 
 #define PIN_STBY   (GPIOC)  /* 电机总使能，高=使能 */
 #define PIN_STBY_N GPIO_PIN_8
-#define PIN_LASER  (GPIOA)  /* 激光触发，高=点亮（2026-09-12 由 PC9 改 PA15）*/
-#define PIN_LASER_N GPIO_PIN_15
+static volatile uint8_t s_laser_ready;
 
 /* 软件正方向统一为各实体轮向车头前滚动。
  * 2026-09-25 模式23: 四路旧正命令/计数均为正，但前排前滚、后排后滚；
@@ -39,6 +38,8 @@ static const int8_t s_encoder_inv[MOTOR_NUM] = { 1, -1, -1, 1 };
 /* 底层一次性初始化:起四路编码器+四路 PWM、STBY 使能、激光关(robot_init 最先调) */
 void bp_init(void)
 {
+    s_laser_ready = 0u;
+    bp_laser_set(0);             /* Never raise laser STBY at startup. */
     for (int m = 0; m < MOTOR_NUM; m++) {
         HAL_TIM_Encoder_Start(s_enc[m], TIM_CHANNEL_ALL);
         __HAL_TIM_SET_COUNTER(s_enc[m], 0);
@@ -47,7 +48,13 @@ void bp_init(void)
         HAL_TIM_PWM_Start(s_pw[m], s_pw_ch[m]);
     }
     HAL_GPIO_WritePin(PIN_STBY, PIN_STBY_N, GPIO_PIN_SET);   /* STBY 拉高使能 */
-    HAL_GPIO_WritePin(PIN_LASER, PIN_LASER_N, GPIO_PIN_RESET);
+    __HAL_TIM_SET_COMPARE(&htim11, TIM_CHANNEL_1, 0u);
+    if (HAL_TIM_PWM_Start(&htim11, TIM_CHANNEL_1) != HAL_OK) {
+        bp_laser_emergency_off();
+        Error_Handler();
+        return;
+    }
+    s_laser_ready = 1u;
 }
 
 /* 写某轮 IN1/IN2 电平对:in2 恒 = !in1,二者一起定正转/反转(TB6612 两态) */
@@ -111,11 +118,47 @@ void bp_enc_raw_reset_all(void)
     for (int m = 0; m < MOTOR_NUM; m++) s_enc_raw_total[m] = 0;
 }
 
-/* 激光开/关(on=PA15 拉高点亮;反恐开枪口) */
+/* Laser MODULE switch only, never reverse polarity or use duty to lower VM.
+ * ON: AO1 positive / AO2 negative, 100% PWMA. OFF: independent standby first.
+ * Existing35 continuous hold and formal32/anti timed firing use this one API. */
 void bp_laser_set(int on)
 {
-    HAL_GPIO_WritePin(PIN_LASER, PIN_LASER_N,
-                      on ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    if (on && s_laser_ready) {
+        HAL_GPIO_WritePin(LASER_AIN2_GPIO_Port, LASER_AIN2_Pin, GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(LASER_AIN1_GPIO_Port, LASER_AIN1_Pin, GPIO_PIN_SET);
+        __HAL_TIM_SET_COMPARE(&htim11, TIM_CHANNEL_1, htim11.Init.Period + 1u);
+        TIM11->EGR = TIM_EGR_UG; /* Apply full duty before enabling bridge. */
+        HAL_GPIO_WritePin(LASER_STBY_GPIO_Port, LASER_STBY_Pin, GPIO_PIN_SET);
+    } else {
+        HAL_GPIO_WritePin(LASER_STBY_GPIO_Port, LASER_STBY_Pin, GPIO_PIN_RESET);
+        if (htim11.Instance == TIM11)
+            __HAL_TIM_SET_COMPARE(&htim11, TIM_CHANNEL_1, 0u);
+        HAL_GPIO_WritePin(LASER_AIN1_GPIO_Port, LASER_AIN1_Pin, GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(LASER_AIN2_GPIO_Port, LASER_AIN2_Pin, GPIO_PIN_RESET);
+    }
+    __set_PRIMASK(primask);
+}
+
+/* Fatal path can run before MX_TIM11_Init or with interrupts disabled.
+ * Latch not-ready: recovery requires the full GPIO/timer startup after reset.
+ * No UART, delays, HAL locks or dependence on the htim11 handle. */
+void bp_laser_emergency_off(void)
+{
+    s_laser_ready = 0u;
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+    __HAL_RCC_TIM11_CLK_ENABLE();
+    LASER_STBY_GPIO_Port->BSRR = (uint32_t)LASER_STBY_Pin << 16u;
+    TIM11->CCR1 = 0u;
+    TIM11->CCER &= ~TIM_CCER_CC1E;
+    TIM11->CR1 &= ~TIM_CR1_CEN;
+    GPIOB->BSRR = (uint32_t)(LASER_AIN1_Pin|LASER_AIN2_Pin|LASER_PWMA_Pin) << 16u;
+    /* Force the independent gate/pins low even during early initialization. */
+    GPIOC->MODER = (GPIOC->MODER & ~(3u << 24u)) | (1u << 24u);
+    GPIOB->MODER = (GPIOB->MODER & ~((3u << 0u)|(3u << 2u)|(3u << 18u)))
+                  | (1u << 0u)|(1u << 2u)|(1u << 18u);
 }
 
 /* 调试口 = 蓝牙所在 USART3(PD8/PD9, 9600)。2026-09-12:蓝牙由 PA9/PA10(USART1) 挪到 PD8/PD9(USART3)。 */

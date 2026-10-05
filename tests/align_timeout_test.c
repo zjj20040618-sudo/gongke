@@ -13,6 +13,7 @@
 static uint32_t now_ms;
 static unsigned brake_calls;
 static unsigned alignment_receive_end_calls;
+static ProtoStats alignment_proto_stats;
 
 uint32_t HAL_GetTick(void) { return now_ms; }
 void osDelay(uint32_t ms) { now_ms += ms; }
@@ -22,6 +23,12 @@ float imu_heading_deg(void) { return 0.0f; }
 float imu_leg_heading_deg(void) { return 0.0f; }
 void motion_brake(void) { brake_calls++; }
 void motion_vel_set(float x, float y, float w) { (void)x; (void)y; (void)w; }
+void motion_vel_set_precise(float x, float y, float w)
+{
+    (void)x; (void)y; (void)w;
+    fputs("legacy alignment unexpectedly requested a grab XY drive\n", stderr);
+    abort();
+}
 float motion_odo_mm(void) { return 0.0f; }
 float motion_lateral_odo_mm(void) { return 0.0f; }
 int32_t ctrl_enc_total(int wheel) { (void)wheel; return 0; }
@@ -36,6 +43,7 @@ void arm_claw_open(void) { }
 void arm_claw_close(void) { }
 void bp_laser_set(int on) { (void)on; }
 void proto_receive_end(void) { alignment_receive_end_calls++; }
+void proto_stats_get(ProtoStats *out) { *out = alignment_proto_stats; }
 /* These legacy alignment cases never request a new recognition scene.
  * Satisfy the newly linked handshake without making a wait falsely succeed. */
 void proto_send_scene(ProtoScene scene)
@@ -66,7 +74,7 @@ int main(void)
     brake_calls = 0u;
     run_reset();
     /* Node preparation consumes ~1 s; a missing OBJ must return at 2 s. */
-    if (step_align(CLS_BALL, LAB_R, 2000u) != 0 ||
+    if (step_align(CLS_TARGET, LAB_R, 2000u) != 0 ||
         now_ms < 2000u || now_ms > 2010u || brake_calls < 2u) {
         fprintf(stderr, "align timeout failed: ms=%lu brakes=%u\n",
                 (unsigned long)now_ms, brake_calls);

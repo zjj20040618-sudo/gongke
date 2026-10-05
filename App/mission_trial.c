@@ -26,6 +26,8 @@ static volatile uint8_t s_running;
 static const char *volatile s_phase = "BOOT";
 static float s_heading;
 static int s_cx[4], s_sign;
+static int s_grab_cy[2], s_grab_y_sign;
+static uint8_t s_grab_cy_ready[2];
 static uint8_t s_cx_ready[4];
 static int32_t s_qr[3];
 static unsigned s_hits;
@@ -55,6 +57,8 @@ void mission_trial_init(void)
     s_sign = 0; s_phase = "BOOT"; s_hits = 0u;
     s_first_leg_mm = 0u; s_bucket_anchor = 0u;
     for (int i = 0; i < 4; ++i) { s_cx[i] = 0; s_cx_ready[i] = 0u; }
+    s_grab_y_sign = 0;
+    for (int i = 0; i < 2; ++i) { s_grab_cy[i] = 0; s_grab_cy_ready[i] = 0u; }
     s_qr[0] = s_qr[1] = s_qr[2] = 0;
 }
 const char *mission_trial_config_missing(void)
@@ -63,14 +67,26 @@ const char *mission_trial_config_missing(void)
     if (s_sign != 1 && s_sign != -1) return "vsg1_or_vsg2";
     for (int i = 0; i < 4; ++i) if (!s_cx_ready[i]) return names[i];
     if (!s_first_leg_mm) return "b1d";
+    if (s_grab_y_sign != 1 && s_grab_y_sign != -1) return "ysg1_or_ysg2";
+    if (!s_grab_cy_ready[0]) return "bcy";
+    if (!s_grab_cy_ready[1]) return "hcy";
     return 0;
 }
 int mission_trial_set_alignment(int cls, int cx, int sign)
 {
-    if (cls < -1 || cls > 3 || cx < -1 || cx >= 480
+    if (cls < -1 || cls > 3 || cx < -1 || cx >= 65535
         || (sign != 0 && sign != 1 && sign != -1) || s_running) return 0;
     if (cls >= 0 && cx >= 0) { s_cx[cls] = cx; s_cx_ready[cls] = 1u; }
     if (sign) s_sign = sign;
+    return 1;
+}
+int mission_trial_set_grab_y(int cls, int cy, int sign)
+{
+    int i = cls == CLS_BALL ? 0 : (cls == CLS_HOSTAGE ? 1 : -1);
+    if ((cls != -1 && i < 0) || cy < -1 || cy >= 65535
+        || (sign != 0 && sign != 1 && sign != -1) || s_running) return 0;
+    if (i >= 0 && cy >= 0) { s_grab_cy[i] = cy; s_grab_cy_ready[i] = 1u; }
+    if (sign) s_grab_y_sign = sign;
     return 1;
 }
 int mission_trial_set_first_leg(uint16_t mm)
@@ -100,6 +116,10 @@ void mission_trial_report(void)
     snprintf(b, sizeof b, "\r\nTRIAL32 v=100 task=2450 rescue=2125 hold=10000 sign=%d cx=%d,%d,%d,%d ready=%u%u%u%u\r\n",
         s_sign, s_cx[0], s_cx[1], s_cx[2], s_cx[3],
         s_cx_ready[0], s_cx_ready[1], s_cx_ready[2], s_cx_ready[3]);
+    bp_debug_send(b);
+    snprintf(b, sizeof b, "TRIAL32 GRAB_XY bcy=%d hcy=%d ysign=%d ready=%u%u tol=%.0f,%.0f frames=%u still_ms=%u\r\n",
+        s_grab_cy[0], s_grab_cy[1], s_grab_y_sign, s_grab_cy_ready[0], s_grab_cy_ready[1],
+        GRAB_XY_TOL_PX, GRAB_XY_TOL_PX, (unsigned)GRAB_XY_GOOD_FRAMES, (unsigned)GRAB_XY_STILL_MS);
     bp_debug_send(b);
     snprintf(b, sizeof b, "TRIAL32 first=%u second=%u bucket_anchor=%s\r\n",
         (unsigned)s_first_leg_mm,
@@ -223,6 +243,15 @@ static int align(int cls, int label, const char *name, float *road_anchor)
     if (!step_prepare_leg()) return 0;
     /* Capture only after braking/settling, before any image correction moves. */
     if (road_anchor) mission_trial_get_progress(road_anchor, 0);
+    if (cls == CLS_BALL || cls == CLS_HOSTAGE) {
+        int i = cls == CLS_BALL ? 0 : 1;
+        GrabAlignConfig cfg = {s_cx[cls], s_grab_cy[i], s_sign, s_grab_y_sign,
+                               GRAB_XY_TOL_PX, GRAB_XY_TOL_PX};
+        if (!s_cx_ready[cls] || !s_grab_cy_ready[i]) { motion_brake(); return 0; }
+        /* Same XY implementation as formal grab; no arm call in trial32.
+         * Road tracking remains live through both correction axes. */
+        return step_align_xy(cls, label, &cfg, s_heading, 0u);
+    }
     step_object_select(cls, label);
     last_frame = HAL_GetTick();
     trace_t0 = last_frame;
@@ -230,6 +259,7 @@ static int align(int cls, int label, const char *name, float *road_anchor)
         ProtoFrame f;
         if (!imu_ok()) break;
         if (step_object_take(&f) && f.cls == cls && (label < 0 || f.label == label)) {
+            if (!f.img_w || s_cx[cls] >= f.img_w) { motion_brake(); return 0; }
             float e = (float)(f.cx - s_cx[cls]);
             float applied = 0.0f;
             last_frame = HAL_GetTick();
