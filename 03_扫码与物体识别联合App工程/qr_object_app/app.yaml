@@ -1,7 +1,7 @@
 id: qr_object_switch
 name: QR and Object Switch
 name[zh]: 扫码与物体识别切换
-version: 2.1.0
+version: 2.1.1
 icon: app.png
 author: Bellator
 desc: MCU four-stage selection; three-digit QR and YOLO26 task reports

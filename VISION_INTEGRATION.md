@@ -1,6 +1,6 @@
 # 视觉二进制对接
 
-更新：2026-10-05，视觉App2.1.0。**当前01物体帧恢复旧格式；QR改53三码，无二维码框；请求新增63四阶段。** 最新字节定义、模型SHA与反馈事项见 [VISION_TO_CONTROL.md](VISION_TO_CONTROL.md)。旧02/52停止发送，旧51带框QR只作为接收器历史回归fixture。
+更新：2026-10-05，视觉App2.1.1仅更新中心坐标/字号显示，协议沿用2.1.0。**01物体完整字段、53三码无二维码框、63四阶段均不变。** 最新字节定义、模型SHA与反馈事项见 [VISION_TO_CONTROL.md](VISION_TO_CONTROL.md)。旧02/52停止发送，旧51带框QR只作为接收器历史回归fixture。
 
 ## 文件与维护边界
 
@@ -9,7 +9,7 @@
 | `qr_object_app/protocol.py` | 60/63请求分片、61ACK、62包装、01物体/53QR组包 |
 | `control_session.py` / `task_selection.py` | 请求去重/旧号、ACK门、任务映射与当前帧最高分筛选 |
 | `main.py` / `hardware.py` | 新ACK后采集、QRCode锁存、UART尾包续写与原始日志 |
-| `config.py` / `app.yaml` / 上一级`build_packages.py` | 9564十类、串口/字体参数、2.1.0版本及安装清单 |
+| `config.py` / `app.yaml` / 上一级`build_packages.py` | 9564十类、串口/字体参数、2.1.1版本及安装清单 |
 | `App/proto.c` / `proto.h` | 当前MCU只解析01/51，仅发60；本轮不修改 |
 | `App/mission_trial.c` / `steps.c` / `test.c` | 电控流程/筛选/静止诊断；本轮不修改 |
 | `qr_object_app/tests/test_mcu_protocol.py` | 当前真实视觉组包→真实App/proto.c兼容/拒绝回放 |

@@ -1,11 +1,11 @@
-# 扫码与十类识别 App 2.1.0
+# 扫码与十类识别 App 2.1.1
 
-更新：2026-10-05。模型9564；四阶段只返回当前指定类别。**QR只回三位码、不回二维码框；物体按用户选择恢复旧0x01完整字段。** 本仓库电控尚不接短QR53、尚不发任务63，需队友适配。没有实机验收。
+更新：2026-10-05。新增屏幕中心坐标 `x=…、y=…`；结果字号从5增至6，QR码和解码内容按实际缩屏补偿到相同基础字号。模型9564、四阶段筛选和串口01/53/63不变。电控仍需原53/63适配，没有新增实机验收。
 
 ## 1. 怎么运行
 
 1. MaixVision连接MaixCAM Pro，打开整个 `qr_object_app`，运行整个项目，不只传main.py。
-2. 或安装上一级 `dist/maix-qr_object_switch-v2.1.0.zip`。App ID仍为 `qr_object_switch`，安装会替换同ID旧App；需要保留旧设备应用时先自行备份。
+2. 或安装上一级 `dist/maix-qr_object_switch-v2.1.1.zip`。App ID仍为 `qr_object_switch`，安装会替换同ID旧App；需要保留旧设备应用时先自行备份。
 3. 默认IDLE；`UART_ENABLED=True`。电控发请求才识别，正式流程不需按USER。接管前USER短按QR/OBJECT、长按1.5秒退出；接管后忽略按键。
 4. 115200、8N1、共地、3.3V：A19/TX→MCU PD6/RX，MCU PD5/TX→A18/RX。实际引脚按板型核对。
 
@@ -31,7 +31,7 @@
 
 ## 3. 配置和数据
 
-- `MODEL_FILE=model_9564.mud`，对应9564.cvimodel。选用用户补充基线5766cb8中的模型及字体5，保留旧9541/9302文件但不运行、不打入安装包。
+- `MODEL_FILE=model_9564.mud`，对应9564.cvimodel，模型不变。`BOX_TEXT_SCALE=6` 是结果基础字号；QR和物体共用，并按实际屏幕尺寸补偿源图缩小。坐标宽度不够时分x/y两行，QR三码/颜色/形状分行，长行测量后缩字防止出界。旧9541/9302保留但不运行、不打入包。
 - 类别顺序：0扁圆物体/本项目腰鼓，1圆柱，2圆台/本项目圆锥，3蓝球，4红球，5绿球，6红靶，7蓝靶，8绿靶，9黑桶。训练别名须实物核验。
 - 阈值0.35；OBJECT用模型实际画幅，不猜480×320；QR1600×900，中心区域扫码。
 - 目标01发ID、置信度×1000、中心X/Y、框宽高、真实画幅及处理耗时。靶也保留旧字段，电控业务可只消费X。坐标像素、左上原点，不是毫米。
@@ -54,3 +54,5 @@ python -B build_packages.py
 仓库根的 `tests/test_vision_control_main.py` 检查真实主循环ACK/采集/结果顺序。新版真实C回放入口和本轮结果见 [README_本次更新.md](../../README_本次更新.md)，历史回放不代表新QR兼容。
 
 下一步：电控补53解析与63请求，部署配套程序后先做无运动静止UART检查，再测工作点/动作。源码已上传、包已生成、设备已部署、实机已通过是四件不同的事。
+
+显示实现依据：[Sipeed Display API](https://wiki.sipeed.com/maixpy/api/maix/display.html) 的屏幕尺寸/FIT_CONTAIN及 [Image API](https://en.wiki.sipeed.com/maixpy/api/maix/image.html) 的string_size测量。软件布局测试不代替实际相机屏幕和MaixVision观感确认。

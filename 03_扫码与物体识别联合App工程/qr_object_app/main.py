@@ -22,6 +22,7 @@ def main():
     try:
         cam = camera.Camera(config.OBJECT_WIDTH, config.OBJECT_HEIGHT, image.Format.FMT_RGB888)
         screen = display.Display() if config.DISPLAY_ENABLED else None
+        display_size = (screen.width(), screen.height()) if screen is not None else (config.OBJECT_WIDTH, config.OBJECT_HEIGHT)
         serial, button = init_uart(), UserButton()
         modes, qr_reader = ModeController(cam), QrReader()
         receiver, control = CommandReceiver(), ControlSession(modes)
@@ -122,13 +123,13 @@ def main():
                     uart_ms = time.ticks_ms() - uart_started
 
             draw_started = time.ticks_ms()
+            header_bottom = draw_header(img, modes.mode, fps_value, work_ms, uart_ms, control.remote_owned) or 0
             if modes.mode == config.MODE_QR:
                 if cached_qr_left > 0:
-                    draw_qrs(img, cached_qrs)
+                    draw_qrs(img, cached_qrs, display_size, header_bottom)
                     cached_qr_left -= 1
             else:
-                draw_objects(img, objects[:config.MAX_OBJECTS])
-            draw_header(img, modes.mode, fps_value, work_ms, uart_ms, control.remote_owned)
+                draw_objects(img, objects[:config.MAX_OBJECTS], display_size, header_bottom)
             if screen is not None:
                 screen.show(img)
             draw_ms = time.ticks_ms() - draw_started
