@@ -1,4 +1,4 @@
-"""MC本机UART证据日志。后台写入、有界队列/空间，不联网、不删除旧日志。"""
+"""MC临时UART证据日志。只写RAM文件系统，断电清除，不回退到SD卡。"""
 from datetime import datetime, timezone
 import os
 import queue
@@ -6,11 +6,33 @@ import threading
 import time
 import uuid
 
-LOG_DIR = "/root/vision_uart_logs"
+LOG_DIR = "/dev/shm/vision_uart_logs"
 PART_BYTES = 1024 * 1024
-SESSION_BYTES = 16 * 1024 * 1024
-DIRECTORY_BYTES = 64 * 1024 * 1024
-APP_VERSION = "2.1.15"
+SESSION_BYTES = 4 * 1024 * 1024
+DIRECTORY_BYTES = 16 * 1024 * 1024
+APP_VERSION = "2.1.16"
+
+
+def volatile_log_directory(mounts_file="/proc/mounts"):
+    """先验证挂载类型；/tmp这个名字本身不能证明文件会随断电消失。
+
+    首选/dev/shm；固件未挂载时尝试/run或/tmp，但必须是tmpfs/ramfs。
+    没有RAM目录则明确停止日志，绝不悄悄写入原/root持久目录。
+    """
+    with open(mounts_file, encoding="utf-8") as mounts:
+        entries = []
+        for line in mounts:
+            fields = line.split()
+            if len(fields) >= 3:
+                mount = fields[1].replace("\\040", " ").replace("\\134", "\\")
+                entries.append((os.path.realpath(mount), fields[2]))
+    for directory in (LOG_DIR, "/run/vision_uart_logs", "/tmp/vision_uart_logs"):
+        path = os.path.realpath(directory)
+        matches = [(mount, kind) for mount, kind in entries
+                   if path == mount or path.startswith(mount.rstrip(os.sep) + os.sep)]
+        if matches and max(matches, key=lambda entry: len(entry[0]))[1] in ("tmpfs", "ramfs"):
+            return directory
+    raise OSError("没有已挂载的RAM日志目录；UART继续，但临时日志未开启")
 
 
 class DeviceUartLog:
@@ -44,7 +66,7 @@ class DeviceUartLog:
         except Exception:
             self.file.close()
             raise
-        print("[UART FILE] saving {} (UTC filenames; console TX sampling does not limit file log)".format(self.paths[0]))
+        print("[UART FILE] saving {} (temporary RAM log; download before power off; UTC filenames)".format(self.paths[0]))
 
     @staticmethod
     def _line(message):
@@ -128,7 +150,8 @@ class DeviceUartLog:
 
 def start_log(config):
     try:
-        return DeviceUartLog(metadata="model={} UART={} TX={} RX={} baud={} receiver=unconfirmed".format(
+        directory = volatile_log_directory()
+        return DeviceUartLog(directory=directory, metadata="storage=RAM power_off=clears model={} UART={} TX={} RX={} baud={} receiver=unconfirmed".format(
             config.MODEL_FILE, config.UART_DEVICE, config.UART_TX_PIN, config.UART_RX_PIN, config.UART_BAUDRATE))
     except Exception as exc:
         print("[UART FILE] cannot start; UART continues:", exc)

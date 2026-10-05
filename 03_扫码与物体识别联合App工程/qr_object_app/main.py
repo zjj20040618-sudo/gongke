@@ -56,6 +56,10 @@ def main():
             if serial is not None:
                 data = serial.read(len=256, timeout=0)
                 for command in receiver.feed(data or b""):
+                    record_event = getattr(serial, "record_event", None)
+                    if record_event is not None:
+                        record_event("[CONTROL RX] parsed={} previous_mode={} previous_request={}".format(
+                            command, modes.mode, control.request_id))
                     ack, changed = control.apply(*command)
                     if changed:
                         hostage_order.reset(control.target_class_id if control.request_id == command[0]
@@ -130,6 +134,9 @@ def main():
 
             # 即使IDLE/QR/ACK等待也排空触摸事件，不让旧点击跨模式生效。
             tap = inspector.poll()
+            record_state = getattr(serial, "record_state", None)
+            if record_state is not None:
+                record_state(control, pending_ack, receiver)
             if pending_ack is not None or modes.mode == "IDLE" or not control.ready_for_capture():
                 time.sleep_ms(10)
                 continue

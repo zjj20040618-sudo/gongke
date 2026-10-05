@@ -55,7 +55,10 @@ class UartMainTests(unittest.TestCase):
             def read(self, **kwargs):
                 if kwargs != {"len": 256, "timeout": 0}:
                     raise AssertionError("UART read must remain bounded and nonblocking")
-                return next(incoming)
+                data = next(incoming)
+                if isinstance(data, Exception):
+                    raise data
+                return data
 
             def write(self, data):
                 count = next(counts, len(data))
@@ -86,7 +89,7 @@ class UartMainTests(unittest.TestCase):
             def __init__(self, *args, **kwargs):
                 pass
 
-            def read(self):
+            def read(self, **kwargs):
                 captures.append((turn[0], len(serial.wire), self.modes.mode))
                 return Frame()
 
@@ -119,6 +122,26 @@ class UartMainTests(unittest.TestCase):
                 main = load_file("uart_main_loop", APP / "main.py")
                 main.main()
         return serial, captures
+
+    def test_rx_exception_then_new_qr_request_still_acks_and_reports_qr(self):
+        serial, captures = self.run_loop(
+            [build_task_packet(1, 1, 1), OSError("temporary RX"),
+             build_control_packet(2, 1), b"", build_control_packet(2, 1)],
+            [[detection(4)], [detection(4)]], [])
+        frames = self.frames(serial.wire)
+        self.assertEqual([mode for _, _, mode in captures], ["OBJECT", "OBJECT", "QR", "QR", "QR"])
+        self.assertEqual([packet[2] for packet in frames], [0x61, 0x62, 0x62, 0x61, 0x62, 0x62, 0x61, 0x62])
+        qr_results = [packet for packet in frames if packet[2] == 0x62
+                      and struct.unpack_from("<H", packet, 3)[0] == 2]
+        self.assertEqual(len(qr_results), 3)
+        self.assertTrue(all(packet[7] == 0x53 for packet in qr_results))
+        timeline = [(0, "@2")]
+        for turn in range(1, 6):
+            if turn == 3:
+                timeline.append((turn * 10 - 1, "@1"))
+            timeline += [(turn * 10, chunk) for at, chunk in serial.chunks if at == turn]
+        _, stats = self.mcu.replay(timeline)
+        self.assertEqual(stats[3], 0)  # 当前真实C解析器的binary_bad计数。
 
     def frames(self, wire):
         frames, offset = [], 0

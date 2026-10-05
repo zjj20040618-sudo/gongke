@@ -1,5 +1,6 @@
 """MaixCAM Pro UART1初始化。失败时视觉程序仍继续。"""
 from maix import err, pinmap, uart
+import time
 import config
 from uart_log import start_log
 
@@ -16,7 +17,7 @@ class UartLink:
     offset. Neither a complete write nor an error proves what the MCU received.
     """
 
-    def __init__(self, serial, logger=None):
+    def __init__(self, serial, logger=None, opener=None):
         self.serial = serial
         self.logger = logger
         self._pending_packet = None
@@ -24,19 +25,78 @@ class UartLink:
         self._write_calls = 0
         self._pending_trace = False
         self._business_frames = 0
+        self._opener = opener
+        self._retry_at = 0.0
+        self.rx_bytes = self.rx_errors = self.tx_bytes = self.tx_errors = 0
+        self._last_state = None
+        self._state_at = 0.0
+
+    def _ensure_open(self):
+        # 初始化失败不等于关闭整个App；最多每秒重试一次，避免每帧刷屏/重配引脚。
+        if self.serial is not None:
+            is_open = getattr(self.serial, "is_open", None)
+            if self._opener is None or is_open is None:
+                return True
+            try:
+                if is_open():
+                    return True
+            except Exception as exc:
+                self._record("[UART STATUS ERROR] {}; retry normal read/write".format(exc))
+                return True  # 状态查询失败不是已关闭的证据，不丢弃尚未发完的帧。
+            self._record("[UART CONNECT] driver reports closed; reopening")
+            self.serial = None
+        if self._opener is None or time.monotonic() < self._retry_at:
+            return False
+        self._retry_at = time.monotonic() + 1.0
+        try:
+            self.serial = self._opener()
+            self._record("[UART CONNECT] ready; receiver=unconfirmed")
+            print("[UART] connected; waiting MCU request")
+            return True
+        except Exception as exc:
+            self._record("[UART CONNECT ERROR] {} retry_in_ms=1000".format(exc))
+            print("[UART] init failed; retry in 1s:", exc)
+            return False
 
     def read(self, *args, **kwargs):
+        if not self._ensure_open():
+            return b""
         try:
             data = self.serial.read(*args, **kwargs)
         except Exception as exc:
-            self._record("[UART RX ERROR] {}".format(exc))
-            raise
+            self.rx_errors += 1
+            line = "[UART RX ERROR] {} errors={} retry=next_loop".format(exc, self.rx_errors)
+            self._record(line)
+            print(line)
+            # 一次驱动读异常不能让扫码/识别退出。下一轮继续读，CRC负责重同步。
+            return b""
         if data:
+            self.rx_bytes += len(data)
             line = "[UART RX] bytes={} hex={}".format(len(data), _hex(data))
             self._record(line)
             if getattr(config, "UART_TRACE", True):
                 print(line)
         return data
+
+    def record_event(self, message):
+        self._record(message)
+
+    def record_state(self, control, pending_ack=None, receiver=None):
+        # 状态改变立即记录；静默时每秒一次，区分没有RX、人工暂停和ACK等待。
+        state = (control.modes.mode, control.request_id, control.manual_override,
+                 control.acknowledged, control.qr_handoff, control.last_command,
+                 pending_ack is not None, self.serial is not None,
+                 self.rx_bytes, self.rx_errors, self.tx_errors)
+        now = time.monotonic()
+        if state == self._last_state and now < self._state_at:
+            return
+        self._last_state, self._state_at = state, now + 1.0
+        self._record("[LINK STATE] mode={} request={} manual_paused={} acked={} qr_handoff={} "
+                     "command={} pending_ack={} port_open={} rx_bytes={} rx_errors={} "
+                     "tx_bytes={} tx_errors={} pending_written={} pending_total={} parser_tail={}".format(
+                         *state[:10], self.tx_bytes, self.tx_errors, self._offset,
+                         len(self._pending_packet) if self._pending_packet is not None else 0,
+                         len(receiver.buffer) if receiver is not None else 0))
 
     def _record(self, line):
         if self.logger is not None:
@@ -50,7 +110,7 @@ class UartLink:
         try:
             self._record("[UART CLOSE] pending_written={} pending_total={}".format(self._offset,
                 len(self._pending_packet) if self._pending_packet is not None else 0))
-            return self.serial.close()
+            return self.serial.close() if self.serial is not None else None
         finally:
             if self.logger is not None:
                 try:
@@ -86,6 +146,9 @@ class UartLink:
         requested = bytes(packet)
         if not requested:
             return False
+        if not self._ensure_open():
+            self._record("[UART TX BLOCKED] port unavailable type={:02X}".format(requested[2] if len(requested) >= 3 else 0))
+            return False
         if self._pending_packet is None:
             self._begin_packet(requested)
         attempts = max(1, int(getattr(config, "UART_WRITE_ATTEMPTS", 8)))
@@ -96,6 +159,7 @@ class UartLink:
             try:
                 count = self.serial.write(suffix)
             except Exception as exc:
+                self.tx_errors += 1
                 counts.append("exception")
                 self._record("[UART WRITE] offset={} total={} returned=exception reason={} receiver=unconfirmed".format(
                     self._offset, len(self._pending_packet), exc))
@@ -107,12 +171,15 @@ class UartLink:
                 self._offset, len(self._pending_packet), count, count if valid_count else 0,
                 _hex(suffix[:count]) if valid_count else ""))
             if not isinstance(count, int) or isinstance(count, bool) or count > len(suffix):
+                self.tx_errors += 1
                 self._log("blocked", counts, "invalid write count")
                 return False
             if count <= 0:
+                self.tx_errors += 1
                 self._log("blocked", counts, "no progress" if count == 0 else "driver error")
                 return False
             self._offset += count
+            self.tx_bytes += count
             if self._offset < len(self._pending_packet):
                 self._log("partial", counts)
                 continue
@@ -130,18 +197,24 @@ class UartLink:
         return False
 
 
+def _open_uart():
+    err.check_raise(pinmap.set_pin_function(config.UART_TX_PIN, "UART1_TX"), "set UART1_TX failed")
+    err.check_raise(pinmap.set_pin_function(config.UART_RX_PIN, "UART1_RX"), "set UART1_RX failed")
+    serial = uart.UART(config.UART_DEVICE, config.UART_BAUDRATE)
+    print("[UART] {} TX={} RX={} baud={}".format(config.UART_DEVICE, config.UART_TX_PIN, config.UART_RX_PIN, config.UART_BAUDRATE))
+    return serial
+
+
 def init_uart():
+    logger = start_log(config)  # 先建日志；初始化失败的证据也必须留在本轮会话。
     if not config.UART_ENABLED:
+        if logger is not None:
+            logger.record("[UART DISABLED] config UART_ENABLED=False")
+            logger.close()
         return None
-    try:
-        err.check_raise(pinmap.set_pin_function(config.UART_TX_PIN, "UART1_TX"), "set UART1_TX failed")
-        err.check_raise(pinmap.set_pin_function(config.UART_RX_PIN, "UART1_RX"), "set UART1_RX failed")
-        serial = uart.UART(config.UART_DEVICE, config.UART_BAUDRATE)
-        print("[UART] {} TX={} RX={} baud={}".format(config.UART_DEVICE, config.UART_TX_PIN, config.UART_RX_PIN, config.UART_BAUDRATE))
-        return UartLink(serial, start_log(config))
-    except Exception as exc:
-        print("[UART] init failed; vision continues:", exc)
-        return None
+    link = UartLink(None, logger, opener=_open_uart)
+    link._ensure_open()
+    return link
 
 def send_packet(serial, packet):
     if serial is None or packet is None:

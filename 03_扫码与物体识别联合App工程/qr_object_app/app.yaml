@@ -1,7 +1,7 @@
 id: qr_object_switch
 name: QR and Object Switch
 name[zh]: 扫码与物体识别切换
-version: 2.1.15
+version: 2.1.16
 icon: app.png
 author: Bellator
 desc: Task-filtered object coordinates and locked hostage encounter order

@@ -1,4 +1,12 @@
-# 扫码与十类识别 App 2.1.15
+# 扫码与十类识别 App 2.1.16
+
+## 2.1.16 串口恢复与断电清除日志
+
+UART启动失败后最多每秒重试一次；偶发读取异常不再退出整个App，下一轮继续接收。驱动明确报告已关闭时重开；正常切换QR/OBJECT不关闭串口、不清解析残片、不丢尚未写完的尾部。请求号、CRC、ACK完整写入及人工暂停保护保持不变。修复了这两类可复现的软件故障，不代表已经证实实机偶发失联的唯一原因。
+
+每次运行自动创建独立临时日志，首选`/dev/shm/vision_uart_logs`；必须验证为RAM挂载，不回退到SD卡。断电后新日志全部消失，查问题必须在断电前下载。详细步骤见下方“MC临时串口日志”。旧`/root/vision_uart_logs`持久日志没有删除，不受本次断电清除策略影响。
+
+当前安装包为`../dist/maix-qr_object_switch-v2.1.16.zip`，源码包为同目录`qr_object_switch_source_v2.1.16.zip`。保留用户物体字号2、QR单缓冲和OBJECT双缓冲，以及2.1.15人质顺序功能；电控仍需适配54。下文旧版本章节为历史说明，当前安装入口以2.1.16为准。主机验证不代替实机UART验收。
 
 ## 2.1.15 人质区首次出现顺序
 
@@ -26,7 +34,7 @@
 2.1.14修复USER切回扫码时报`mmf add vi channel failed`的问题：切换时直接调用相机`open`重新配置，不再先`close`释放MMF；退出才关闭。扫码单缓冲、物体双缓冲、单帧三码确认、自动交接和UART协议不变。停止旧程序，运行完整新版项目；如果旧异常已留下驱动故障且重跑仍失败，先正常重启相机。实车先停车，退出视觉不是急停。
 
 1. MaixVision连接MaixCAM Pro，打开整个 `qr_object_app`，运行整个项目，不只传main.py。
-2. 或安装上一级 `dist/maix-qr_object_switch-v2.1.15.zip`。App ID仍为 `qr_object_switch`，安装会替换同ID旧App；需要保留旧设备应用时先自行备份。
+2. 或安装上一级 `dist/maix-qr_object_switch-v2.1.16.zip`。App ID仍为 `qr_object_switch`，安装会替换同ID旧App；需要保留旧设备应用时先自行备份。
 3. 默认扫码；`UART_ENABLED=True`。USER短按扫码→物体识别，再短按→扫码，电控接管后也允许；长按1.5秒退出。合法三码完整报码后自动进入OBJECT，不需再按USER。一次加载/推理不能被同步打断，退出视觉不是电机急停，须由电控独立停车。
 4. 115200、8N1、共地、3.3V：A19/TX→MCU PD6/RX，MCU PD5/TX→A18/RX。实际引脚按板型核对。
 
@@ -72,7 +80,7 @@ QR_ROI_TOUCH_MOVE = True  # False禁止触摸移动，仅使用固定位置。
 
 单帧成功仍须满足电控契约：完整三位、每位1～3，同帧不能有冲突。原07任意字符串解出即成功，本版不会回传11等非法任务；合法码第一帧即锁存并发送53，后续消失仍发锁存码。单帧确认减少等待，也增加偶发合法误解码被锁定的风险；可将TASK_CONFIRM_FRAMES改回3，但当前按用户要求为1。
 
-QR与OBJECT切换会关闭摄像头并按目标格式重开；失败尝试恢复旧尺寸/格式，恢复失败退出并提示重启，避免拿灰度帧给彩色模型。预热会增加切模式耗时，不改变请求、ACK或包字节；同号重试不重新打开相机。OBJECT仍RGB888、模型实际输入尺寸。相机接口依据：[Sipeed Camera API](https://wiki.sipeed.com/maixpy/api/maix/camera.html)。
+QR与OBJECT切换对保持打开的摄像头直接open重配置目标格式，不先close释放MMF；失败尝试恢复旧尺寸/格式，恢复失败退出并提示重启，避免拿灰度帧给彩色模型。预热会增加切模式耗时，不改变请求、ACK或包字节；同号重试不重新配置相机。OBJECT仍RGB888、模型实际输入尺寸。相机接口依据：[Sipeed Camera API](https://wiki.sipeed.com/maixpy/api/maix/camera.html)。
 
 触屏移动真实ROI功能保留。完整码与白边要在框内；移动/扩大框不能解决失焦。没有调整曝光、焦距或新增图像增强。电脑测试只证明逻辑及参数一致，不能证明与07同样的实机远近范围；须同一纸码、光照、距离复测，记录原始MC图、实际尺寸及[QR]/[TASK]，不能用手机拍屏代替输入质量。
 
@@ -130,19 +138,19 @@ OBJECT每轮提交当前未绘制图，取得上次输入的结果；`frame_pair
 
 终端RX打印原始HEX；ACK完整日志；业务HEX默认每10帧。`[PERF] sent_ids`是筛入发送包的ID；`[UART TX] complete`仅证明本机write全长，**不证明MCU收到或接受**。
 
-## MC自动日志：只需运行新版工程
+## MC临时串口日志：断电前下载
 
 1. 运行整个新版`qr_object_app`，不能只运行main.py；`uart_log.py`必须随工程上传。
-2. DEVICE出现`[UART FILE] saving /root/vision_uart_logs/uart_..._001.txt`即说明日志已创建。IDLE也会记录收到的请求和ACK，不需按USER开启记录。
-3. 做同一轮33静止诊断。测试后正常停止App，等待日志收尾，**不要直接断电**。
-4. 在MaixVision的**设备文件管理器**进入`/root/vision_uart_logs`并刷新。每次启动有独立前缀；下载该轮所有`_001.txt/_002.txt/...`。或者告诉Codex设备IP和合法SSH登录，由Codex直接下载。
-5. 电控端仍需同一轮手机BLE导出文件。MC只能证明自身UART调用，不能代替MCU接收器内部状态。取回两端日志后再审查、分析并上传云端；设备程序不会自己向GitHub发日志。
+2. DEVICE出现`[UART FILE] saving /dev/shm/vision_uart_logs/uart_..._001.txt`即说明日志已创建。若固件没有该RAM挂载，会尝试已确认是RAM的`/run`或`/tmp`，以实际打印路径为准。初始化失败和IDLE也记录，不需按USER开启。
+3. 车静止时重复QR→OBJECT→QR，同时让MCU发递增新请求号；出现问题后正常停止App，等待日志收尾，**先下载、再断电**。退出视觉不是电机急停。
+4. 在MaixVision的**设备文件管理器**进入实际打印目录并刷新，下载该轮全部`_001.txt/_002.txt/...`；每次启动有独立会话前缀。同一次开机的旧会话仍在，断电/重启后全部消失，无法再找回。
+5. 电控端仍需同一轮手机BLE导出文件。MC只能证明自身UART调用，不能代替MCU接收器内部状态。程序不向GitHub上传，旧`/root/vision_uart_logs`文件也不会被本次更新自动清理。
 
-文件每条带UTC时间与本机单调毫秒，含App版本、UART配置、模型名、RX完整HEX、每次WRITE驱动报告的实际片段以及TX整帧意图/写入状态。文件**不按每10帧采样**；控制台采样设置不影响本机文件。WRITE返回负值/异常不能确定额外字节是否已上线路，不能误作对端接收确认。
+文件每条带UTC时间与本机单调毫秒，含版本、配置、RX完整HEX、每次WRITE实际报告片段、TX整帧意图/状态，以及`CONTROL RX`解析出的命令和`LINK STATE`状态。文件**不按每10帧采样**；控制台采样不影响文件。WRITE全长不证明MCU收到，负值/异常也不能确定额外字节是否已上线路。
 
-后台写入，有界256条队列，约0.5秒flush；队列满时丢日志但不中断串口，并记录`[LOG GAP]`。每片1MiB、每轮16MiB、目录64MiB；达到限额或磁盘失败就停止日志并提示，识别与通信继续。**不会删除旧日志**，下载后由用户清理。突然断电/强杀可能丢掉队列、缓存或文件系统尚未持久化的尾部，不能保证完整；日志缺失不等于UART丢包。
+排查先看：没有`UART RX`说明本机未读到字节；有RX但没有`CONTROL RX`要检查包格式、CRC或不完整残片；`manual_paused=True`表示人工切换后保护性暂停，需要MCU递增新请求重新接管；`pending_ack=True`或`acked=False`表示ACK尚未完成，不能放行业务；`RX ERROR`及`CONNECT ERROR`记录驱动异常和恢复。它们不是单凭一行就能判断的硬件故障结论。
 
-路径为MC持久目录，不是会被下次运行替换的`/tmp/maixpy_run`。文件管理方式见[Sipeed官方MaixVision说明](https://wiki.sipeed.com/maixpy/doc/zh/basic/maixvision.html#传输文件到设备)。
+后台有界256条队列、约0.5秒flush；队列满会记录`LOG GAP`，日志缺口不等于UART丢包。每片1MiB、每轮4MiB、目录16MiB，达到限额会提示并停止日志，通信继续；不自动删除同次开机的旧证据。没有RAM挂载、容量不足或记录失败时会明确打印`cannot start`/`disabled`，不会悄悄写入SD卡。强杀可能丢掉未刷新的尾部；断电则按要求清除整个临时会话。文件管理方式见[Sipeed官方MaixVision说明](https://wiki.sipeed.com/maixpy/doc/zh/basic/maixvision.html#传输文件到设备)。
 
 ## 4. 验证与构建
 

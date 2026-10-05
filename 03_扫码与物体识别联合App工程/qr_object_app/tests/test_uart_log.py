@@ -6,11 +6,40 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from uart_log import DeviceUartLog, start_log
+from uart_log import DeviceUartLog, start_log, volatile_log_directory, LOG_DIR
+from unittest.mock import mock_open
 from test_hardware import hardware, FakeSerial, ACK, RESULT
 
 
 class DeviceLogTests(unittest.TestCase):
+    def test_volatile_storage_prefers_shm_and_never_persistent_root(self):
+        mounts = "rootfs / rootfs rw 0 0\ntmpfs /dev/shm tmpfs rw 0 0\n/dev/mmcblk0p2 /tmp ext4 rw 0 0\n"
+        with patch("builtins.open", mock_open(read_data=mounts)):
+            self.assertEqual(volatile_log_directory(), LOG_DIR)
+        self.assertEqual(LOG_DIR, "/dev/shm/vision_uart_logs")
+
+    def test_tmp_is_used_only_if_ram_mounted_and_nested_disk_mount_is_rejected(self):
+        mounts = "rootfs / rootfs rw 0 0\ntmpfs /tmp tmpfs rw 0 0\n"
+        with patch("builtins.open", mock_open(read_data=mounts)):
+            self.assertEqual(volatile_log_directory(), "/tmp/vision_uart_logs")
+        mounts += "/dev/mmcblk0p2 /tmp/vision_uart_logs ext4 rw 0 0\n"
+        with patch("builtins.open", mock_open(read_data=mounts)):
+            with self.assertRaises(OSError):
+                volatile_log_directory()
+
+    def test_absent_ram_mount_disables_logging_without_writing_to_sd(self):
+        with patch("builtins.open", mock_open(read_data="/dev/mmcblk0p2 / ext4 rw 0 0\n")), \
+             patch("uart_log.DeviceUartLog") as factory, contextlib.redirect_stdout(io.StringIO()):
+            self.assertIsNone(start_log(hardware.config))
+        factory.assert_not_called()
+
+    def test_start_log_selects_volatile_directory_and_records_power_off_policy(self):
+        with patch("uart_log.volatile_log_directory", return_value="/dev/shm/vision_uart_logs"), \
+             patch("uart_log.DeviceUartLog") as factory:
+            self.assertIs(start_log(hardware.config), factory.return_value)
+        self.assertEqual(factory.call_args.kwargs["directory"], LOG_DIR)
+        self.assertIn("storage=RAM power_off=clears", factory.call_args.kwargs["metadata"])
+
     def test_all_rx_tx_written_even_when_console_sampling_disabled(self):
         with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
             logger = DeviceUartLog(directory, metadata="synthetic-test")
