@@ -1,6 +1,6 @@
 # 视觉二进制对接
 
-更新：2026-10-05。电控 `20261005-ROUTE34-NOQR` 保留QR53-RXGATE；配套视觉审核基准 `6a20efe`，App2.1.1、9564十类。双方已配套01物体、53三码、63四阶段及61/62关联。旧02/52不发送，51仅保留接收器历史回归。
+更新：2026-10-05。电控 `20261005-ROUTE34-NOQR` 保留QR53-RXGATE；配套视觉审核基准 `6a20efe`，当前App2.1.2、9564十类。双方已配套01物体、53三码、63四阶段及61/62关联；本次仅改善物体标签可读性。旧02/52不发送，51仅保留接收器历史回归。
 
 当前兼容详情看 [VISION_CONTROL_PROTOCOL.md](VISION_CONTROL_PROTOCOL.md)，电控给视觉的需求/现场反馈看 [CONTROL_TO_VISION.md](CONTROL_TO_VISION.md)。视觉自己的 [VISION_TO_CONTROL.md](VISION_TO_CONTROL.md) 保留其提交时记录，其中MCU不支持53/63的评估已被这次电控集成替代，不能据旧评估混装设备。
 

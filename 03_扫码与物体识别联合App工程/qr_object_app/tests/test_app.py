@@ -24,7 +24,8 @@ maix.key = types.SimpleNamespace(
 maix.image = types.SimpleNamespace(
     Format=types.SimpleNamespace(FMT_RGB888=1),
     QRCodeDecoderType=types.SimpleNamespace(QRCODE_DECODER_TYPE_ZBAR=1),
-    COLOR_GREEN=1, COLOR_YELLOW=2, COLOR_RED=3, COLOR_BLUE=4,
+    COLOR_GREEN=1, COLOR_YELLOW=2, COLOR_RED=3, COLOR_BLUE=4, COLOR_WHITE=5,
+    Color=types.SimpleNamespace(from_rgb=lambda r, g, b: (r, g, b)),
     string_size=lambda text, scale=1, thickness=-1: (len(text) * 8 * scale, 12 * scale),
 )
 maix.err = types.SimpleNamespace(Err=types.SimpleNamespace(ERR_NONE=0))
@@ -367,7 +368,7 @@ class AppTests(unittest.TestCase):
             turns[0] += 1
             clock[0] += 1000
             buttons[0]._toggle_requested = True
-            buttons[0]._exit_requested = True  # 接管后短按和长按均不得覆盖电控。
+            # 接管后短按不得切模式；长按退出另行验证。
             return turns[0] > 4
         class Serial:
             def read(self, **kwargs):
@@ -402,6 +403,51 @@ class AppTests(unittest.TestCase):
             self.assertEqual(packet[10], 2)
             self.assertEqual({packet[21], packet[32]}, {9, 4})
         self.assertEqual(len(sent), 7)
+
+    def test_remote_long_press_exits_even_while_ack_pending(self):
+        main = importlib.import_module("main")
+        from protocol import build_control_packet
+        for ack_complete in (True, False):
+            with self.subTest(ack_complete=ack_complete):
+                button = UserButton()
+                turns, reads, sent = [0], [], []
+                serial = types.SimpleNamespace(
+                    read=lambda **kwargs: build_control_packet(7, 2) if turns[0] == 1 else b"",
+                )
+                modes = ModeController(FakeCamera())
+
+                class TrackingCamera(FakeCamera):
+                    def read(self):
+                        reads.append(turns[0])
+                        return super().read()
+
+                def need_exit():
+                    turns[0] += 1
+                    if turns[0] == 2:
+                        button._on_key(maix.key.Keys.KEY_OK, maix.key.State.KEY_LONG_PRESSED)
+                        button._toggle_requested = True  # 长按优先，不执行同轮短按。
+                    return turns[0] > 4  # 防止旧实现无限循环；不能靠此条件通过。
+
+                def send(serial, packet):
+                    sent.append((turns[0], packet))
+                    return ack_complete
+
+                with patch.object(main, "UserButton", return_value=button), \
+                     patch.object(main, "ModeController", return_value=modes), \
+                     patch.object(main, "init_uart", return_value=serial), \
+                     patch.object(main, "send_packet", side_effect=send), \
+                     patch.object(maix.camera, "Camera", TrackingCamera, create=True), \
+                     patch.object(maix.app, "need_exit", side_effect=need_exit, create=True), \
+                     patch.object(maix.time, "sleep_ms", lambda ms: None, create=True), \
+                     patch.object(config, "DISPLAY_ENABLED", False), \
+                     patch.object(modes, "toggle") as toggle:
+                    main.main()
+                self.assertEqual(turns[0], 2)
+                self.assertEqual(reads, [1] if ack_complete else [])
+                self.assertFalse(any(turn >= 2 and packet[2] == 0x62 for turn, packet in sent))
+                self.assertIsNone(button._key)
+                self.assertIsNone(modes.detector)
+                toggle.assert_not_called()
 
     def test_only_black_barrel_sends_class9_frame(self):
         main = importlib.import_module("main")
