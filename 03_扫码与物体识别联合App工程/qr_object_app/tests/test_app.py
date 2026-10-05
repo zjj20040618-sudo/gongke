@@ -25,6 +25,7 @@ maix.image = types.SimpleNamespace(
     Format=types.SimpleNamespace(FMT_RGB888=1),
     QRCodeDecoderType=types.SimpleNamespace(QRCODE_DECODER_TYPE_ZBAR=1),
     COLOR_GREEN=1, COLOR_YELLOW=2, COLOR_RED=3, COLOR_BLUE=4,
+    string_size=lambda text, scale=1, thickness=-1: (len(text) * 8 * scale, 12 * scale),
 )
 maix.err = types.SimpleNamespace(Err=types.SimpleNamespace(ERR_NONE=0))
 maix.nn = types.SimpleNamespace()
@@ -308,7 +309,7 @@ class AppTests(unittest.TestCase):
         output = io.StringIO()
         with patch.object(main, "UserButton", side_effect=make_button), \
              patch.object(maix.camera, "Camera", side_effect=make_camera, create=True), \
-             patch.object(maix.display, "Display", return_value=types.SimpleNamespace(show=lambda img: shown.append((img.width(), img.height()))), create=True), \
+             patch.object(maix.display, "Display", return_value=types.SimpleNamespace(width=lambda: 480, height=lambda: 320, show=lambda img: shown.append((img.width(), img.height()))), create=True), \
              patch.object(maix.app, "need_exit", side_effect=need_exit, create=True), \
              patch.object(config, "PRINT_EVERY_N_FRAMES", 1), \
              patch.object(config, "START_MODE", config.MODE_QR), \
@@ -330,7 +331,7 @@ class AppTests(unittest.TestCase):
         with patch.object(main, "UserButton", return_value=button), \
              patch.object(main.ModeController, "enter", side_effect=RuntimeError("camera")), \
              patch.object(maix.camera, "Camera", FakeCamera, create=True), \
-             patch.object(maix.display, "Display", return_value=types.SimpleNamespace(), create=True):
+             patch.object(maix.display, "Display", return_value=types.SimpleNamespace(width=lambda: 480, height=lambda: 320), create=True):
             with self.assertRaises(RuntimeError):
                 main.main()
         self.assertIsNone(button._key)
@@ -382,7 +383,7 @@ class AppTests(unittest.TestCase):
              patch.object(main, "init_uart", return_value=Serial()), \
              patch.object(main, "send_packet", side_effect=send), \
              patch.object(maix.camera, "Camera", FakeCamera, create=True), \
-             patch.object(maix.display, "Display", return_value=types.SimpleNamespace(show=lambda img: shown.append((img.width(), img.height()))), create=True), \
+             patch.object(maix.display, "Display", return_value=types.SimpleNamespace(width=lambda: 480, height=lambda: 320, show=lambda img: shown.append((img.width(), img.height()))), create=True), \
              patch.object(maix.app, "need_exit", side_effect=need_exit, create=True), \
              patch.object(maix.time, "sleep_ms", lambda ms: None, create=True), \
              patch.object(config, "PRINT_EVERY_N_FRAMES", 1), \
