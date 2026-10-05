@@ -33,6 +33,8 @@ def main():
         fps_value, fps_started = 0.0, time.ticks_ms()
         cached_qrs, cached_qr_left = [], 0
         pending_ack = None
+        auto_detect_pending = False  # 本帧发完确认的QR后，下一轮释放旧图再切OBJECT。
+        last_task_message = None
         modes.enter(config.START_MODE)
         print("[APP] ready {}; model={} classes=10; UART controls recognition".format(modes.mode, config.MODEL_FILE))
         print("[UART] QR=0x53 three ASCII digits; OBJECT=0x01; task request=0x63; MCU QR/task update required")
@@ -47,6 +49,7 @@ def main():
                 data = serial.read(len=256, timeout=0)
                 for command in receiver.feed(data or b""):
                     ack, changed = control.apply(*command)
+                    auto_detect_pending = False  # 主控请求优先，独立扫码不得擅自切模式。
                     if changed:
                         inspector.reset()
                         cached_qrs, cached_qr_left = [], 0
@@ -75,6 +78,7 @@ def main():
                 print("[KEY] manual exit; remote_owned={}; MCU stop unconfirmed".format(control.remote_owned))
                 break
             if button.take_toggle_request() and not control.remote_owned:
+                auto_detect_pending = False
                 gc.collect()
                 try:
                     modes.toggle()
@@ -87,6 +91,20 @@ def main():
                     if modes.mode is None:
                         raise
                     print("[MODE] switch failed; old mode continues:", exc)
+
+            if auto_detect_pending and not control.remote_owned:
+                auto_detect_pending = False
+                gc.collect()
+                try:
+                    modes.enter(config.MODE_OBJECT)
+                    inspector.reset()
+                    cached_qrs, cached_qr_left = [], 0
+                    fps_count, fps_value, fps_started = 0, 0.0, time.ticks_ms()
+                except Exception as exc:
+                    if modes.mode is None:
+                        raise
+                    # 已确认任务保留；失败留在QR，可短按USER重试，不循环重载模型。
+                    print("[MODE] task auto-switch failed; press USER to retry:", exc)
 
             # 即使IDLE/QR/ACK等待也排空触摸事件，不让旧点击跨模式生效。
             tap = inspector.poll()
@@ -104,13 +122,17 @@ def main():
             if modes.mode == config.MODE_QR:
                 work_started = time.ticks_ms()
                 qrs = qr_reader.decode(img)
-                for qr in qrs:
-                    task.observe(qr["payload"])
+                confirmed = task.observe_qrs(qrs)
+                if task.message != last_task_message:
+                    print("[TASK]", task.message)
+                    last_task_message = task.message
+                if confirmed and not control.remote_owned:
+                    auto_detect_pending = True
                 if task.payload is not None:
                     qrs = [qr for qr in qrs if qr["payload"] == task.payload]
                 work_ms = time.ticks_ms() - work_started
                 if qrs:
-                    cached_qrs, cached_qr_left = qrs, config.QR_KEEP_FRAMES
+                    cached_qrs, cached_qr_left = qrs[:config.QR_MAX], config.QR_KEEP_FRAMES
                     for qr in qrs:
                         print("[QR] payload={} {} center=({}, {})".format(qr["payload"], qr["text"], qr["x"] + qr["w"] // 2, qr["y"] + qr["h"] // 2))
                 # 重发本轮锁存任务码至换模式，目标坐标绝不沿用旧帧。
@@ -122,7 +144,8 @@ def main():
                     uart_ms = time.ticks_ms() - uart_started
             else:
                 objects, work_ms = modes.detector.detect(img)
-                selected_objects = task.select(objects, control.target_class_id)
+                selected_objects = task.select(objects, control.target_class_id,
+                    include_barrel=control.remote_owned, img_w=width, img_h=height)
                 vision_ms = time.ticks_ms() - loop_started
                 # 0x63只发当前任务；通用0x60 OBJECT保留三任务加桶诊断。
                 if serial is not None:
@@ -133,8 +156,12 @@ def main():
                     uart_ms = time.ticks_ms() - uart_started
 
             draw_started = time.ticks_ms()
-            visible_objects = inspector.choose(objects, (width, height), tap) if modes.mode == config.MODE_OBJECT else []
+            # 独立运行像05一样只画任务目标；主控接管后保留全类别诊断显示。
+            display_objects = objects if control.remote_owned else selected_objects
+            visible_objects = inspector.choose(display_objects, (width, height), tap) if modes.mode == config.MODE_OBJECT else []
             status = inspector.status if modes.mode == config.MODE_OBJECT else None
+            task_status = "TASK:{} DIGIT:{}".format(control.task_id, control.qr_digit) if control.target_class_id is not None else task.message
+            status = "{} {}".format(task_status, status or "").strip()
             header_bottom = draw_header(img, modes.mode, fps_value, work_ms, uart_ms, control.remote_owned, status) or 0
             if modes.mode == config.MODE_QR:
                 if cached_qr_left > 0:

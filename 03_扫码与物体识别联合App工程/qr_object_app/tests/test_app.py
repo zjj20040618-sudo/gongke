@@ -285,6 +285,14 @@ class AppTests(unittest.TestCase):
         self.assertIn("红", task_text_cn("123"))
         self.assertEqual(task_text_cn("hello"), "非赛题任务码")
 
+    def test_qr_reader_returns_conflicts_beyond_display_limit(self):
+        class OtherCode(FakeCode):
+            def payload(self): return "331"
+        frame = FakeImage()
+        with patch.object(frame, "find_qrcodes", return_value=[FakeCode()] * 4 + [OtherCode()]), patch.object(config, "QR_MAX", 1):
+            results = QrReader().decode(frame)
+        self.assertEqual([qr["payload"] for qr in results], ["123"] * 4 + ["331"])
+
     def test_main_qr_object_qr_and_long_exit(self):
         main = importlib.import_module("main")
         buttons = []
@@ -355,8 +363,8 @@ class AppTests(unittest.TestCase):
     def test_stage_36_package_and_device_log_share_version(self):
         import uart_log
 
-        self.assertEqual(uart_log.APP_VERSION, "2.1.5")
-        self.assertIn("version: 2.1.5", (APP_DIR / "app.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(uart_log.APP_VERSION, "2.1.6")
+        self.assertIn("version: 2.1.6", (APP_DIR / "app.yaml").read_text(encoding="utf-8"))
 
     def test_idle_retains_model_and_reuses_it(self):
         cam = FakeCamera()
@@ -373,7 +381,8 @@ class AppTests(unittest.TestCase):
         main = importlib.import_module("main")
         from protocol import build_control_packet, build_ack_packet, bind_result
         sent, shown, buttons = [], [], []
-        commands = iter(build_control_packet(r, m) for r, m in ((1, 1), (2, 2), (2, 2), (3, 0)))
+        commands = iter([build_control_packet(1, 1), b"", b"",
+                         build_control_packet(2, 2), build_control_packet(2, 2), build_control_packet(3, 0)])
         turns = [0]
         def make_button():
             button = UserButton()
@@ -384,7 +393,7 @@ class AppTests(unittest.TestCase):
             clock[0] += 1000
             buttons[0]._toggle_requested = True
             # 接管后短按不得切模式；长按退出另行验证。
-            return turns[0] > 4
+            return turns[0] > 6
         class Serial:
             def read(self, **kwargs):
                 if kwargs != {"len": 256, "timeout": 0}:
@@ -405,19 +414,19 @@ class AppTests(unittest.TestCase):
              patch.object(config, "PRINT_EVERY_N_FRAMES", 1), \
              patch.object(FakeModel, "detect", return_value=[raw_object(9), raw_object(4, 0.91)]):
             main.main()
-        self.assertEqual(shown, [(1920, 1440), (320, 320), (320, 320)])
+        self.assertEqual(shown, [(1920, 1440)] * 3 + [(320, 320)] * 2)
         self.assertEqual(sent[0], build_ack_packet(1, 1))
-        self.assertEqual(sent[2], build_ack_packet(2, 2))
-        self.assertEqual(sent[4], sent[2])  # 同请求重发ACK，不变请求号。
+        self.assertEqual(sent[4], build_ack_packet(2, 2))
+        self.assertEqual(sent[6], sent[4])  # 同请求重发ACK，不变请求号。
         self.assertEqual(sent[-1], build_ack_packet(3, 0))
         # 62 外壳：两帧都保留黑桶ID9及红球ID4，没有只发一次或过滤。
-        for packet in (sent[3], sent[5]):
+        for packet in (sent[5], sent[7]):
             self.assertEqual(packet[2], 0x62)
             self.assertEqual(struct.unpack("<H", packet[3:5])[0], 2)
             self.assertEqual(packet[7], 0x01)
             self.assertEqual(packet[10], 2)
             self.assertEqual({packet[21], packet[32]}, {9, 4})
-        self.assertEqual(len(sent), 7)
+        self.assertEqual(len(sent), 9)
 
     def test_remote_long_press_exits_even_while_ack_pending(self):
         main = importlib.import_module("main")
@@ -555,12 +564,14 @@ class AppTests(unittest.TestCase):
         main = importlib.import_module("main")
         from protocol import build_control_packet
         sent = []
-        commands = iter(build_control_packet(r, m) for r, m in ((1, 1), (1, 1), (2, 2), (3, 0), (4, 2), (5, 1), (6, 2)))
-        qr_codes = iter(("123", "111", "321"))
+        commands = iter([build_control_packet(1, 1), build_control_packet(1, 1), b"", b"",
+                         build_control_packet(2, 2), build_control_packet(3, 0), build_control_packet(4, 2),
+                         build_control_packet(5, 1), b"", b"", build_control_packet(6, 2)])
+        qr_codes = iter(("123", "123", "123", "111", "321", "321", "321"))
         turns = [0]
         def need_exit():
             turns[0] += 1
-            return turns[0] > 7
+            return turns[0] > 11
         def decode(img):
             qrs = QrReader().decode(img)
             qrs[0]["payload"] = next(qr_codes)
@@ -594,8 +605,8 @@ class AppTests(unittest.TestCase):
                 rows.append((request, object_ids(packet)))
         self.assertEqual(rows, [(2, (4, 8, 0, 9)), (4, (4, 8, 0, 9)), (6, (3, 8, 1, 9))])
         qr_packets = [packet for packet in sent if packet[2] == 0x62 and packet[7] == 0x53]
-        self.assertEqual([packet[10] for packet in qr_packets], [1, 1, 1])
-        self.assertEqual([packet[11:14] for packet in qr_packets], [b"123", b"123", b"321"])
+        self.assertEqual([packet[10] for packet in qr_packets], [0, 0, 1, 1, 0, 0, 1])
+        self.assertEqual([packet[11:-2] for packet in qr_packets], [b"", b"", b"123", b"123", b"", b"", b"321"])
 
     def test_main_task_requests_and_ack_retry_gate(self):
         main = importlib.import_module("main")

@@ -1,11 +1,11 @@
 id: qr_object_switch
 name: QR and Object Switch
 name[zh]: 扫码与物体识别切换
-version: 2.1.5
+version: 2.1.6
 icon: app.png
 author: Bellator
 desc: MCU four-stage selection; three-digit QR and YOLO26 task reports
-desc[zh]: 电控四阶段选目标；扫码回三位任务码，实时回传当前任务
+desc[zh]: 扫码三帧确认后独立筛选三类目标；保留电控四阶段二进制回传
 exclude: [__pycache__, .backup, tests, dist]
 files:
   - app.yaml

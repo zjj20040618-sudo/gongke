@@ -41,7 +41,8 @@ class QrReader:
                 self.last_error = message
             return []
         results = []
-        for code in codes[:config.QR_MAX]:
+        # 返回全部解码结果供任务确认检查；QR_MAX只限制画框，不能隐藏不同码冲突。
+        for code in codes:
             payload = code.payload()
             results.append({"payload": payload, "text": task_text_cn(payload), "text_ascii": task_text_ascii(payload), "x": int(code.x()), "y": int(code.y()), "w": int(code.w()), "h": int(code.h()), "corners": code.corners()})
         return results

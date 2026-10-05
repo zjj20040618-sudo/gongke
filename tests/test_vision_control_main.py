@@ -14,7 +14,8 @@ from protocol import build_control_packet, build_task_packet, build_ack_packet, 
 
 
 class MainLoopTests(unittest.TestCase):
-    def run_loop(self, commands, qr_results=(), detections=(), writes=(), fail_object=False):
+    def run_loop(self, commands, qr_results=(), detections=(), writes=(), fail_object=False,
+                 start_mode="IDLE", manual_toggles=None, displayed=None):
         sent, captures, events, modes_entered = [], [], [], []
         incoming, decoded, detected, write_results = map(iter, (commands, qr_results, detections, writes))
         loops = [0]
@@ -39,6 +40,7 @@ class MainLoopTests(unittest.TestCase):
                 self.mode = mode
             def toggle(self):
                 Modes.toggle_calls += 1
+                self.enter("OBJECT" if self.mode == "QR" else "QR")
             def close(self):
                 pass
         class Camera:
@@ -50,7 +52,7 @@ class MainLoopTests(unittest.TestCase):
                 return SimpleNamespace(width=lambda: 640, height=lambda: 480)
         class Button:
             def take_toggle_request(self):
-                return True  # USER cannot override remote ownership.
+                return True if manual_toggles is None else loops[0] in manual_toggles
             def close(self):
                 pass
         def send(serial, packet):
@@ -63,6 +65,9 @@ class MainLoopTests(unittest.TestCase):
             return complete
         def noop(*args):
             pass
+        def draw_objects(img, objects, *args):
+            if displayed is not None:
+                displayed.append([obj.class_id for obj in objects])
         replacements = {
             "maix": SimpleNamespace(app=SimpleNamespace(need_exit=need_exit),
                 camera=SimpleNamespace(Camera=Camera), display=SimpleNamespace(),
@@ -71,15 +76,16 @@ class MainLoopTests(unittest.TestCase):
             "hardware": SimpleNamespace(init_uart=lambda: Serial(), send_packet=send),
             "mode_controller": SimpleNamespace(ModeController=Modes),
             "qr_reader": SimpleNamespace(QrReader=lambda: SimpleNamespace(decode=lambda img: next(decoded, []))),
-            "ui": SimpleNamespace(draw_header=noop, draw_objects=noop, draw_qrs=noop),
+            "ui": SimpleNamespace(draw_header=noop, draw_objects=draw_objects, draw_qrs=noop),
             "user_button": SimpleNamespace(UserButton=Button),
         }
-        with patch.dict(sys.modules, replacements), patch.object(config, "DISPLAY_ENABLED", False):
+        with patch.dict(sys.modules, replacements), patch.multiple(config, DISPLAY_ENABLED=False, START_MODE=start_mode):
             spec = importlib.util.spec_from_file_location("test_camera_main", APP / "main.py")
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             module.main()
-        self.assertEqual(Modes.toggle_calls, 0)
+        if manual_toggles is None:
+            self.assertEqual(Modes.toggle_calls, 0)
         return sent, captures, events, modes_entered
 
     @staticmethod
@@ -103,15 +109,62 @@ class MainLoopTests(unittest.TestCase):
             build_ack_packet(2, 1, 1), build_ack_packet(3, 0)])
 
     def test_qr_code_repeats_after_disappearance_retry_preserves_new_request_resets(self):
-        commands = [build_control_packet(1, 1), b"", build_control_packet(1, 1), b"",
-                    build_control_packet(2, 1), b"", build_control_packet(3, 0)]
+        commands = [build_control_packet(1, 1), b"", build_control_packet(1, 1), b"", b"",
+                    build_control_packet(2, 1), b"", b"", b"", build_control_packet(3, 0)]
         sent, captures, _, entered = self.run_loop(commands,
-            [self.qr("123"), [], self.qr("321"), [], self.qr("222"), []])
+            [self.qr("123")] * 3 + [[], self.qr("321")] + [self.qr("222")] * 3 + [[]])
         qr_packets = [packet for packet in sent if packet[2] == 0x62]
-        self.assertEqual([packet[11:-2] for packet in qr_packets], [b"123"] * 4 + [b"222"] * 2)
-        self.assertTrue(all(len(packet) == 16 and packet[7] == 0x53 for packet in qr_packets))
-        self.assertEqual(captures, ["QR"] * 6)
+        self.assertEqual([packet[11:-2] for packet in qr_packets], [b""] * 2 + [b"123"] * 3 + [b""] * 2 + [b"222"] * 2)
+        self.assertTrue(all(len(packet) in (13, 16) and packet[7] == 0x53 for packet in qr_packets))
+        self.assertEqual(captures, ["QR"] * 9)
         self.assertEqual(entered, ["IDLE", "QR", "QR", "IDLE"])
+
+    def test_standalone_confirms_then_automatically_filters_three_classes(self):
+        obj = lambda cid, score, x: SimpleNamespace(class_id=cid, score=score, x=x, y=20, w=30, h=40)
+        candidates = [obj(cid, .8, 10) for cid in range(10)] + [obj(3, .95, 100)]
+        displayed = []
+        sent, captures, _, entered = self.run_loop([b""] * 5, [self.qr("331")] * 3,
+            [candidates, []], start_mode="QR", manual_toggles=(), displayed=displayed)
+        self.assertEqual(captures, ["QR"] * 3 + ["OBJECT"] * 2)
+        self.assertEqual(entered, ["QR", "OBJECT"])
+        self.assertEqual(sent[:3], [build_qr_packet(0, None), build_qr_packet(1, None), build_qr_packet(2, "331")])
+        self.assertEqual(sent[3], build_object_packet(3, [candidates[-1], candidates[7], candidates[1]], 640, 480, 0, 7, 0))
+        self.assertEqual(sent[4], build_object_packet(4, [], 640, 480, 0, 7, 0))
+        self.assertEqual(displayed, [[3, 7, 1], []])
+
+    def test_default_idle_user_enters_qr_and_unconfirmed_object_mode_sends_no_coordinates(self):
+        objects = [SimpleNamespace(class_id=9, score=.9, x=10, y=20, w=30, h=40)]
+        displayed = []
+        sent, captures, _, entered = self.run_loop([b""] * 3, [[]], [objects, objects],
+            manual_toggles=(1, 2), displayed=displayed)
+        self.assertEqual(entered, ["IDLE", "QR", "OBJECT"])
+        self.assertEqual(captures, ["QR", "OBJECT", "OBJECT"])
+        self.assertEqual([p[5] for p in sent], [0, 0, 0])
+        self.assertEqual(displayed, [[], []])
+
+    def test_user_return_to_qr_clears_old_task_before_confirming_another(self):
+        objects = [SimpleNamespace(class_id=cid, score=.8, x=10, y=20, w=30, h=40) for cid in range(10)]
+        sent, captures, _, entered = self.run_loop([b""] * 9,
+            [self.qr("331")] * 3 + [[]] + [self.qr("123")] * 3,
+            [objects, objects], start_mode="QR", manual_toggles=(5,))
+        self.assertEqual(captures, ["QR"] * 3 + ["OBJECT"] + ["QR"] * 4 + ["OBJECT"])
+        self.assertEqual(entered, ["QR", "OBJECT", "QR", "OBJECT"])
+        self.assertEqual(sent[4], build_qr_packet(4, None))
+        self.assertEqual(sent[-1], build_object_packet(8, [objects[4], objects[8], objects[0]], 640, 480, 0, 7, 0))
+
+    def test_remote_request_wins_over_pending_standalone_auto_switch(self):
+        sent, captures, _, entered = self.run_loop([b""] * 3 + [build_control_packet(1, 1), b""],
+            [self.qr("331")] * 3 + [self.qr("123"), self.qr("123")], start_mode="QR", manual_toggles=())
+        self.assertEqual(captures, ["QR"] * 5)
+        self.assertEqual(entered, ["QR", "QR"])
+        self.assertEqual(sent[-2:], [bind_result(build_qr_packet(3, None), 1), bind_result(build_qr_packet(4, None), 1)])
+
+    def test_standalone_auto_load_failure_keeps_locked_qr_and_does_not_retry_forever(self):
+        sent, captures, _, entered = self.run_loop([b""] * 5, [self.qr("331")] * 3 + [[], []],
+            start_mode="QR", manual_toggles=(), fail_object=True)
+        self.assertEqual(captures, ["QR"] * 5)
+        self.assertEqual(entered, ["QR", "OBJECT"])
+        self.assertEqual(sent[-2:], [build_qr_packet(3, "331"), build_qr_packet(4, "331")])
 
     def test_four_tasks_single_target_and_missing_bucket_never_reuses_coordinates(self):
         obj = lambda cid, score, x: SimpleNamespace(class_id=cid, score=score, x=x, y=30, w=20, h=40)

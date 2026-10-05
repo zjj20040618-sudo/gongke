@@ -1,5 +1,6 @@
 """Real Python packets to real App/proto.c; no UART or device evidence."""
 import os
+import itertools
 from pathlib import Path
 import struct
 import subprocess
@@ -53,6 +54,26 @@ class CurrentMcuProtocolTests(unittest.TestCase):
         mapping = ((2, 5), (2, 3), (2, 4), (0, 2), (0, 0), (0, 1), (1, 0), (1, 2), (1, 1), (3, 0))
         self.assertEqual(frames, ["OBJ,{},{},25,40,30,40,88,7,320,320".format(*pair) for pair in mapping])
         self.assertEqual(stats, (1, 0, 1, 0, 0, 0, 0, 0))
+
+    def test_confirmed_27_task_filters_use_real_binary_packets_and_c_parser(self):
+        from task_selection import TaskSelection
+        objects = [detection(i) for i in range(10)]
+        for digits in itertools.product("123", repeat=3):
+            payload = "".join(digits)
+            with self.subTest(payload=payload):
+                task = TaskSelection()
+                for _ in range(3):
+                    task.observe_qrs([{"payload": payload}])
+                selected = task.select(objects, include_barrel=False, img_w=320, img_h=320)
+                frames, stats = self.replay([(0, "@1"), (1, build_ack_packet(1, 1)),
+                    (2, bind_result(build_qr_packet(1, task.payload), 1)),
+                    (3, "@2"), (4, build_ack_packet(2, 2)),
+                    (5, bind_result(build_object_packet(2, selected, 320, 320), 2))])
+                rows = [line for line in frames if line.startswith("OBJ,")]
+                self.assertIn("QR,{},{},{},1".format(*digits), frames)
+                self.assertEqual([row.split(",")[1:3] for row in rows],
+                    [["0", str(int(digits[0]) - 1)], ["1", str(int(digits[1]) - 1)], ["2", str(int(digits[2]) + 2)]])
+                self.assertEqual(stats[3], 0)
 
     def test_bound_object01_empty_frame_and_old_request_guard(self):
         first = build_object_packet(42, [detection(4), detection(9)], 320, 320)
