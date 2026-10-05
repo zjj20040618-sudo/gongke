@@ -15,14 +15,16 @@ from ui import draw_header, draw_objects, draw_qrs
 from user_button import UserButton
 from utils import class_name
 from task_selection import TaskSelection
+from touch_inspector import ObjectInspector
 
 
 def main():
-    cam = screen = serial = button = modes = img = None
+    cam = screen = serial = button = modes = img = inspector = None
     try:
         cam = camera.Camera(config.OBJECT_WIDTH, config.OBJECT_HEIGHT, image.Format.FMT_RGB888)
         screen = display.Display() if config.DISPLAY_ENABLED else None
         display_size = (screen.width(), screen.height()) if screen is not None else (config.OBJECT_WIDTH, config.OBJECT_HEIGHT)
+        inspector = ObjectInspector(display_size, enabled=screen is not None)
         serial, button = init_uart(), UserButton()
         modes, qr_reader = ModeController(cam), QrReader()
         receiver, control = CommandReceiver(), ControlSession(modes)
@@ -46,6 +48,7 @@ def main():
                 for command in receiver.feed(data or b""):
                     ack, changed = control.apply(*command)
                     if changed:
+                        inspector.reset()
                         cached_qrs, cached_qr_left = [], 0
                         fps_count, fps_value, fps_started = 0, 0.0, time.ticks_ms()
                         if modes.mode == config.MODE_QR and control.request_id == command[0]:
@@ -75,6 +78,7 @@ def main():
                 gc.collect()
                 try:
                     modes.toggle()
+                    inspector.reset()
                     if modes.mode == config.MODE_QR:
                         task.reset()
                     cached_qrs, cached_qr_left = [], 0
@@ -84,6 +88,8 @@ def main():
                         raise
                     print("[MODE] switch failed; old mode continues:", exc)
 
+            # 即使IDLE/QR/ACK等待也排空触摸事件，不让旧点击跨模式生效。
+            tap = inspector.poll()
             if pending_ack is not None or modes.mode == "IDLE" or (control.remote_owned and (control.request_id is None or not control.acknowledged)):
                 time.sleep_ms(10)
                 continue
@@ -127,13 +133,16 @@ def main():
                     uart_ms = time.ticks_ms() - uart_started
 
             draw_started = time.ticks_ms()
-            header_bottom = draw_header(img, modes.mode, fps_value, work_ms, uart_ms, control.remote_owned) or 0
+            visible_objects = inspector.choose(objects, (width, height), tap) if modes.mode == config.MODE_OBJECT else []
+            status = inspector.status if modes.mode == config.MODE_OBJECT else None
+            header_bottom = draw_header(img, modes.mode, fps_value, work_ms, uart_ms, control.remote_owned, status) or 0
             if modes.mode == config.MODE_QR:
                 if cached_qr_left > 0:
                     draw_qrs(img, cached_qrs, display_size, header_bottom)
                     cached_qr_left -= 1
             else:
-                draw_objects(img, objects[:config.MAX_OBJECTS], display_size, header_bottom)
+                # 单独的显示列表；上面的任务筛选和UART已完成，不受触摸影响。
+                draw_objects(img, visible_objects[:config.MAX_OBJECTS], display_size, header_bottom, inspector.selected)
             if screen is not None:
                 screen.show(img)
             draw_ms = time.ticks_ms() - draw_started
@@ -153,6 +162,8 @@ def main():
                 print("[PERF] mode={} request={} task={} frame={} size={}x{} fps={:.2f} obj={} sent_ids=[{}] qr={} cap={}ms work={}ms draw/display={}ms uart={}ms loop={}ms {}".format(modes.mode, control.request_id, task.payload, frame_count, width, height, fps_value, len(objects), selected_ids, len(qrs), capture_ms, work_ms, draw_ms, uart_ms, loop_ms, details))
     finally:
         img = None
+        if inspector is not None:
+            inspector.close()
         if serial is not None:
             close_uart = getattr(serial, "close", None)
             if close_uart is not None:

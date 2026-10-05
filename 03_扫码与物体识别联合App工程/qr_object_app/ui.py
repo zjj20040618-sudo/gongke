@@ -14,7 +14,32 @@ def _result_scale(img, display_size=None):
     return config.BOX_TEXT_SCALE * max(1.0, img.width() / max(1, width), img.height() / max(1, height))
 
 
-def _draw_lines(img, x, y, lines, color, scale, min_y=0, background=None, avoid_rect=None):
+def _label_position(x, y, width, height, pad, margin, img, top, occupied):
+    """尝试原位置及已放标签的边界；使用含底色的矩形做碰撞判断。"""
+    left, right = max(pad, margin), img.width() - max(pad, margin) - width
+    upper, lower = top + pad, img.height() - pad - height
+    if right < left or lower < upper:
+        return None
+    x, y = max(left, min(x, right)), max(upper, min(y, lower))
+    xs, ys = {x, left, right}, {y, upper, lower}
+    for ox, oy, ow, oh in occupied:
+        xs.update((ox - width - pad - 1, ox + ow + pad + 1))
+        ys.update((oy - height - pad - 1, oy + oh + pad + 1))
+    positions = [(px, py) for px in xs for py in ys if left <= px <= right and upper <= py <= lower]
+    positions.sort(key=lambda point: (abs(point[0] - x) + abs(point[1] - y), point[1], point[0]))
+    for px, py in positions:
+        rect = (round(px) - pad, round(py) - pad,
+                round(width) + 2 * pad + 1, round(height) + 2 * pad + 1)
+        rx, ry, rw, rh = rect
+        if all(rx + rw <= ox or ox + ow <= rx or ry + rh <= oy or oy + oh <= ry
+               for ox, oy, ow, oh in occupied):
+            occupied.append(rect)
+            return px, py
+    return None
+
+
+def _draw_lines(img, x, y, lines, color, scale, min_y=0, background=None, avoid_rect=None,
+                occupied=None, fit_attempt=0):
     """测量后夹紧位置；只对超宽行/超高块缩字，不裁掉中心坐标。"""
     margin = max(2, round(scale))
     available_width = max(1, img.width() - 2 * margin)
@@ -25,6 +50,8 @@ def _draw_lines(img, x, y, lines, color, scale, min_y=0, background=None, avoid_
         width, height = _text_size(text, row_scale)
         rows.append((text, row_scale, width, height))
     gap = max(2, round(scale / 2))
+    if background is not None:
+        gap = max(gap, 2 * max(max(2, round(row[1] / 3)) for row in rows) + 1)
     top = max(margin, int(min_y))
     total_height = sum(row[3] for row in rows) + gap * max(0, len(rows) - 1)
     available_height = max(1, img.height() - margin - top)
@@ -33,6 +60,8 @@ def _draw_lines(img, x, y, lines, color, scale, min_y=0, background=None, avoid_
         rows = [(text, row_scale * factor, *_text_size(text, row_scale * factor))
                 for text, row_scale, _, _ in rows]
         gap *= factor
+        if background is not None:
+            gap = max(gap, 2 * max(max(2, round(row[1] / 3)) for row in rows) + 1)
         total_height = sum(row[3] for row in rows) + gap * max(0, len(rows) - 1)
     if avoid_rect is not None:
         _, rect_y, _, rect_h = avoid_rect
@@ -43,6 +72,16 @@ def _draw_lines(img, x, y, lines, color, scale, min_y=0, background=None, avoid_
         elif below_y + total_height <= img.height() - margin:
             y = below_y
     y = max(top, min(y, img.height() - margin - total_height))
+    if occupied is not None:
+        pad = max(2, round(max(row[1] for row in rows) / 3))
+        position = _label_position(x, y, max(row[2] for row in rows), total_height,
+                                   pad, margin, img, top, occupied)
+        if position is None:
+            if fit_attempt < 3:
+                return _draw_lines(img, x, y, lines, color, scale * 0.8, min_y,
+                                   background, avoid_rect, occupied, fit_attempt + 1)
+            return None  # 极拥挤时保留框，省略放不下的文字；触摸查看单个。
+        x, y = position
     for text, row_scale, width, height in rows:
         left = max(margin, min(x, img.width() - margin - width))
         if background is not None:
@@ -58,28 +97,39 @@ def _draw_lines(img, x, y, lines, color, scale, min_y=0, background=None, avoid_
     return round(y)
 
 
-def draw_header(img, mode, fps, work_ms, uart_ms, remote_owned=False):
+def draw_header(img, mode, fps, work_ms, uart_ms, remote_owned=False, selection_status=None):
     title = "QR SCAN" if mode == config.MODE_QR else "OBJ10 YOLO26"
     bottom = _draw_lines(img, 8, 8, ["{} {}x{} FPS:{:.1f}".format(title, img.width(), img.height(), fps)], image.COLOR_GREEN, config.STATUS_TEXT_SCALE)
     owner = "UART:CTRL" if remote_owned else "USER:SWITCH"
-    return _draw_lines(img, 8, bottom, ["WORK:{}ms UART:{}ms {}".format(work_ms, uart_ms, owner)], image.COLOR_YELLOW, config.STATUS_TEXT_SCALE)
+    bottom = _draw_lines(img, 8, bottom, ["WORK:{}ms UART:{}ms {}".format(work_ms, uart_ms, owner)], image.COLOR_YELLOW, config.STATUS_TEXT_SCALE)
+    if selection_status:
+        bottom = _draw_lines(img, 8, bottom, [selection_status], image.COLOR_YELLOW,
+                             config.BOX_TEXT_SCALE, bottom)
+    return bottom
 
-def draw_objects(img, objects, display_size=None, min_y=0):
+def draw_objects(img, objects, display_size=None, min_y=0, details=False):
     scale = _result_scale(img, display_size)
+    occupied = []
+    labels = []
+    # 先画全部框，再画文字，避免后画的框划穿已经放好的文字。
     for obj in objects:
         color = image.COLOR_RED if obj.class_id >= 6 else image.COLOR_BLUE
         img.draw_rect(obj.x, obj.y, obj.w, obj.h, color, thickness=3)
         cx, cy = obj.x + obj.w // 2, obj.y + obj.h // 2
         img.draw_cross(cx, cy, color, size=9, thickness=2)
+        labels.append((obj, color, cx, cy))
+    for obj, color, cx, cy in labels:
         coordinates = "x={}, y={}".format(cx, cy)
         lines = ["{} {:.2f}".format(class_name(obj.class_id), obj.score)]
         if _text_size(coordinates, scale)[0] <= img.width() - 2 * max(2, round(scale)):
             lines.append(coordinates)
         else:
             lines.extend(["x={}".format(cx), "y={}".format(cy)])
+        if details:
+            lines.append("w={}, h={}".format(obj.w, obj.h))
         _draw_lines(img, obj.x, obj.y, lines, image.COLOR_WHITE, scale, min_y,
                     background=image.Color.from_rgb(0, 0, 0),
-                    avoid_rect=(obj.x, obj.y, obj.w, obj.h))
+                    avoid_rect=(obj.x, obj.y, obj.w, obj.h), occupied=occupied)
 
 def draw_qrs(img, qrs, display_size=None, min_y=0):
     scale = _result_scale(img, display_size)
