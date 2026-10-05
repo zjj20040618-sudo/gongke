@@ -24,7 +24,8 @@ maix.key = types.SimpleNamespace(
 maix.image = types.SimpleNamespace(
     Format=types.SimpleNamespace(FMT_RGB888=1),
     QRCodeDecoderType=types.SimpleNamespace(QRCODE_DECODER_TYPE_ZBAR=1),
-    COLOR_GREEN=1, COLOR_YELLOW=2, COLOR_RED=3, COLOR_BLUE=4,
+    COLOR_GREEN=1, COLOR_YELLOW=2, COLOR_RED=3, COLOR_BLUE=4, COLOR_WHITE=5,
+    Color=types.SimpleNamespace(from_rgb=lambda r, g, b: (r, g, b)),
     string_size=lambda text, scale=1, thickness=-1: (len(text) * 8 * scale, 12 * scale),
 )
 maix.err = types.SimpleNamespace(Err=types.SimpleNamespace(ERR_NONE=0))

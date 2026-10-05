@@ -32,7 +32,7 @@ class RecordingImage:
         self.crosses.append((x, y))
 
     def draw_rect(self, *args, **kwargs):
-        self.rectangles.append(args)
+        self.rectangles.append((args, kwargs))
 
     def draw_edges(self, *args, **kwargs):
         self.edges.append(args)
@@ -52,7 +52,8 @@ class UiTests(unittest.TestCase):
         fake_maix = ModuleType("maix")
         fake_maix.image = SimpleNamespace(
             string_size=string_size, COLOR_GREEN=1, COLOR_YELLOW=2,
-            COLOR_RED=3, COLOR_BLUE=4,
+            COLOR_RED=3, COLOR_BLUE=4, COLOR_WHITE=5,
+            Color=SimpleNamespace(from_rgb=lambda r, g, b: (r, g, b)),
         )
         spec = importlib.util.spec_from_file_location("ui_display_contract", APP / "ui.py")
         self.ui = importlib.util.module_from_spec(spec)
@@ -101,6 +102,18 @@ class UiTests(unittest.TestCase):
         coordinate_rows = [row for row in img.strings if row.text.startswith("x=")]
         self.assertEqual([row.text for row in coordinate_rows], ["x=25, y=42"])
         self.assertEqual(coordinate_rows[0].scale, 6)
+
+    def test_object_labels_use_contrast_plate_and_move_outside_box_when_possible(self):
+        img = RecordingImage(640, 480)
+        obj = self.obj(x=240, y=180, w=100, h=100)
+        self.ui.draw_objects(img, [obj], display_size=(640, 480))
+        self.assertEqual(img.rectangles[0][1]["thickness"], 3)
+        plates = [rect for rect in img.rectangles[1:] if rect[1]["thickness"] == -1]
+        self.assertTrue(plates)
+        self.assertTrue(all(rect[0][4] == (0, 0, 0) for rect in plates))
+        self.assertTrue(all(row.color == 5 for row in img.strings))
+        self.assertTrue(all(row.y + self.size(row.text, row.scale, row.thickness)[1] <= obj.y
+                            for row in img.strings))
 
     def test_narrow_image_splits_x_and_y_without_dropping_values(self):
         img = RecordingImage(320, 320)

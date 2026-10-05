@@ -14,7 +14,7 @@ def _result_scale(img, display_size=None):
     return config.BOX_TEXT_SCALE * max(1.0, img.width() / max(1, width), img.height() / max(1, height))
 
 
-def _draw_lines(img, x, y, lines, color, scale, min_y=0):
+def _draw_lines(img, x, y, lines, color, scale, min_y=0, background=None, avoid_rect=None):
     """测量后夹紧位置；只对超宽行/超高块缩字，不裁掉中心坐标。"""
     margin = max(2, round(scale))
     available_width = max(1, img.width() - 2 * margin)
@@ -34,9 +34,25 @@ def _draw_lines(img, x, y, lines, color, scale, min_y=0):
                 for text, row_scale, _, _ in rows]
         gap *= factor
         total_height = sum(row[3] for row in rows) + gap * max(0, len(rows) - 1)
+    if avoid_rect is not None:
+        _, rect_y, _, rect_h = avoid_rect
+        above_y = rect_y - total_height - gap
+        below_y = rect_y + rect_h + gap
+        if above_y >= top:
+            y = above_y
+        elif below_y + total_height <= img.height() - margin:
+            y = below_y
     y = max(top, min(y, img.height() - margin - total_height))
     for text, row_scale, width, height in rows:
         left = max(margin, min(x, img.width() - margin - width))
+        if background is not None:
+            pad = max(2, round(row_scale / 3))
+            panel_x = max(0, round(left) - pad)
+            panel_y = max(0, round(y) - pad)
+            panel_right = min(img.width(), round(left + width) + pad)
+            panel_bottom = min(img.height(), round(y + height) + pad)
+            img.draw_rect(panel_x, panel_y, panel_right - panel_x, panel_bottom - panel_y,
+                          background, thickness=-1)
         img.draw_string(round(left), round(y), text, color, scale=row_scale, thickness=-1, wrap=False)
         y += height + gap
     return round(y)
@@ -61,7 +77,9 @@ def draw_objects(img, objects, display_size=None, min_y=0):
             lines.append(coordinates)
         else:
             lines.extend(["x={}".format(cx), "y={}".format(cy)])
-        _draw_lines(img, obj.x, obj.y, lines, color, scale, min_y)
+        _draw_lines(img, obj.x, obj.y, lines, image.COLOR_WHITE, scale, min_y,
+                    background=image.Color.from_rgb(0, 0, 0),
+                    avoid_rect=(obj.x, obj.y, obj.w, obj.h))
 
 def draw_qrs(img, qrs, display_size=None, min_y=0):
     scale = _result_scale(img, display_size)
