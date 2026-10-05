@@ -89,6 +89,22 @@ class VisionDiagIntegrationContract(unittest.TestCase):
         self.assertLess(router.index("vision_diag_stop("), router.index("mode_g("))
         self.assertLess(router.index("vision_diag_stop("), router.index("cmd_select("))
 
+    def test_boot_qr_request_follows_rx_setup_without_starting_motion(self):
+        init = self.bodies["robot_init"]
+        self.assertIn("proto_qr_begin(", init)
+        self.assertLess(init.index("proto_set_on_frame("), init.index("uart_rx_ensure_all("))
+        self.assertLess(init.index("test_init("), init.index("proto_qr_begin("))
+        self.assertLess(init.index("uart_rx_ensure_all("), init.index("proto_qr_begin("))
+        self.assertNotRegex(init, r"\b(?:mode_start|mission_start|route_seq_g|motion_vel_set(?:_precise)?)\s*\(")
+
+    def test_scan_ok_notification_is_in_default_task_not_rx_isr(self):
+        service = self.bodies["robot_bt_service"]
+        self.assertIn("proto_qr_take_notice(", service)
+        self.assertLess(service.index("proto_service("), service.index("proto_qr_take_notice("))
+        self.assertLess(service.index("proto_qr_take_notice("), service.index("test_poll("))
+        notice = self.bodies["proto_qr_take_notice"]
+        self.assertNotRegex(notice, r"\b(?:bp_debug_send|send|printf|snprintf|HAL_UART_Transmit|osDelay)\s*\(")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

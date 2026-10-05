@@ -36,6 +36,12 @@ int main(void)
         if (hex[0] == '@' && hex[1] >= '0' && hex[1] <= '4' && hex[2] == '\0') {
             proto_send_scene((ProtoScene)(hex[1] - '0')); proto_service(); continue;
         }
+        if (n == 3u && hex[0] == '!' && hex[1] >= '1' && hex[1] <= '4'
+            && hex[2] >= '0' && hex[2] <= '3') {
+            if (!proto_send_target((ProtoTask)(hex[1] - '0'), (uint8_t)(hex[2] - '0'))) return 1;
+            proto_service(); continue;
+        }
+        if (strcmp(hex, "#") == 0) { proto_receive_end(); continue; }
         if (strcmp(hex, "?") == 0) { printf("STATUS,%d\n", proto_scene_status()); continue; }
         if (strcmp(hex, "~") == 0) { proto_service(); continue; }
         if (n % 2u) return 1;

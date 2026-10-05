@@ -12,6 +12,7 @@
 
 static uint32_t now_ms;
 static unsigned brake_calls;
+static unsigned alignment_receive_end_calls;
 
 uint32_t HAL_GetTick(void) { return now_ms; }
 void osDelay(uint32_t ms) { now_ms += ms; }
@@ -34,6 +35,7 @@ void arm_stepper_step(int axis) { (void)axis; }
 void arm_claw_open(void) { }
 void arm_claw_close(void) { }
 void bp_laser_set(int on) { (void)on; }
+void proto_receive_end(void) { alignment_receive_end_calls++; }
 /* These legacy alignment cases never request a new recognition scene.
  * Satisfy the newly linked handshake without making a wait falsely succeed. */
 void proto_send_scene(ProtoScene scene)
@@ -46,6 +48,16 @@ int proto_scene_status(void)
 {
     fputs("legacy alignment unexpectedly polled a vision scene\n", stderr);
     abort();
+}
+int proto_target_filter(ProtoTask task, uint8_t digit, int *cls, int *label)
+{
+    (void)task; (void)digit; (void)cls; (void)label;
+    fputs("legacy alignment unexpectedly selected a vision target\n", stderr); abort();
+}
+int proto_send_target(ProtoTask task, uint8_t digit)
+{
+    (void)task; (void)digit;
+    fputs("legacy alignment unexpectedly requested a vision target\n", stderr); abort();
 }
 
 int main(void)

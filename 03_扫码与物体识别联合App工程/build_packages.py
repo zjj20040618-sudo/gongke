@@ -2,10 +2,29 @@
 import configparser
 import hashlib
 from pathlib import Path
+import re
+import runpy
 import zipfile
 
 ROOT = Path(__file__).resolve().parent
 APP = ROOT / "qr_object_app"
+
+
+def app_metadata():
+    # This controlled template uses plain top-level id/version values.
+    values = {}
+    for line in (APP / "app.yaml").read_text(encoding="utf-8").splitlines():
+        if not line or line[0].isspace():
+            continue
+        key, separator, value = line.partition(":")
+        if separator and key in ("id", "version"):
+            value = value.strip().strip("\"'")
+            if key in values or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", value):
+                raise ValueError("invalid or duplicate app " + key)
+            values[key] = value
+    if set(values) != {"id", "version"}:
+        raise ValueError("app id and version are required")
+    return values
 
 
 def manifest():
@@ -21,7 +40,25 @@ def manifest():
     return names
 
 
+def validate_model(names):
+    if "app.yaml" not in names or "config.py" not in names:
+        raise ValueError("app manifest must include app.yaml and config.py")
+    settings = runpy.run_path(str(APP / "config.py"))
+    model_file = settings.get("MODEL_FILE")
+    if not isinstance(model_file, str) or model_file not in names or not model_file.endswith(".mud"):
+        raise ValueError("config MODEL_FILE must name a MUD in the app manifest")
+    mud = configparser.ConfigParser()
+    mud.read(APP / model_file, encoding="utf-8")
+    binary_file = mud.get("basic", "model", fallback="")
+    if binary_file not in names or not binary_file.endswith(".cvimodel"):
+        raise ValueError("MUD model must name a CVI model in the app manifest")
+    return model_file, binary_file
+
+
 def write_zip(path, members):
+    targets = [target for source, target in members]
+    if len(targets) != len(set(targets)):
+        raise ValueError("duplicate zip members")
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for source, target in members:
             archive.write(source, target)
@@ -29,6 +66,8 @@ def write_zip(path, members):
     with zipfile.ZipFile(path) as archive:
         if archive.testzip() is not None:
             raise ValueError("corrupt zip: " + str(path))
+        if archive.namelist() != targets:
+            raise ValueError("zip member mismatch: " + str(path))
         for source, target in members:
             if archive.read(target) != source.read_bytes():
                 raise ValueError("zip mismatch: " + target)
@@ -36,27 +75,27 @@ def write_zip(path, members):
 
 
 def main():
+    metadata = app_metadata()
     names = manifest()
     for name in names:
         if name.endswith(".py"):
             compile((APP / name).read_text(encoding="utf-8"), name, "exec")
-    mud = configparser.ConfigParser()
-    mud.read(APP / "model_9541.mud", encoding="utf-8")
-    if mud["basic"]["model"] != "model_9541.cvimodel":
-        raise ValueError("unexpected model file")
+    model_file, binary_file = validate_model(names)
     output = ROOT / "dist"
     output.mkdir(exist_ok=True)
-    app_zip = output / "maix-qr_object_switch-v1.1.0.zip"
-    source_zip = output / "qr_object_switch_source_v1.1.0.zip"
+    app_zip = output / "maix-{}-v{}.zip".format(metadata["id"], metadata["version"])
+    source_zip = output / "{}_source_v{}.zip".format(metadata["id"], metadata["version"])
     app_members = [(APP / name, name) for name in names]
     source_members = [(ROOT / name, name) for name in (".gitignore", "build_packages.py")]
-    source_members += [(APP / name, "qr_object_app/" + name) for name in names + ["README.md"]]
+    source_names = names + (["README.md"] if "README.md" not in names else [])
+    source_members += [(APP / name, "qr_object_app/" + name) for name in source_names]
     source_members += [(path, "qr_object_app/tests/" + path.name) for path in sorted((APP / "tests").glob("test_*.py"))]
     hashes = [(app_zip.name, write_zip(app_zip, app_members)), (source_zip.name, write_zip(source_zip, source_members))]
     (output / "SHA256SUMS.txt").write_text("".join(digest + "  " + name + "\n" for name, digest in hashes), encoding="utf-8")
     for name, digest in hashes:
         print(name, digest)
     print("App files:", len(names), "Source files:", len(source_members))
+    print("App:", metadata["id"], "Version:", metadata["version"], "Model:", model_file, binary_file)
 
 
 if __name__ == "__main__":

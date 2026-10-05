@@ -10,25 +10,26 @@
 #define T_IDLE_MS    20u
 #define T_V_MAX      600
 #define T_D_MAX      20000
-#define T_MODE_MAX   33
+#define T_MODE_MAX   34
 #define T_JOG_MAX_STEPS 50u
 #define T_JOG_RETURN_WAIT_MS 2000u
 #define T_SERVO_RETURN_WAIT_MS 2000u
 #define T_DIST_STILL_MS 250u
 #define T_ENC_REPORT_MS 1000u
 #define T_DIST_TRACE_MS 500u
+#define T_YKP_PROFILE_SLOTS 32u /* RAM-only exact (mode15..18, cruise mm/s) keys */
 
 /* Modes 19-23: 19 is an elevated sign check; 20 is the +90 turn family.
  * Mode 22's +180 profile remains a bench candidate, not the mission tune.
- * 2026-10-03 user sets independent corner trials: right85, left95.
- * Modes20/30 command +85/-95; nominal mission geometry remains +/-90.
+ * 2026-10-05 user keeps right90 and changes the left trial to92.
+ * Modes20/30 command +90/-92; mode31 shares these bench targets.
  * Mode22 is explicitly 180, not twice this compensated target. */
 #define T_TURN_SIGN_DUTY 45
 #define T_TURN_SIGN_MS 250u
 #define T_TURN_MAX_MS TURN90_MAX_MS
 #define T_TURN_SETTLE_MS TURN90_SETTLE_MS
-#define T_TURN90_RIGHT_COMP_DEG (-5.0f)
-#define T_TURN90_LEFT_COMP_DEG 5.0f
+#define T_TURN90_RIGHT_COMP_DEG 0.0f
+#define T_TURN90_LEFT_COMP_DEG 2.0f
 #define T_TURN_RIGHT_TARGET_DEG (TURN90_TARGET_DEG + T_TURN90_RIGHT_COMP_DEG)
 #define T_TURN_LEFT_TARGET_DEG (-(TURN90_TARGET_DEG + T_TURN90_LEFT_COMP_DEG))
 #define T_TURN_TOL_DEG TURN90_TOL_DEG

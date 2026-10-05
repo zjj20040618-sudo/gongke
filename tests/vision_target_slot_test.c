@@ -23,6 +23,20 @@ int main(void)
     if (take_frame(PF_OBJ, &out)) return 1;
     run_reset(); steps_feed_frame(&blue);
     if (!take_frame(PF_OBJ, &out) || out.label != LAB_B) return 1;
-    puts("vision target slot: filter / QR separation / phase reset / run reset passed");
+    steps_feed_frame(&blue); steps_feed_frame(&qr);
+    step_vision_receive_end();
+    if (!s_vision_receive_closed || s_obj_pending || s_qr_pending
+        || alignment_receive_end_calls != 1u) return 1;
+    step_object_select(CLS_BALL, LAB_B); /* selection alone cannot reopen a closed stage */
+    steps_feed_frame(&blue); steps_feed_frame(&qr);
+    if (take_frame(PF_OBJ, &out) || take_frame(PF_QR, &out)) return 1;
+    run_reset(); /* clears abort/slots, but must not cancel a boot/R1 QR in proto */
+    if (alignment_receive_end_calls != 1u || s_vision_receive_closed) return 1;
+    steps_feed_frame(&blue); steps_feed_frame(&qr);
+    run_abort();
+    steps_feed_frame(&blue); steps_feed_frame(&qr);
+    if (!run_aborted() || !s_vision_receive_closed || take_frame(PF_OBJ, &out)
+        || take_frame(PF_QR, &out) || alignment_receive_end_calls != 2u) return 1;
+    puts("vision target slot: filter / QR separation / phase reset / local-close late-frame drop / abort / boot-QR-preserving reset passed");
     return 0;
 }

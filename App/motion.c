@@ -79,19 +79,34 @@ void motion_linear_ramp_init(MotionRamp *r)
 
 /* 普通定距腿：起点由 ramp 限加速度，终点按 v²=2as 限制可停车速度。
  * acc/dec 未设置时保持恒速，供模式15..18先采原始响应；正式 mission 由闸门阻止。 */
-float motion_linear_profile_step(MotionRamp *r, float cruise_mms,
-                                 float remaining_mm, float dt_s)
+static float linear_profile_step(MotionRamp *r, float cruise_mms,
+                                 float remaining_mm, float dt_s,
+                                 float acc_mms2, float dec_mms2)
 {
     float mag, stop_mag, target;
     if (!r) return 0.0f;
-    if (s_profile.acc_mms2 <= 0.0f || s_profile.dec_mms2 <= 0.0f)
+    if (acc_mms2 <= 0.0f || dec_mms2 <= 0.0f)
         return cruise_mms;
 
     mag = fabsf(cruise_mms);
-    stop_mag = sqrtf(2.0f * s_profile.dec_mms2 * fabsf(remaining_mm));
+    stop_mag = sqrtf(2.0f * dec_mms2 * fabsf(remaining_mm));
     if (stop_mag < mag) mag = stop_mag;
     target = (cruise_mms < 0.0f) ? -mag : mag;
     return motion_ramp_step(r, target, dt_s);
+}
+
+float motion_linear_profile_step(MotionRamp *r, float cruise_mms,
+                                 float remaining_mm, float dt_s)
+{
+    return linear_profile_step(r, cruise_mms, remaining_mm, dt_s,
+                               s_profile.acc_mms2, s_profile.dec_mms2);
+}
+
+float motion_linear_ramp_step(MotionRamp *r, float cruise_mms,
+                              float remaining_mm, float dt_s)
+{
+    if (!r) return 0.0f;
+    return linear_profile_step(r, cruise_mms, remaining_mm, dt_s, r->acc, r->dec);
 }
 
 /* 体坐标 vx,vy(mm/s) + w(rad/s) → 每轮 rpm。

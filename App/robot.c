@@ -18,7 +18,7 @@ static uint8_t s_rx2, s_rx3, s_rx4;   /* 2=视觉(USART2 PD5/6) 3=蓝牙(USART3 
 
 /* BT 输入环形缓冲(huart3,ISR 写 / robot_bt_service 读) */
 #define BT_RX_N 64u
-#define FW_BUILD_ID "20261004-VISION-DIAG33"
+#define FW_BUILD_ID "20261005-ROUTE34-NOQR"
 static volatile uint8_t s_bt[BT_RX_N];
 static volatile uint8_t s_bt_wr, s_bt_rd;
 static volatile uint32_t s_bt_drop;
@@ -101,6 +101,7 @@ void robot_init(void)
         s_uart_err[i] = 0u; s_uart_last_err[i] = 0u; s_uart_arm_fail[i] = 0u;
     }
     uart_rx_ensure_all();                           /* 三路首次挂接；失败由 DefaultTask 重试 */
+    proto_qr_begin(); /* Camera starts scanning at power-on; BENCH_AUTO stays 0. */
     bp_debug_send("\r\nREADY FW=" FW_BUILD_ID " SEND ? OR diag\r\n");
 }
 
@@ -157,12 +158,25 @@ void robot_bt_service(void)
     }
     uart_rx_ensure_all();
     proto_service(); /* DefaultTask owns binary request TX and handshake retry. */
+    {
+        int32_t qr[3];
+        if (proto_qr_take_notice(qr)) {
+            static char notice[72]; /* DefaultTask only; never format in RX ISR. */
+            snprintf(notice, sizeof notice, "\r\nOK QR=%ld,%ld,%ld scan_success=1\r\n",
+                     (long)qr[0], (long)qr[1], (long)qr[2]);
+            bp_debug_send(notice);
+        }
+    }
     test_poll();
 }
 
 /* UART RX 完成回调：按句柄分发（唯一强定义，CubeMX 没生成过） */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
+    /* HAL calls RxCplt before ErrorCallback when RXNE accompanies FE/NE/PE/ORE.
+     * Rearming here would clear ErrorCode before HAL classifies/notifies the
+     * error. Discard that byte and let ErrorCallback record/rearm instead. */
+    if (!huart || HAL_UART_GetError(huart) != HAL_UART_ERROR_NONE) return;
     if (huart == &huart2) {                                   /* 视觉 USART2 → proto */
         proto_feed_byte(s_rx2);
         uart_rx_arm(&huart2, &s_rx2, 0);
@@ -175,8 +189,9 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
     }
 }
 
-/* ORE 会终止 HAL 的中断接收；其余 FE/NE/PE 也统一记账并尝试补挂。
- * 若非阻塞错误的接收仍在进行，Receive_IT 返回 BUSY，原接收保持有效。 */
+/* ORE ends the HAL transfer; FE/NE/PE are also recorded before rearming.
+ * A one-byte RXNE error completes RxCplt first, but that callback leaves the
+ * error intact. If reception is still BUSY, keep its already-armed transfer. */
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
     uint8_t *rx = 0;
@@ -190,7 +205,11 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 
     s_uart_err[ix]++;
     s_uart_last_err[ix] = err;
-    if (err & HAL_UART_ERROR_ORE) __HAL_UART_CLEAR_OREFLAG(huart);
+    /* RXNE's DR read normally cleared ORE already. A second unconditional
+     * SR/DR read here could consume the next good byte. Clear only a still-set
+     * hardware ORE (e.g. the HAL error branch had no RXNE byte to drain). */
+    if ((err & HAL_UART_ERROR_ORE) && __HAL_UART_GET_FLAG(huart, UART_FLAG_ORE))
+        __HAL_UART_CLEAR_OREFLAG(huart);
     uart_rx_arm(huart, rx, ix);
 }
 

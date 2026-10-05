@@ -251,7 +251,10 @@ static int align(int cls, int label, const char *name, float *road_anchor)
                     cls, label, f.cx, s_cx[cls], e, applied, imu_heading_deg(), good, f.sequence);
                 bp_debug_send(trace);
             }
-            if (good >= TRIAL_CX_FRAMES) return 1;
+            if (good >= TRIAL_CX_FRAMES) {
+                step_vision_receive_end();
+                return 1;
+            }
         } else if ((uint32_t)(HAL_GetTick() - last_frame) > TRIAL_FRAME_AGE_MS) {
             good = 0u; motion_brake(); /* no stale velocity; no return/retry path */
         }
@@ -298,7 +301,11 @@ static int pass_until(int cls, int label, const char *name)
         ProtoFrame f;
         float rest = remaining();
         if (!imu_ok()) break;
-        if (rest <= 0.0f) { motion_brake(); return 0; }
+        if (rest <= 0.0f) {
+            motion_brake();
+            step_vision_receive_end();
+            return 0;
+        }
         if (cls >= 0 && step_object_take(&f) && f.cls == cls && (label < 0 || f.label == label)) {
             motion_brake(); return 1;
         }
@@ -311,17 +318,20 @@ static int read_qr(void)
 {
     int32_t d[3];
     phase("QR_WAIT");
-    if (!step_prepare_leg() || !step_vision_scene(SCENE_QR)) return 0;
+    if (!step_prepare_leg()) return 0;
+    proto_qr_begin(); /* Reuse the QR already scanned at power-on/during R1. */
     while (!run_aborted()) {
-        if (!wait_qr(d, 0u)) return 0;
-        if (d[0] >= 1 && d[0] <= 3 && d[1] >= 1 && d[1] <= 3 && d[2] >= 1 && d[2] <= 3) {
+        if (proto_scene_status() < 0) { run_abort(); return 0; }
+        if (proto_qr_get(d)) {
             uint32_t pm = __get_PRIMASK();
             __disable_irq();
             s_qr[0] = d[0]; s_qr[1] = d[1]; s_qr[2] = d[2];
+            step_vision_receive_end();
             __set_PRIMASK(pm);
             phase("QR_VALID"); mission_trial_report();
             return 1;
         }
+        osDelay(5);
     }
     return 0;
 }
@@ -353,7 +363,7 @@ int mission_trial_run(void)
     /* The draw can place the selected ball beyond the common bucket position.
      * b1d sets the bucket-based SECOND leg, not the ball search limit. */
     road_start((float)mission_trial_route_plan[7].distance_mm, s_heading);
-    if (!step_vision_scene(SCENE_EOD)) goto stop;
+    if (!step_vision_target(PROTO_TASK_BALL, (uint8_t)s_qr[0])) goto stop;
     found = pass_until(CLS_BALL, (int)s_qr[0] - 1, "BALL_SINGLE_PASS");
     if (found < 0) goto stop;
     if (found > 0) {
@@ -361,6 +371,7 @@ int mission_trial_run(void)
         phase("BALL_HOLD10S");
         if (!stopped_hold(MISSION_TRIAL_BALL_HOLD_MS)
             || !turn(180.0f, "BALL_TURN180")
+            || !step_vision_target(PROTO_TASK_BUCKET, 0u)
             || !align(CLS_BUCKET, -1, "BUCKET_ALIGN", 0)) goto stop;
         phase("BUCKET_HOLD10S");
         if (!stopped_hold(MISSION_TRIAL_BUCKET_HOLD_MS)
@@ -375,20 +386,22 @@ int mission_trial_run(void)
         s_bucket_anchor = 2u;
         phase("BUCKET_ANCHOR_MISSING");
     }
-    if (!step_vision_scene(SCENE_ANTI)) goto stop;
+    if (!step_vision_target(PROTO_TASK_TARGET, (uint8_t)s_qr[1])) goto stop;
     found = pass_until(CLS_TARGET, (int)s_qr[1] - 1, "TARGET_SINGLE_PASS");
     if (found < 0) goto stop;
     if (found > 0) {
         if (!align(CLS_TARGET, (int)s_qr[1] - 1, "TARGET_ALIGN", &task_anchor)) goto stop;
+        phase("TARGET_SETTLE1S");
+        if (!step_target_settle()) goto stop;
         phase("TARGET_LASER");
-        if (!step_fire(2000u)) goto stop;
+        if (!step_fire(TARGET_LASER_ON_MS)) goto stop;
         s_hits |= 2u;
         if (!return_forward_to(task_anchor, "TARGET_RETURN")) goto stop;
     }
     if (pass_until(-1, -1, "BUCKET_TO_CORNER_REMAINDER") < 0
         || !turn((float)mission_trial_route_plan[8].turn_deg, "R9_RIGHT85")) goto stop;
     road_start((float)mission_trial_route_plan[9].distance_mm, s_heading);
-    if (!step_vision_scene(SCENE_RESCUE)) goto stop;
+    if (!step_vision_target(PROTO_TASK_HOSTAGE, (uint8_t)s_qr[2])) goto stop;
     found = pass_until(CLS_HOSTAGE, (int)s_qr[2] + 2, "HOSTAGE_SINGLE_PASS");
     if (found < 0) goto stop;
     if (found > 0) {
@@ -402,11 +415,11 @@ int mission_trial_run(void)
     motion_brake();
     if (!step_prepare_leg()) goto stop;
     s_tracking = s_running = 0u;
-    bp_laser_set(0); proto_send_scene(SCENE_IDLE);
+    bp_laser_set(0); step_vision_receive_end();
     phase("ROUTE_END"); mission_trial_report();
     return 1; /* road end only; hits is evidence, not an invented task pass */
 stop:
     motion_brake(); bp_laser_set(0); s_tracking = s_running = 0u;
-    proto_send_scene(SCENE_IDLE); phase("STOP"); mission_trial_report();
+    step_vision_receive_end(); phase("STOP"); mission_trial_report();
     return 0;
 }
