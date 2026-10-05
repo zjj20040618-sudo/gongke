@@ -91,7 +91,7 @@ class FakeCode:
 
 
 class FakeImage:
-    def __init__(self, width=1600, height=900):
+    def __init__(self, width=1920, height=1440):
         self._width, self._height = width, height
     def width(self): return self._width
     def height(self): return self._height
@@ -158,7 +158,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(modes.mode, config.MODE_OBJECT)
         self.assertEqual(cam.calls[-1], (320, 320))
         modes.toggle()
-        self.assertEqual(cam.calls[-1], (1600, 900))
+        self.assertEqual(cam.calls[-1], (1920, 1440))
         self.assertIsNone(detector.model)
         self.assertIsNone(modes.detector)
 
@@ -170,7 +170,7 @@ class AppTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 modes.toggle()
         self.assertEqual(modes.mode, config.MODE_QR)
-        self.assertEqual(cam.calls, [(1600, 900)])
+        self.assertEqual(cam.calls, [(1920, 1440)])
 
     def test_resolution_failure_rolls_back(self):
         cam = FakeCamera()
@@ -180,7 +180,7 @@ class AppTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             modes.toggle()
         self.assertEqual(modes.mode, config.MODE_QR)
-        self.assertEqual(cam.calls[-2:], [(320, 320), (1600, 900)])
+        self.assertEqual(cam.calls[-2:], [(320, 320), (1920, 1440)])
         self.assertIsNone(modes.detector)
 
     def test_failed_rollback_marks_mode_invalid(self):
@@ -281,7 +281,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(build_qr_packet(5, None)[5], 0)
 
     def test_qr_roi_and_task_text(self):
-        self.assertEqual(center_roi(FakeImage()), [400, 225, 800, 450])
+        self.assertEqual(center_roi(FakeImage()), [480, 360, 960, 720])
         self.assertIn("红", task_text_cn("123"))
         self.assertEqual(task_text_cn("hello"), "非赛题任务码")
 
@@ -318,7 +318,7 @@ class AppTests(unittest.TestCase):
              patch.object(main, "send_packet") as send, \
              contextlib.redirect_stdout(output):
             main.main()
-        self.assertEqual(shown, [(1600, 900), (320, 320), (1600, 900)])
+        self.assertEqual(shown, [(1920, 1440), (320, 320), (1920, 1440)])
         self.assertIn("black_barrel:0.820@(25,40)", output.getvalue())
         self.assertIn("[QR] payload=123", output.getvalue())
         self.assertIn("UART controls recognition", output.getvalue())
@@ -342,6 +342,21 @@ class AppTests(unittest.TestCase):
         self.assertEqual(config.START_MODE, "IDLE")
         self.assertTrue(config.UART_ENABLED)
         self.assertEqual(config.CLASS_NAMES[9], "black_barrel")
+
+    def test_qr_uses_field_verified_stage_36_resolution(self):
+        self.assertEqual((config.QR_WIDTH, config.QR_HEIGHT), (1920, 1440))
+        cam = FakeCamera()
+        modes = ModeController(cam)
+        modes.enter(config.MODE_QR)
+        self.assertEqual(cam.calls, [(1920, 1440)])
+        self.assertEqual(center_roi(cam.read()), [480, 360, 960, 720])
+        self.assertEqual(len(build_qr_packet(4, "123")), 11)
+
+    def test_stage_36_package_and_device_log_share_version(self):
+        import uart_log
+
+        self.assertEqual(uart_log.APP_VERSION, "2.1.4")
+        self.assertIn("version: 2.1.4", (APP_DIR / "app.yaml").read_text(encoding="utf-8"))
 
     def test_idle_retains_model_and_reuses_it(self):
         cam = FakeCamera()
@@ -390,7 +405,7 @@ class AppTests(unittest.TestCase):
              patch.object(config, "PRINT_EVERY_N_FRAMES", 1), \
              patch.object(FakeModel, "detect", return_value=[raw_object(9), raw_object(4, 0.91)]):
             main.main()
-        self.assertEqual(shown, [(1600, 900), (320, 320), (320, 320)])
+        self.assertEqual(shown, [(1920, 1440), (320, 320), (320, 320)])
         self.assertEqual(sent[0], build_ack_packet(1, 1))
         self.assertEqual(sent[2], build_ack_packet(2, 2))
         self.assertEqual(sent[4], sent[2])  # 同请求重发ACK，不变请求号。
