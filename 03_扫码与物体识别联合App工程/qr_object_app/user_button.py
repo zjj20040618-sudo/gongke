@@ -12,7 +12,7 @@ class UserButton:
             # MaixPy默认把USER/OK键当作退出键，必须移除默认监听器。
             key.rm_default_listener()
             self._key = key.Key(callback=self._on_key, long_press_time=config.KEY_LONG_PRESS_MS)
-            print("[KEY] USER: short switches only before UART control; hold 1.5s exits anytime")
+            print("[KEY] USER: short toggles QR/OBJECT anytime; hold 1.5s exits; manual view pauses MCU results")
         except Exception as exc:
             self._key = None
             print("[KEY] init failed; mode switch disabled:", exc)

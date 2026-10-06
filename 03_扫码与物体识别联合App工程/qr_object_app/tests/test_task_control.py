@@ -40,6 +40,33 @@ class TaskControlTests(unittest.TestCase):
         self.control = ControlSession(self.modes)
         self.empty = build_object_packet(1, [], 320, 320)
 
+    def test_auto_object_preserves_qr_request_retry_and_needs_new_object_ack(self):
+        ack, _ = self.control.apply(1, 1)
+        self.assertFalse(self.control.auto_object_after_qr())
+        self.control.ack_sent(ack)
+        self.assertTrue(self.control.auto_object_after_qr())
+        self.assertEqual(self.modes.mode, "OBJECT")
+        self.assertEqual(self.control.apply(1, 1), (ack, False))
+        self.assertEqual(self.control.result(build_qr_packet(1, "331")),
+                         bind_result(build_qr_packet(1, "331"), 1))
+        self.assertIsNone(self.control.result(self.empty))
+        new_ack, _ = self.control.apply(2, 2, 1, 3)
+        self.assertFalse(self.control.qr_handoff)
+        self.assertIsNone(self.control.result(self.empty))
+        self.control.ack_sent(new_ack)
+        self.assertEqual(self.control.result(self.empty), bind_result(self.empty, 2))
+
+    def test_auto_object_failure_preserves_ack_and_qr_business(self):
+        ack, _ = self.control.apply(1, 1)
+        self.control.ack_sent(ack)
+        self.modes.fail = True
+        with self.assertRaises(RuntimeError):
+            self.control.auto_object_after_qr()
+        self.assertFalse(self.control.qr_handoff)
+        self.assertEqual(self.modes.mode, "QR")
+        self.assertEqual(self.control.result(build_qr_packet(1, "331")),
+                         bind_result(build_qr_packet(1, "331"), 1))
+
     def test_task_wire_body_and_crc(self):
         packet = build_task_packet(0x1234, 4, 0)
         self.assertEqual(packet[:7], b"\xaa\x55\x63\x34\x12\x04\x00")
@@ -105,6 +132,43 @@ class TaskControlTests(unittest.TestCase):
         self.control.ack_sent(ack)
         self.assertEqual(self.control.apply(1, 2, 1, 1), (ack, False))
         self.assertEqual(self.control.result(self.empty), bind_result(self.empty, 1))
+
+    def test_manual_switch_suppresses_business_even_after_return_to_same_mode(self):
+        self.modes.toggle = lambda: self.modes.enter("QR" if self.modes.mode == "OBJECT" else "OBJECT")
+        ack, _ = self.control.apply(1, 2, 4, 0)
+        self.control.ack_sent(ack)
+        self.control.manual_toggle()
+        self.assertTrue(self.control.ready_for_capture())
+        self.assertIsNone(self.control.result(build_qr_packet(1, "123")))
+        self.control.manual_toggle()
+        self.assertIsNone(self.control.result(self.empty))
+        failure, changed = self.control.apply(1, 2, 4, 0)
+        self.assertEqual(failure, build_ack_packet(1, 2, 1))
+        self.assertFalse(changed)
+        self.control.ack_sent(ack)
+        self.assertFalse(self.control.acknowledged)
+        new_ack, _ = self.control.apply(2, 2, 4, 0)
+        self.assertFalse(self.control.manual_override)
+        self.assertIsNone(self.control.result(self.empty))
+        self.control.ack_sent(new_ack)
+        self.assertEqual(self.control.result(self.empty), bind_result(self.empty, 2))
+
+    def test_manual_switch_failure_preserves_live_session(self):
+        ack, _ = self.control.apply(1, 2, 4, 0)
+        self.control.ack_sent(ack)
+        def fail():
+            raise RuntimeError("camera failure")
+        self.modes.toggle = fail
+        with self.assertRaises(RuntimeError):
+            self.control.manual_toggle()
+        self.assertFalse(self.control.manual_override)
+        self.assertEqual(self.control.result(self.empty), bind_result(self.empty, 1))
+
+    def test_result_type_must_match_actual_mode(self):
+        ack, _ = self.control.apply(1, 1)
+        self.control.ack_sent(ack)
+        self.assertIsNone(self.control.result(self.empty))
+        self.assertIsNotNone(self.control.result(build_qr_packet(1, "123")))
 
     def test_same_id_changed_task_or_digit_pauses_business(self):
         for changed_command in ((1, 2, 1, 2), (1, 2, 4, 0), (1, 0), (1, 2)):

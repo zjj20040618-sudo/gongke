@@ -22,7 +22,8 @@ maix.key = types.SimpleNamespace(
     Key=lambda **kwargs: types.SimpleNamespace(**kwargs),
 )
 maix.image = types.SimpleNamespace(
-    Format=types.SimpleNamespace(FMT_RGB888=1),
+    Format=types.SimpleNamespace(FMT_RGB888=1, FMT_GRAYSCALE=2),
+    Fit=types.SimpleNamespace(FIT_CONTAIN=1),
     QRCodeDecoderType=types.SimpleNamespace(QRCODE_DECODER_TYPE_ZBAR=1),
     COLOR_GREEN=1, COLOR_YELLOW=2, COLOR_RED=3, COLOR_BLUE=4, COLOR_WHITE=5,
     Color=types.SimpleNamespace(from_rgb=lambda r, g, b: (r, g, b)),
@@ -65,10 +66,26 @@ class FakeModel:
 
 
 class FakeCamera:
-    def __init__(self, *args):
+    def __init__(self, *args, **kwargs):
+        self.buffers = [kwargs.get("buff_num")]
         self.width, self.height = config.OBJECT_WIDTH, config.OBJECT_HEIGHT
         self.calls = []
         self.results = []
+        self.pixel_format = args[2] if len(args) > 2 else maix.image.Format.FMT_RGB888
+        self.formats, self.warmups, self.close_count = [], [], 0
+    def format(self):
+        return self.pixel_format
+    def close(self):
+        self.close_count += 1
+    def open(self, width, height, format, buff_num):
+        self.buffers.append(buff_num)
+        self.formats.append(format)
+        result = self.set_resolution(width, height)
+        if result == 0:
+            self.pixel_format = format
+        return result
+    def skip_frames(self, num):
+        self.warmups.append(num)
     def set_resolution(self, width, height):
         self.calls.append((width, height))
         result = self.results.pop(0) if self.results else 0
@@ -77,8 +94,8 @@ class FakeCamera:
         if result == 0:
             self.width, self.height = width, height
         return result
-    def read(self):
-        return FakeImage(self.width, self.height)
+    def read(self, **kwargs):
+        return FakeImage(self.width, self.height, self.pixel_format)
 
 
 class FakeCode:
@@ -91,10 +108,16 @@ class FakeCode:
 
 
 class FakeImage:
-    def __init__(self, width=1600, height=900):
+    def __init__(self, width=1920, height=1440, pixel_format=None):
         self._width, self._height = width, height
+        self.pixel_format = pixel_format or maix.image.Format.FMT_RGB888
     def width(self): return self._width
     def height(self): return self._height
+    def format(self): return self.pixel_format
+    def resize(self, width, height, **kwargs): return type(self)(width, height, self.pixel_format)
+    def to_format(self, pixel_format):
+        self.pixel_format = pixel_format
+        return self
     def find_qrcodes(self, *args, **kwargs): return [FakeCode()]
     def draw_string(self, *args, **kwargs): pass
     def draw_rect(self, *args, **kwargs): pass
@@ -105,6 +128,9 @@ class FakeImage:
 class AppTests(unittest.TestCase):
     def setUp(self):
         clock[0] = 0
+        synchronous = patch.object(config, "DUAL_BUFFER", False)
+        synchronous.start()  # 旧同步回归保持；新双缓冲有独立真实入口测试。
+        self.addCleanup(synchronous.stop)
         self.log = contextlib.redirect_stdout(io.StringIO())
         self.log.__enter__()
         self.model_patch = patch.object(maix.nn, "YOLO26", FakeModel, create=True)
@@ -129,7 +155,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual((detector.input_width, detector.input_height), (320, 320))
         self.assertEqual([o.class_id for o in objects], [0, 9])
         self.assertEqual(detector.model.detect_kwargs, {"conf_th": config.CONF_THRESHOLD})
-        self.assertFalse(detector.model.kwargs["dual_buff"])
+        self.assertEqual(detector.model.kwargs["dual_buff"], config.DUAL_BUFFER)
         detector.close()
         self.assertIsNone(detector.model)
 
@@ -158,9 +184,17 @@ class AppTests(unittest.TestCase):
         self.assertEqual(modes.mode, config.MODE_OBJECT)
         self.assertEqual(cam.calls[-1], (320, 320))
         modes.toggle()
-        self.assertEqual(cam.calls[-1], (1600, 900))
+        self.assertEqual(cam.calls[-1], (1920, 1440))
         self.assertIsNone(detector.model)
         self.assertIsNone(modes.detector)
+        self.assertEqual(cam.buffers[1:], [1, 2, 1])
+
+    def test_actual_detector_constructor_enables_npu_dual_buffer(self):
+        with patch.object(config, "DUAL_BUFFER", True), \
+             patch.object(maix.nn, "YOLO26", FakeModel, create=True):
+            detector = ObjectDetector()
+            self.assertIs(detector.model.kwargs["dual_buff"], True)
+            detector.close()
 
     def test_model_load_failure_keeps_qr(self):
         cam = FakeCamera()
@@ -170,7 +204,7 @@ class AppTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 modes.toggle()
         self.assertEqual(modes.mode, config.MODE_QR)
-        self.assertEqual(cam.calls, [(1600, 900)])
+        self.assertEqual(cam.calls, [(1920, 1440)])
 
     def test_resolution_failure_rolls_back(self):
         cam = FakeCamera()
@@ -180,7 +214,7 @@ class AppTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             modes.toggle()
         self.assertEqual(modes.mode, config.MODE_QR)
-        self.assertEqual(cam.calls[-2:], [(320, 320), (1600, 900)])
+        self.assertEqual(cam.calls[-2:], [(320, 320), (1920, 1440)])
         self.assertIsNone(modes.detector)
 
     def test_failed_rollback_marks_mode_invalid(self):
@@ -281,9 +315,17 @@ class AppTests(unittest.TestCase):
         self.assertEqual(build_qr_packet(5, None)[5], 0)
 
     def test_qr_roi_and_task_text(self):
-        self.assertEqual(center_roi(FakeImage()), [400, 225, 800, 450])
+        self.assertEqual(center_roi(FakeImage()), [480, 360, 960, 720])
         self.assertIn("红", task_text_cn("123"))
         self.assertEqual(task_text_cn("hello"), "非赛题任务码")
+
+    def test_qr_reader_returns_conflicts_beyond_display_limit(self):
+        class OtherCode(FakeCode):
+            def payload(self): return "331"
+        frame = FakeImage()
+        with patch.object(frame, "find_qrcodes", return_value=[FakeCode()] * 4 + [OtherCode()]), patch.object(config, "QR_MAX", 1):
+            results = QrReader().decode(frame)
+        self.assertEqual([qr["payload"] for qr in results], ["123"] * 4 + ["331"])
 
     def test_main_qr_object_qr_and_long_exit(self):
         main = importlib.import_module("main")
@@ -294,8 +336,8 @@ class AppTests(unittest.TestCase):
             button = UserButton()
             buttons.append(button)
             return button
-        def make_camera(*args):
-            cam = FakeCamera(*args)
+        def make_camera(*args, **kwargs):
+            cam = FakeCamera(*args, **kwargs)
             cameras.append(cam)
             return cam
         turns = [0]
@@ -318,7 +360,7 @@ class AppTests(unittest.TestCase):
              patch.object(main, "send_packet") as send, \
              contextlib.redirect_stdout(output):
             main.main()
-        self.assertEqual(shown, [(1600, 900), (320, 320), (1600, 900)])
+        self.assertEqual(shown, [(480, 320), (320, 320), (480, 320)])
         self.assertIn("black_barrel:0.820@(25,40)", output.getvalue())
         self.assertIn("[QR] payload=123", output.getvalue())
         self.assertIn("UART controls recognition", output.getvalue())
@@ -339,9 +381,24 @@ class AppTests(unittest.TestCase):
 
 
     def test_production_defaults_preserved(self):
-        self.assertEqual(config.START_MODE, "IDLE")
+        self.assertEqual(config.START_MODE, "QR")
         self.assertTrue(config.UART_ENABLED)
         self.assertEqual(config.CLASS_NAMES[9], "black_barrel")
+
+    def test_qr_uses_field_verified_stage_36_resolution(self):
+        self.assertEqual((config.QR_WIDTH, config.QR_HEIGHT), (1920, 1440))
+        cam = FakeCamera()
+        modes = ModeController(cam)
+        modes.enter(config.MODE_QR)
+        self.assertEqual(cam.calls, [(1920, 1440)])
+        self.assertEqual(center_roi(cam.read()), [480, 360, 960, 720])
+        self.assertEqual(len(build_qr_packet(4, "123")), 11)
+
+    def test_stage_36_package_and_device_log_share_version(self):
+        import uart_log
+
+        self.assertEqual(uart_log.APP_VERSION, "2.1.16")
+        self.assertIn("version: 2.1.16", (APP_DIR / "app.yaml").read_text(encoding="utf-8"))
 
     def test_idle_retains_model_and_reuses_it(self):
         cam = FakeCamera()
@@ -358,7 +415,8 @@ class AppTests(unittest.TestCase):
         main = importlib.import_module("main")
         from protocol import build_control_packet, build_ack_packet, bind_result
         sent, shown, buttons = [], [], []
-        commands = iter(build_control_packet(r, m) for r, m in ((1, 1), (2, 2), (2, 2), (3, 0)))
+        commands = iter([build_control_packet(1, 1), b"", b"",
+                         build_control_packet(2, 2), build_control_packet(2, 2), build_control_packet(3, 0)])
         turns = [0]
         def make_button():
             button = UserButton()
@@ -367,9 +425,8 @@ class AppTests(unittest.TestCase):
         def need_exit():
             turns[0] += 1
             clock[0] += 1000
-            buttons[0]._toggle_requested = True
-            # 接管后短按不得切模式；长按退出另行验证。
-            return turns[0] > 4
+            # 无人工按键时，接管仍按电控请求及完整ACK推进。
+            return turns[0] > 6
         class Serial:
             def read(self, **kwargs):
                 if kwargs != {"len": 256, "timeout": 0}:
@@ -390,19 +447,19 @@ class AppTests(unittest.TestCase):
              patch.object(config, "PRINT_EVERY_N_FRAMES", 1), \
              patch.object(FakeModel, "detect", return_value=[raw_object(9), raw_object(4, 0.91)]):
             main.main()
-        self.assertEqual(shown, [(1600, 900), (320, 320), (320, 320)])
+        self.assertEqual(shown, [(480, 320)] + [(320, 320)] * 4)
         self.assertEqual(sent[0], build_ack_packet(1, 1))
-        self.assertEqual(sent[2], build_ack_packet(2, 2))
-        self.assertEqual(sent[4], sent[2])  # 同请求重发ACK，不变请求号。
+        self.assertEqual(sent[4], build_ack_packet(2, 2))
+        self.assertEqual(sent[6], sent[4])  # 同请求重发ACK，不变请求号。
         self.assertEqual(sent[-1], build_ack_packet(3, 0))
         # 62 外壳：两帧都保留黑桶ID9及红球ID4，没有只发一次或过滤。
-        for packet in (sent[3], sent[5]):
+        for packet in (sent[5], sent[7]):
             self.assertEqual(packet[2], 0x62)
             self.assertEqual(struct.unpack("<H", packet[3:5])[0], 2)
             self.assertEqual(packet[7], 0x01)
             self.assertEqual(packet[10], 2)
             self.assertEqual({packet[21], packet[32]}, {9, 4})
-        self.assertEqual(len(sent), 7)
+        self.assertEqual(len(sent), 9)
 
     def test_remote_long_press_exits_even_while_ack_pending(self):
         main = importlib.import_module("main")
@@ -540,12 +597,14 @@ class AppTests(unittest.TestCase):
         main = importlib.import_module("main")
         from protocol import build_control_packet
         sent = []
-        commands = iter(build_control_packet(r, m) for r, m in ((1, 1), (1, 1), (2, 2), (3, 0), (4, 2), (5, 1), (6, 2)))
-        qr_codes = iter(("123", "111", "321"))
+        commands = iter([build_control_packet(1, 1), build_control_packet(1, 1), b"", b"",
+                         build_control_packet(2, 2), build_control_packet(3, 0), build_control_packet(4, 2),
+                         build_control_packet(5, 1), b"", b"", build_control_packet(6, 2)])
+        qr_codes = iter(("123", "321"))  # 自动OBJECT后重发锁存码，不再采QR图。
         turns = [0]
         def need_exit():
             turns[0] += 1
-            return turns[0] > 7
+            return turns[0] > 11
         def decode(img):
             qrs = QrReader().decode(img)
             qrs[0]["payload"] = next(qr_codes)
@@ -556,7 +615,7 @@ class AppTests(unittest.TestCase):
         serial = types.SimpleNamespace(read=lambda **kwargs: next(commands))
         with patch.object(main, "init_uart", return_value=serial), \
              patch.object(main, "send_packet", side_effect=send), \
-             patch.object(main, "QrReader", return_value=types.SimpleNamespace(decode=decode)), \
+             patch.object(main, "QrReader", return_value=types.SimpleNamespace(decode=decode, roi=center_roi)), \
              patch.object(maix.camera, "Camera", FakeCamera, create=True), \
              patch.object(maix.app, "need_exit", side_effect=need_exit, create=True), \
              patch.object(maix.time, "sleep_ms", lambda ms: None, create=True), \
@@ -579,8 +638,8 @@ class AppTests(unittest.TestCase):
                 rows.append((request, object_ids(packet)))
         self.assertEqual(rows, [(2, (4, 8, 0, 9)), (4, (4, 8, 0, 9)), (6, (3, 8, 1, 9))])
         qr_packets = [packet for packet in sent if packet[2] == 0x62 and packet[7] == 0x53]
-        self.assertEqual([packet[10] for packet in qr_packets], [1, 1, 1])
-        self.assertEqual([packet[11:14] for packet in qr_packets], [b"123", b"123", b"321"])
+        self.assertEqual([packet[10] for packet in qr_packets], [1] * 7)
+        self.assertEqual([packet[11:-2] for packet in qr_packets], [b"123"] * 4 + [b"321"] * 3)
 
     def test_main_task_requests_and_ack_retry_gate(self):
         main = importlib.import_module("main")
@@ -616,10 +675,17 @@ class AppTests(unittest.TestCase):
         rows = []
         for turn, packet in delivered:
             if packet[2] == 0x62:
+                if packet[7] == 0x54:
+                    self.assertEqual(turn, 6)
+                    self.assertEqual(struct.unpack('<H', packet[3:5])[0], 4)
+                    self.assertEqual(struct.unpack('<BHBBB3B', packet[7:-2])[2:],
+                                     (0, 1, 3, 0, 1, 2))
+                    continue
                 self.assertEqual(packet[7], 0x01)
                 self.assertEqual(packet[10], 1)
                 rows.append((turn, struct.unpack("<H", packet[3:5])[0], packet[21]))
         self.assertEqual(rows, [(2, 1, 4), (3, 2, 9), (4, 2, 9), (5, 3, 8), (6, 4, 0)])
+        self.assertEqual(sum(packet[2] == 0x62 and packet[7] == 0x54 for _, packet in delivered), 1)
 
 if __name__ == "__main__":
     unittest.main()

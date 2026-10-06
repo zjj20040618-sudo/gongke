@@ -63,6 +63,9 @@ class UiTests(unittest.TestCase):
         self.scale_patch = patch.object(config, "BOX_TEXT_SCALE", 6)
         self.scale_patch.start()
         self.addCleanup(self.scale_patch.stop)
+        self.object_scale_patch = patch.object(config, "OBJECT_TEXT_SCALE", 6)
+        self.object_scale_patch.start()
+        self.addCleanup(self.object_scale_patch.stop)
 
     @staticmethod
     def obj(x=10, y=20, w=31, h=45, class_id=9):
@@ -96,6 +99,30 @@ class UiTests(unittest.TestCase):
         self.assertIn("x=34, y=45", [row.text for row in img.strings])
         self.assert_visible(img)
 
+    def test_hidden_information_keeps_all_boxes_and_crosses(self):
+        objects = [self.obj(), self.obj(x=400, class_id=4)]
+        img = RecordingImage(1600, 900)
+        self.ui.draw_objects(img, objects, display_size=(1600, 900), info_objects=[objects[1]])
+        self.assertEqual(img.crosses, [(25, 42), (415, 42)])
+        self.assertEqual(len([r for r in img.rectangles if r[1]["thickness"] == 3]), 2)
+        self.assertNotIn("x=25, y=42", [row.text for row in img.strings])
+        self.assertIn("x=415, y=42", [row.text for row in img.strings])
+        hidden = RecordingImage(1600, 900)
+        self.ui.draw_objects(hidden, objects, info_objects=[])
+        self.assertEqual(hidden.strings, [])
+        self.assertEqual(hidden.crosses, img.crosses)
+
+    def test_held_detection_info_is_marked_and_live_detection_is_not(self):
+        held = self.obj()
+        held.held = True
+        img = RecordingImage(1600, 900)
+        self.ui.draw_objects(img, [held], display_size=(1600, 900))
+        self.assertTrue(any(row.text.startswith("HOLD ") for row in img.strings))
+        held.held = False
+        live = RecordingImage(1600, 900)
+        self.ui.draw_objects(live, [held], display_size=(1600, 900))
+        self.assertFalse(any(row.text.startswith("HOLD ") for row in live.strings))
+
     def test_wide_image_keeps_coordinates_on_one_line(self):
         img = RecordingImage(1600, 900)
         self.ui.draw_objects(img, [self.obj()], display_size=(1600, 900))
@@ -110,8 +137,9 @@ class UiTests(unittest.TestCase):
         self.assertEqual(img.rectangles[0][1]["thickness"], 3)
         plates = [rect for rect in img.rectangles[1:] if rect[1]["thickness"] == -1]
         self.assertTrue(plates)
-        self.assertTrue(all(rect[0][4] == (0, 0, 0) for rect in plates))
-        self.assertTrue(all(row.color == 5 for row in img.strings))
+        self.assertTrue(all(rect[0][4] == self.ui._object_color(obj.class_id) for rect in plates))
+        self.assertEqual(img.rectangles[0][0][4], self.ui._object_color(obj.class_id))
+        self.assertTrue(all(row.color == (0, 0, 0) for row in img.strings))
         self.assertTrue(all(row.y + self.size(row.text, row.scale, row.thickness)[1] <= obj.y
                             for row in img.strings))
 
@@ -212,6 +240,28 @@ class UiTests(unittest.TestCase):
         self.ui.draw_qrs(img, [], display_size=(640, 480))
         self.assertEqual(img.strings, [])
         self.assertEqual(img.crosses, [])
+
+    def test_object_size_three_does_not_change_qr_size(self):
+        img, qr_img = RecordingImage(640, 480), RecordingImage(1600, 900)
+        with patch.object(config, "OBJECT_TEXT_SCALE", 3):
+            self.ui.draw_objects(img, [self.obj()], display_size=(640, 480))
+            self.ui.draw_qrs(qr_img, [self.qr()], display_size=(640, 480))
+        self.assertTrue(all(row.scale == 3 and row.thickness == -1 for row in img.strings))
+        self.assertEqual(qr_img.strings[0].scale, 15)  # 原来的QR缩小补偿仍生效。
+
+    def test_all_ten_class_labels_use_their_own_matching_color_plate(self):
+        colors = []
+        for class_id in range(10):
+            img = RecordingImage(1600, 900)
+            self.ui.draw_objects(img, [self.obj(class_id=class_id)], display_size=(1600, 900))
+            color = img.rectangles[0][0][4]
+            colors.append(color)
+            plates = [rect for rect in img.rectangles[1:] if rect[1]["thickness"] == -1]
+            self.assertTrue(plates)
+            self.assertTrue(all(rect[0][4] == color for rect in plates))
+            self.assertTrue(all(row.color == (0, 0, 0) for row in img.strings))
+            self.assert_visible(img)
+        self.assertEqual(len(set(colors)), 10)
 
 
 if __name__ == "__main__":

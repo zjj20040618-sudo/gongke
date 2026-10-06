@@ -186,6 +186,7 @@ class UartLinkTests(unittest.TestCase):
     def test_init_uart_returns_a_wrapped_serial(self):
         serial = FakeSerial()
         with patch.object(hardware.uart, "UART", return_value=serial, create=True), \
+             patch.object(hardware, "start_log", return_value=None), \
              patch.object(hardware.config, "UART_ENABLED", True):
             link = hardware.init_uart()
         self.assertIsInstance(link, hardware.UartLink)
