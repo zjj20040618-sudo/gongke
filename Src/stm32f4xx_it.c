@@ -22,6 +22,7 @@
 #include "stm32f4xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "board_pins.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -55,7 +56,7 @@
 static void fault_outputs_off(void)
 {
   GPIOC->BSRR = (uint32_t)GPIO_PIN_8 << 16u;   /* 电机 STBY=0 */
-  GPIOA->BSRR = (uint32_t)GPIO_PIN_15 << 16u;  /* 激光=0 */
+  bp_laser_emergency_off();                 /* dedicated laser STBY/PWM/IN off */
 }
 
 /* USER CODE END 0 */

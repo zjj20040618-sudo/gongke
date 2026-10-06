@@ -3,35 +3,58 @@
  * gates are NOT changed. Real gate/start-abort checks live in the other fixture. */
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 #include "../App/test.c"
+
+/* Include the new bench engine in this existing single-translation-unit
+ * fixture. Production Keil links it as a separate source file. */
+static int host_xy_filter(ProtoTask task, uint8_t digit, int *cls, int *label)
+{
+    if (task == PROTO_TASK_BUCKET && digit == 0u) { *cls = CLS_BUCKET; *label = -1; return 1; }
+    if (digit < 1u || digit > 3u) return 0;
+    if (task == PROTO_TASK_BALL) { *cls = CLS_BALL; *label = digit - 1; return 1; }
+    if (task == PROTO_TASK_HOSTAGE) { *cls = CLS_HOSTAGE; *label = digit + 2; return 1; }
+    return 0;
+}
+#define proto_target_filter host_xy_filter
+#include "../App/vision_align_test.c"
+#undef proto_target_filter
 
 static uint32_t host_tick;
 static MissionState host_state;
 static int host_abort, start_calls, brake_calls, pulse_calls, gate_closed;
 static int host_imu_valid;
-static float host_yaw, last_x, last_y, last_w;
+static float host_yaw, host_absolute_yaw, last_x, last_y, last_w;
 static float host_heading_kp;
 static unsigned host_precise_calls, host_integer_calls;
 static float host_fore, host_lateral;
 static int32_t host_counts[4];
+static void (*host_counts_hook)(int motor);
 static int zero_calls, prepare_calls, servo_calls;
 static uint16_t host_servo;
 static char last_message[256];
 static int trial_start_calls, trial_report_calls, trial_gate_closed;
 static int trial_alignment_calls, trial_alignment_cls, trial_alignment_cx, trial_alignment_sign;
+static int trial_grab_y_calls, trial_grab_y_cls, trial_grab_y_cy, trial_grab_y_sign;
 static int trial_distance_calls;
 static uint16_t trial_first_leg_mm;
 static int laser_state;
+static unsigned host_laser_on_calls;
 static ProtoStats host_proto_stats;
 static ProtoScene host_scene;
 static int host_scene_calls, host_scene_status;
+static int host_target_calls, host_target_result;
+static ProtoTask host_target_task;
+static uint8_t host_target_digit;
 static int host_receive_closed, host_receive_end_calls;
 static int host_qr_valid;
 static int32_t host_qr_tuple[3];
 static void (*host_scene_hook)(ProtoScene);
+static int (*host_target_hook)(ProtoTask task, uint8_t digit);
 static void (*host_qr_begin_hook)(void), (*host_qr_cancel_hook)(void);
 static void (*host_receive_end_hook)(void);
 static int (*host_qr_get_hook)(int32_t out[3]);
+static void (*host_wire_diag_hook)(ProtoWireDiag *out);
 static char host_messages[8192];
 static MotionProfileTune host_motion_profile;
 
@@ -44,7 +67,7 @@ void bp_debug_send(const char *s)
     if (strlen(host_messages) + strlen(s) < sizeof host_messages)
         strcat(host_messages, s);
 }
-void bp_laser_set(int on) { laser_state = on; }
+void bp_laser_set(int on) { laser_state = on; if (on) host_laser_on_calls++; }
 int32_t bp_enc_raw_total(int m) { (void)m; return 0; }
 void bp_enc_raw_reset_all(void) { }
 void motion_brake(void) { brake_calls++; last_x = last_y = last_w = 0.0f; }
@@ -72,7 +95,11 @@ void ctrl_set_speed(int m, int16_t rpm) { (void)m; (void)rpm; }
 void ctrl_set_duty_open(int m, int16_t duty) { (void)m; (void)duty; }
 void ctrl_coast_all(void) { }
 void ctrl_enc_reset_all(void) { host_fore = host_lateral = 0.0f; memset(host_counts, 0, sizeof host_counts); }
-int32_t ctrl_enc_total(int m) { return host_counts[m]; }
+int32_t ctrl_enc_total(int m)
+{
+    if (host_counts_hook) host_counts_hook(m);
+    return host_counts[m];
+}
 void ctrl_get_rpm_est_all(int16_t out[4]) { memset(out, 0, 4 * sizeof *out); }
 void ctrl_get_rpm_fast_all(float out[4]) { memset(out, 0, 4 * sizeof *out); }
 int16_t ctrl_get_rpm_est(int m) { (void)m; return 0; }
@@ -85,7 +112,7 @@ void arm_claw_close(void) { host_servo = 1800u; }
 void arm_stepper_dir(int axis, int dir) { (void)axis; (void)dir; }
 void arm_stepper_step(int axis) { (void)axis; pulse_calls++; }
 float imu_yaw_deg(void) { return 0.0f; }
-float imu_heading_deg(void) { return 0.0f; }
+float imu_heading_deg(void) { return host_absolute_yaw; }
 float imu_leg_heading_deg(void) { return host_yaw; }
 float imu_pitch_deg(void) { return 0.0f; }
 float imu_roll_deg(void) { return 0.0f; }
@@ -132,11 +159,19 @@ int mission_trial_set_alignment(int cls, int cx, int sign)
 {
     trial_alignment_calls++;
     trial_alignment_cls = cls; trial_alignment_cx = cx; trial_alignment_sign = sign;
-    return cls >= -1 && cls <= 3 && cx >= -1 && cx <= 4095 && sign >= -1 && sign <= 1;
+    return cls >= -1 && cls <= 3 && cx >= -1 && cx < 65535 && sign >= -1 && sign <= 1;
+}
+int mission_trial_set_grab_y(int cls, int cy, int sign)
+{
+    trial_grab_y_calls++;
+    trial_grab_y_cls = cls; trial_grab_y_cy = cy; trial_grab_y_sign = sign;
+    return (cls == -1 || cls == CLS_BALL || cls == CLS_HOSTAGE) &&
+           cy >= -1 && cy < 65535 && sign >= -1 && sign <= 1;
 }
 void robot_diag_report(void) { }
 void proto_stats_get(ProtoStats *out) { *out = host_proto_stats; }
-void proto_wire_diag_get(ProtoWireDiag *out) { memset(out, 0, sizeof *out); }
+void proto_wire_diag_get(ProtoWireDiag *out)
+{ if (host_wire_diag_hook) host_wire_diag_hook(out); else memset(out, 0, sizeof *out); }
 int proto_scene_status(void) { return host_scene_status; }
 void proto_send_scene(ProtoScene scene)
 {
@@ -144,6 +179,14 @@ void proto_send_scene(ProtoScene scene)
     host_receive_closed = 0;
     host_qr_valid = 0; memset(host_qr_tuple, 0, sizeof host_qr_tuple);
     if (host_scene_hook) host_scene_hook(scene);
+}
+int proto_send_target(ProtoTask task, uint8_t digit)
+{
+    host_target_calls++; host_target_task = task; host_target_digit = digit;
+    host_scene = SCENE_ANTI; host_scene_status = 0; host_receive_closed = 0;
+    host_qr_valid = 0; memset(host_qr_tuple, 0, sizeof host_qr_tuple);
+    if (host_target_hook) return host_target_hook(task, digit);
+    return host_target_result;
 }
 void proto_qr_begin(void)
 {
@@ -181,20 +224,26 @@ static void reset_fixture(void)
 {
     host_tick = 100u; host_state = MS_BOOT;
     host_abort = start_calls = brake_calls = pulse_calls = gate_closed = 0;
-    host_imu_valid = 1; host_yaw = last_x = last_y = last_w = 0.0f;
+    host_imu_valid = 1; host_yaw = host_absolute_yaw = last_x = last_y = last_w = 0.0f;
+    host_wire_diag_hook = NULL;
     host_heading_kp = 0.3f; host_precise_calls = host_integer_calls = 0u;
     host_fore = host_lateral = 0.0f; memset(host_counts, 0, sizeof host_counts);
+    host_counts_hook = NULL;
     zero_calls = prepare_calls = servo_calls = 0;
     host_servo = 1400u; last_message[0] = '\0';
     trial_start_calls = trial_report_calls = trial_gate_closed = trial_alignment_calls = 0;
     trial_alignment_cls = trial_alignment_cx = trial_alignment_sign = 0;
+    trial_grab_y_calls = trial_grab_y_cls = trial_grab_y_cy = trial_grab_y_sign = 0;
     trial_distance_calls = 0; trial_first_leg_mm = 0u;
-    laser_state = 0;
+    laser_state = 0; host_laser_on_calls = 0u;
     memset(&host_proto_stats, 0, sizeof host_proto_stats);
     host_scene = SCENE_IDLE; host_scene_calls = host_scene_status = 0;
+    host_target_calls = 0; host_target_result = 1;
+    host_target_task = PROTO_TASK_BALL; host_target_digit = 0u;
     host_receive_closed = host_receive_end_calls = 0;
     host_qr_valid = 0; memset(host_qr_tuple, 0, sizeof host_qr_tuple);
     host_scene_hook = NULL; host_qr_begin_hook = host_qr_cancel_hook = NULL;
+    host_target_hook = NULL;
     host_receive_end_hook = NULL;
     host_qr_get_hook = NULL;
     host_messages[0] = '\0';
@@ -231,6 +280,19 @@ static int sequence_release_qr(void)
     return 0;
 }
 
+static void fixture_complete_distance_alignment(void)
+{
+    /* No vehicle plant here: dedicated post-yaw tests verify correction
+     * signs and intermediate commands. This shared route driver supplies
+     * the physically corrected endpoint and waits the complete hold. */
+    if (s_round == R_ALIGN) {
+        host_yaw = s_dist_heading0;
+        test_poll();
+        host_tick += T_DIST_ALIGN_STABLE_MS;
+        test_poll();
+    }
+}
+
 static int sequence_finish_stage(void)
 {
     CHECK(s_seq_state == SQ_RUN);
@@ -241,6 +303,7 @@ static int sequence_finish_stage(void)
         CHECK(s_round == R_BRAKE && s_dist_reason == 1u && s_seq_state == SQ_RUN);
         host_tick += T_DIST_STILL_MS;
         test_poll();
+        fixture_complete_distance_alignment();
     } else {
         host_yaw = turn_target_deg(); test_poll();
         CHECK(s_round == R_BRAKE && strcmp(s_turn_result, "DONE") == 0 && s_seq_state == SQ_RUN);
@@ -250,11 +313,132 @@ static int sequence_finish_stage(void)
     return 0;
 }
 
+/* Stub-only bucket samples. The dedicated QR/bucket fixtures use real wire
+ * packets; ordinary sequence_start_stage must never start the mode0 node. */
+static void sequence_bucket_stub_sample(void)
+{
+    ProtoFrame frame = {0};
+    frame.type = PF_OBJ; frame.cls = CLS_BUCKET; frame.label = 0;
+    frame.cx = 500; frame.cy = 120; frame.w = frame.h = 24; frame.conf = 90;
+    frame.img_w = 640u; frame.img_h = 320u;
+    host_proto_stats.obj++;
+    frame.sequence = (uint16_t)host_proto_stats.obj;
+    test_vision_feed_frame(&frame);
+    test_poll();
+}
+
+static int sequence_bucket_stub_phase(unsigned phase)
+{
+    CHECK(phase <= 3u && s_seq_state == SQ_BUCKET_ALIGN && s_bucket36_phase == BA_STILL);
+    CHECK(s_seq_stage == ROUTE_TEST_ALIGN_STAGE && host_target_task == PROTO_TASK_BUCKET &&
+          host_target_digit == 0u && last_x == 0.0f && last_y == 0.0f && last_w == 0.0f);
+    if (!phase) return 0;
+    host_scene_status = 1; /* Explicit host ACK; not a real-parser assertion. */
+    host_tick += T_DIST_STILL_MS; test_poll();
+    CHECK(s_seq_state == SQ_BUCKET_ALIGN && s_bucket36_phase == BA_PREP_WAIT);
+    if (phase == 1u) return 0;
+    host_tick += NAV_SETTLE_MS; test_poll();
+    CHECK(s_seq_state == SQ_BUCKET_ALIGN && s_bucket36_phase == BA_SEEK);
+    if (phase == 2u) return 0;
+    for (unsigned i = 0u; i < 5u; ++i) sequence_bucket_stub_sample();
+    CHECK(s_seq_state == SQ_BUCKET_ALIGN && s_bucket36_phase == BA_SETTLE &&
+          s_bucket36_good == 5u && last_x == 0.0f && !laser_state);
+    return 0;
+}
+
+static int sequence_finish_bucket_stub(void)
+{
+    CHECK(sequence_bucket_stub_phase(3u) == 0);
+    for (unsigned i = 0u; i < 4u; ++i) {
+        host_tick += 250u; sequence_bucket_stub_sample();
+    }
+    CHECK(s_seq_state == SQ_MANUAL_D_WAIT && s_seq_stage == ROUTE_TEST_BACK_STAGE &&
+          s_bucket36_back_mm == 0u && host_receive_closed && !laser_state &&
+          last_x == 0.0f && last_y == 0.0f && last_w == 0.0f);
+    return 0;
+}
+
+static int check_retained34_bucket_stub(void)
+{
+    reset_fixture(); run_cmd("34"); run_cmd("g");
+    s_seq_stage = ROUTE_TEST_ALIGN_STAGE; route_seq_prepare();
+    CHECK(route_seq_bucket_enabled() && s_seq_state == SQ_BUCKET_ALIGN);
+    CHECK(sequence_finish_bucket_stub() == 0);
+    run_cmd("d730"); CHECK(sequence_start_stage() == 0);
+    CHECK(s_msel == 16 && s_dist_target == -730.0f && s_v == 100.0f);
+    run_cmd("g"); CHECK(s_seq_state == SQ_STOPPED && s_msel == 34);
+    return 0;
+}
+
+/* Two runs without power cycling pin that the disabled cross/contact gains
+ * never leak into the next leg, manual profiles or a later route run. */
+static int check_route_cross_heading_restart(unsigned mode)
+{
+    const char *selection = mode == 31u ? "31" : "34";
+    CHECK(mode == 31u || mode == 34u);
+    reset_fixture();
+    for (unsigned run = 1u; run <= 2u; ++run) {
+        run_cmd(selection); run_cmd("ykp1.2"); run_cmd("g");
+        CHECK(s_seq_run == run && s_route_heading_kp == 1.2f && step_heading_kp_deg() == 0.3f);
+        s_seq_stage = 3u; route_seq_prepare();
+        CHECK(sequence_start_stage() == 0);
+        CHECK(s_msel == 16 && s_dist_target == -650.0f && s_v == 300.0f && s_dist_heading_kp == 0.0f);
+        CHECK(s_dist_ff_ratio == 0.0f && last_x == -300.0f && last_y == 0.0f);
+        host_yaw = 6.0f; tick(); CHECK(last_w == 0.0f);
+        host_yaw = -6.0f; tick(); CHECK(last_w == 0.0f);
+        CHECK(s_route_heading_kp == 1.2f && step_heading_kp_deg() == 0.3f);
+        CHECK(sequence_finish_stage() == 0 && s_seq_stage == 4u);
+        CHECK(sequence_start_stage() == 0);
+        CHECK(s_msel == 15 && s_dist_target == (mode == 31u ? 70.0f : 80.0f) && s_v == 20.0f && s_dist_heading_kp == 0.0f);
+        CHECK(last_x == 20.0f && last_y == 0.0f && s_dist_ff_ratio == 0.0f);
+        host_yaw = 6.0f; tick(); CHECK(last_w == 0.0f);
+        host_yaw = -6.0f; tick(); CHECK(last_w == 0.0f);
+        unsigned before_finish = (unsigned)zero_calls;
+        CHECK(sequence_finish_stage() == 0);
+        CHECK(s_seq_stage == 5u && s_seq_state == SQ_STILL &&
+              last_x == 0.0f && last_y == 0.0f && last_w == 0.0f);
+        CHECK(zero_calls == (int)before_finish + 1); /* Existing distance-result reset. */
+        unsigned before_node = (unsigned)zero_calls;
+        host_yaw = run == 1u ? 7.0f : -7.0f; host_counts[0]++;
+        host_tick += T_DIST_STILL_MS; test_poll();
+        CHECK(s_seq_state == SQ_STILL && zero_calls == (int)before_node &&
+              last_x == 0.0f && last_y == 0.0f && last_w == 0.0f);
+        host_tick += T_DIST_STILL_MS - 1u; test_poll();
+        CHECK(s_seq_state == SQ_STILL && zero_calls == (int)before_node);
+        host_tick++; test_poll();
+        CHECK(s_seq_state == SQ_WAIT && zero_calls == (int)before_node + 1 && host_yaw == 0.0f);
+        CHECK(last_x == 0.0f && last_y == 0.0f && last_w == 0.0f);
+        CHECK(NAV_SETTLE_MS == 750u);
+        host_tick += NAV_SETTLE_MS - 1u; test_poll();
+        CHECK(s_seq_state == SQ_WAIT && zero_calls == (int)before_node + 1 &&
+              last_x == 0.0f && last_y == 0.0f && last_w == 0.0f);
+        host_tick++; test_poll();
+        CHECK(s_seq_state == SQ_RUN && s_round == R_RUN && s_msel == 16);
+        CHECK(s_dist_target == -190.0f && s_v == 100.0f && s_dist_heading0 == 0.0f);
+        CHECK(s_dist_heading_kp == 1.2f && s_route_heading_kp == 1.2f &&
+              step_heading_kp_deg() == 0.3f && host_yaw == 0.0f && last_w == 0.0f);
+        CHECK(s_dist_ff_ratio == 0.00625f && last_x == -100.0f && last_y == -0.625f);
+        host_yaw = 3.0f; tick();
+        CHECK(fabsf(last_w + 1.2f * 3.0f * 0.0174533f) < 0.000001f);
+        host_yaw = -3.0f; tick();
+        CHECK(fabsf(last_w - 1.2f * 3.0f * 0.0174533f) < 0.000001f);
+        run_cmd("g");
+        CHECK(s_seq_state == SQ_STOPPED && s_msel == (int)mode &&
+              s_route_heading_kp == 1.2f && step_heading_kp_deg() == 0.3f);
+    }
+    run_cmd("15"); run_cmd("v100"); run_cmd("d100"); run_cmd("g");
+    CHECK(s_dist_heading_kp == 0.3f && s_route_heading_kp == 1.2f);
+    run_cmd("g"); run_cmd("32");
+    CHECK(dist_heading_kp_get(NULL) == 0.3f && step_heading_kp_deg() == 0.3f);
+    printf("route%u two-run post-cross: back650/v300 ->forward%u/v20 yaw/FF disabled; wheel-still/node zero/750ms wait ->fresh back190/v100 restoresykp + independentBFF; manual/32 unchanged passed\n", mode, mode == 31u ? 70u : 80u);
+    return 0;
+}
+
 static int check_route_sequence(void)
 {
     /* Independent expectation, not copied from the live recipe at runtime. */
-    static const int expected_modes[12] = {17,16,30,15,16,15,17,15,20,15,20,15};
-    static const int expected_commands[12] = {-530,-650,-92,750,-170,210,-730,780,90,2450,90,2125};
+    static const int expected_modes[12] = {17,16,20,16,15,16,18,16,30,15,20,15};
+    static const int expected_commands[12] = {-520,-650,90,-650,70,-190,730,-780,-90,2450,90,2125};
     static const float expected_speeds[12] = {100,100,100,300,20,100,100,100,100,100,100,100};
     static const char *const stop_keys[] = {"g", "a", "0"};
     reset_fixture();
@@ -264,25 +448,29 @@ static int check_route_sequence(void)
     for (int i = 0; i < 5; i++) { host_tick += 100u; test_poll(); }
     CHECK(s_seq_state == SQ_READY && last_x == 0.0f && last_y == 0.0f && last_w == 0.0f);
     run_cmd("g"); CHECK(s_seq_run == 1u && s_seq_stage == 0u);
-    CHECK(ROUTE_TEST_STAGES == 12u);
+    CHECK(ROUTE31_STAGES == 12u && route_seq_stage_count() == 12u && !route_seq_bucket_enabled());
     for (int i = 0; i < 12; i++) {
         CHECK(s_seq_stage == i && sequence_start_stage() == 0);
         CHECK(s_msel == expected_modes[i] && s_route_leg == i + 1 && s_active_test == (uint32_t)i + 1u);
+        CHECK(s_route31_plan[i].heading_hold == (i == 3 || i == 4 ? 0u : 1u));
         if (dist_mode()) {
             CHECK(s_dist_target == (float)expected_commands[i] && s_v == expected_speeds[i]);
             CHECK(s_dist_ramp.acc == 700.0f && s_dist_ramp.dec == 350.0f && s_dist_precise == 1u);
-            CHECK(s_dist_ff_ratio == (s_msel == 15 && i != 3 ? 0.00625f : 0.0f));
+            CHECK(s_dist_ff_ratio == (i == 9 || i == 11 ? -0.00625f :
+                  i == 1 || i == 5 || i == 7 ? 0.00625f : 0.0f));
+            CHECK(s_dist_heading_kp == (i == 3 || i == 4 ? 0.0f : 0.3f));
             CHECK(last_w == 0.0f);
-            if (dist_lateral()) CHECK(last_x == 0.0f && last_y == -100.0f);
+            if (dist_lateral()) CHECK(last_x == 0.0f && last_y == (s_msel == 18 ? 100.0f : -100.0f));
             else CHECK(last_x == (s_msel == 16 ? -expected_speeds[i] : expected_speeds[i]) &&
-                       last_y == (s_msel == 16 || i == 3 ? 0.0f : -0.625f));
+                       last_y == -s_dist_ff_ratio * expected_speeds[i]);
         } else {
             CHECK(turn_target_deg() == (float)expected_commands[i] && last_x == 0.0f && last_y == 0.0f);
-            CHECK(last_w == (i == 2 ? -T_TURN_MAX_W : T_TURN_MAX_W));
+            CHECK(last_w == (i == 8 ? -T_TURN_MAX_W : T_TURN_MAX_W));
         }
         CHECK(start_calls == 0 && pulse_calls == 0 && servo_calls == 0 && !s_go);
         CHECK(sequence_finish_stage() == 0);
         CHECK(i == 11 ? s_seq_state == SQ_DONE : s_seq_state == SQ_STILL);
+        CHECK(!host_target_calls && s_seq_state != SQ_BUCKET_ALIGN && s_seq_state != SQ_MANUAL_D_WAIT);
     }
     CHECK(zero_calls == 21 && prepare_calls == 0); /* 12 node zeros + 9 distance-report resets */
     CHECK(s_msel == 31 && s_round == R_DONE && strstr(last_message, "status=DONE") != NULL);
@@ -291,7 +479,7 @@ static int check_route_sequence(void)
     run_cmd("31"); run_cmd("g"); CHECK(s_seq_run == 2u && s_seq_state == SQ_STILL);
     run_cmd("g"); CHECK(s_seq_state == SQ_STOPPED);
 
-    /* Every stage, every stop key, every phase: 12 * 3 * 4 = 144 cancellations. */
+    /* All 12 motion-only nodes, every phase and stop key. */
     for (int stage = 0; stage < 12; stage++) {
         for (int key = 0; key < 3; key++) {
             for (int phase = 0; phase < 4; phase++) {
@@ -331,14 +519,15 @@ static int check_route_sequence(void)
         for (size_t k = 0; k < sizeof writes / sizeof writes[0]; k++) {
             run_cmd(writes[k]);
             CHECK(strstr(last_message, "ERR ROUTE_SEQ_ACTIVE") != NULL && s_v == 100.0f &&
-                  s_d == 530.0f && s_seq_stage == 0u && s_msel == 17 && servo_calls == 0);
+                  s_d == 520.0f && s_seq_stage == 0u && s_msel == 17 && servo_calls == 0);
         }
         CHECK(route_seq_active()); run_cmd("g");
     }
     /* All failed sensor/turn statuses cancel rather than advancing a ready/done submode. */
     for (int stage = 0; stage < 12; stage++) {
         reset_fixture(); run_cmd("31"); run_cmd("g");
-        s_seq_stage = (uint8_t)stage; route_seq_prepare(); CHECK(sequence_start_stage() == 0);
+        s_seq_stage = (uint8_t)stage; route_seq_prepare();
+        CHECK(sequence_start_stage() == 0);
         host_imu_valid = 0; test_poll();
         CHECK(s_seq_state == SQ_STOPPED && s_seq_stage == stage && strstr(last_message, "status=IMUERR") != NULL);
     }
@@ -353,7 +542,7 @@ static int check_route_sequence(void)
         reset_fixture(); run_cmd("31"); run_cmd("g"); s_seq_stage = 2u; route_seq_prepare();
         CHECK(sequence_start_stage() == 0);
         if (failure == 0) { host_tick += T_TURN_MAX_MS; test_poll(); }
-        if (failure == 1) { host_yaw = -111.0f; test_poll(); }
+        if (failure == 1) { host_yaw = 111.0f; test_poll(); }
         if (failure == 2) { turn_begin_settle("STOP"); }
         CHECK(s_round == R_BRAKE);
         host_tick += T_TURN_SETTLE_MS; test_poll();
@@ -362,7 +551,7 @@ static int check_route_sequence(void)
     reset_fixture(); run_cmd("31"); run_cmd("g"); CHECK(sequence_start_stage() == 0);
     dist_begin_finish(0u); host_tick += T_DIST_STILL_MS; test_poll();
     CHECK(s_seq_state == SQ_STOPPED && s_seq_stage == 0u);
-    puts("route31: exact 12-step traversal incl cross300/back20-170/forward100-210, QR camera fixture, terminal/no-restart, 144 g/a/0 phase cancellations, write lock, nonblocking prepare, IMU/abort/turn failure passed");
+    puts("route31: exact12 motion-only traversal incl board70 and crossing/contact yaw/FF disabled; QRgate/right730/back780/left90 withoutbucket/manuald, two forwardFFF and three backwardBFF legs, post-yaw-before-next, terminal/no-restart,144 g/a/0 cancellations, locks and IMU/abort/turn failure passed");
     return 0;
 }
 
@@ -374,18 +563,19 @@ static int check_forward_compensation(void)
             char line[16];
             float expected_ratio = 0.0f;
             reset_fixture();
-            CHECK(s_forward_ff_ratio == 0.0125f);
+            CHECK(s_forward_ff_ratio == -0.00625f && test_forward_ff_ratio() == 0.0125f);
             snprintf(line, sizeof line, "%d", mode); run_cmd(line);
             snprintf(line, sizeof line, "v%d", speeds[k]); run_cmd(line);
             run_cmd("d1500"); run_cmd("g"); tick();
             CHECK(s_round == R_RUN);
-            if (mode == 15 && speeds[k] <= 200) expected_ratio = 0.0125f;
+            if (mode == 15) expected_ratio = -0.00625f;
+            if (mode == 16) expected_ratio = 0.00625f;
             if (mode == 17 && speeds[k] == 300) expected_ratio = T_LEFT_FF_SEED;
             if (mode == 18 && speeds[k] == 300) expected_ratio = T_RIGHT_FF_SEED;
             CHECK(s_dist_ff_ratio == expected_ratio && last_w == 0.0f);
             if (mode <= 16) {
                 CHECK(last_x == (mode == 15 ? (float)speeds[k] : -(float)speeds[k]));
-                CHECK(last_y == (mode == 15 ? -expected_ratio * last_x : 0.0f));
+                CHECK(last_y == -expected_ratio * fabsf(last_x));
             } else {
                 CHECK(last_y == (mode == 17 ? -(float)speeds[k] : (float)speeds[k]));
                 CHECK(last_x == expected_ratio * last_y);
@@ -393,16 +583,16 @@ static int check_forward_compensation(void)
             run_cmd("g"); CHECK(s_round == R_BRAKE && last_x == 0.0f && last_y == 0.0f);
         }
     }
-    reset_fixture(); run_cmd("fff0");
-    run_cmd("15"); run_cmd("v100"); run_cmd("d1000"); run_cmd("g"); tick();
+    reset_fixture(); run_cmd("15"); run_cmd("fff0");
+    run_cmd("v100"); run_cmd("d1000"); run_cmd("g"); tick();
     CHECK(s_dist_ff_ratio == 0.0f && last_x == 100.0f && last_y == 0.0f);
-    reset_fixture(); run_cmd("fff0.01");
-    run_cmd("15"); run_cmd("v100"); run_cmd("d1000"); run_cmd("g"); tick();
+    reset_fixture(); run_cmd("15"); run_cmd("fff0.01");
+    run_cmd("v100"); run_cmd("d1000"); run_cmd("g"); tick();
     CHECK(s_dist_ff_ratio > 0.009999f && s_dist_ff_ratio < 0.010001f &&
           last_y > -1.0001f && last_y < -0.9999f);
     reset_fixture(); run_cmd("param");
     CHECK(strstr(host_messages, "fff=0.0125") != NULL);
-    puts("forward FF: default/left sign, v100/v200 gate, reverse/strafe isolation, RAM off/override and PARAM passed");
+    puts("distance FF: forward-right/reverse-left trial seeds at100/200/300; independent direction RAM and preserved v300 strafe parameters, manual/mission isolation, off/override/PARAM passed");
     return 0;
 }
 
@@ -456,7 +646,7 @@ static int check_trial32_router(void)
     static const char *const stop_keys[] = { "g", "a", "0" };
     static const char *const workpoint_keys[] = { "bcx185", "tcx173", "hcx160", "kcx201" };
     reset_fixture();
-    CHECK(test_forward_ff_ratio() == T_FORWARD_FF_SEED);
+    CHECK(test_forward_ff_ratio() == T_MISSION_FORWARD_FF_SEED);
     run_cmd("fff0.0200");
     CHECK(test_forward_ff_ratio() > 0.019999f && test_forward_ff_ratio() < 0.020001f);
     run_cmd("fff0"); CHECK(test_forward_ff_ratio() == 0.0f);
@@ -479,10 +669,23 @@ static int check_trial32_router(void)
         run_cmd(workpoint_keys[cls]);
         CHECK(trial_alignment_cls == cls && trial_alignment_cx >= 0 && trial_alignment_sign == 0);
     }
+    run_cmd("ysg1");
+    CHECK(trial_grab_y_calls == 1 && trial_grab_y_cls == -1 && trial_grab_y_cy == -1 && trial_grab_y_sign == 1);
+    run_cmd("ysg2"); CHECK(trial_grab_y_calls == 2 && trial_grab_y_sign == -1);
+    run_cmd("bcy150");
+    CHECK(trial_grab_y_calls == 3 && trial_grab_y_cls == CLS_BALL && trial_grab_y_cy == 150 && trial_grab_y_sign == 0);
+    run_cmd("hcy170");
+    CHECK(trial_grab_y_calls == 4 && trial_grab_y_cls == CLS_HOSTAGE && trial_grab_y_cy == 170 && trial_grab_y_sign == 0);
+    run_cmd("bcy0"); CHECK(trial_grab_y_calls == 5 && trial_grab_y_cy == 0);
+    run_cmd("hcy65534"); CHECK(trial_grab_y_calls == 6 && trial_grab_y_cy == 65534);
     int changed = trial_alignment_calls;
     run_cmd("vsg0"); run_cmd("vsg3"); run_cmd("vsg2junk");
     run_cmd("bcx-3"); run_cmd("hcx"); run_cmd("tcx99x");
     CHECK(trial_alignment_calls == changed);
+    int y_changed = trial_grab_y_calls;
+    run_cmd("ysg0"); run_cmd("ysg3"); run_cmd("ysg2junk"); run_cmd("ysg");
+    run_cmd("bcy-1"); run_cmd("bcy65535"); run_cmd("hcy"); run_cmd("hcy170x"); run_cmd("bcy12.5");
+    CHECK(trial_grab_y_calls == y_changed);
     run_cmd("trial"); CHECK(trial_report_calls >= 8);
     run_cmd("0"); CHECK(!s_go && !host_abort && trial_start_calls == 0);
 
@@ -493,8 +696,9 @@ static int check_trial32_router(void)
         /* Only a queued request: DefaultTask keeps handling Bluetooth. */
         host_tick += 100u; test_poll();
         CHECK(last_x == 0.0f && last_y == 0.0f && last_w == 0.0f && pulse_calls == 0);
-        run_cmd("bcx199"); run_cmd("vsg1"); run_cmd("b1d800"); run_cmd("24"); run_cmd("co");
-        CHECK(trial_alignment_calls == 0 && trial_distance_calls == 0 && s_msel == 32 && host_servo == 1400u);
+        run_cmd("bcx199"); run_cmd("vsg1"); run_cmd("bcy150"); run_cmd("hcy170"); run_cmd("ysg1");
+        run_cmd("b1d800"); run_cmd("24"); run_cmd("co");
+        CHECK(trial_alignment_calls == 0 && trial_grab_y_calls == 0 && trial_distance_calls == 0 && s_msel == 32 && host_servo == 1400u);
         run_cmd("trial");
         CHECK(trial_report_calls == 3); /* select, g automatic report, explicit report */
         laser_state = 1;
@@ -507,9 +711,9 @@ static int check_trial32_router(void)
     reset_fixture(); run_cmd("32"); trial_gate_closed = 1; run_cmd("g");
     CHECK(!s_go && !host_abort && trial_start_calls == 0 && start_calls == 0);
     CHECK(strstr(last_message, "TRIAL32_UNCALIBRATED") != NULL);
-    reset_fixture(); run_cmd("7"); run_cmd("p45"); run_cmd("g"); run_cmd("bcx180"); run_cmd("b1d800");
-    CHECK(trial_alignment_calls == 0 && trial_distance_calls == 0 && s_round == R_RUN);
-    puts("trial32 router: selection/RAM workpoints/sign/first-leg aliases, malformed writes, queued start, pending g/a/0, laser-off, terminal no-restart and write lock passed");
+    reset_fixture(); run_cmd("7"); run_cmd("p45"); run_cmd("g"); run_cmd("bcx180"); run_cmd("bcy150"); run_cmd("ysg2"); run_cmd("b1d800");
+    CHECK(trial_alignment_calls == 0 && trial_grab_y_calls == 0 && trial_distance_calls == 0 && s_round == R_RUN);
+    puts("trial32 router: selection/RAM XY workpoints/both signs/first-leg aliases, malformed writes, queued start, pending g/a/0, laser-off, terminal no-restart and write lock passed");
     return 0;
 }
 
@@ -525,7 +729,7 @@ static int check_vision33_router(void)
     static const char *const stops[] = { "g", "a", "0" };
     static const char *const writes[] = {
         "31", "32", "7", "r1", "v100", "d500", "p45", "fff0.02",
-        "bcx160", "b1d800", "vsg1", "co", "cc", "su1800", "u1800", "nr10", "imu"
+        "bcx160", "b1d800", "vsg1", "bcy150", "hcy170", "ysg2", "co", "cc", "su1800", "u1800", "nr10", "imu"
     };
     ProtoFrame frame = {0};
     reset_fixture(); run_cmd("33");
@@ -600,7 +804,7 @@ static int check_vision33_router(void)
     reset_fixture(); run_cmd("33"); run_cmd("g"); host_scene_status = -1; host_tick += 1000u; test_poll();
     CHECK(s_vdiag_phase == VD_QR_WAIT && strstr(host_messages, "link=-1") != NULL && !s_go);
     CHECK(strstr(host_messages, "VW req=") != NULL && strstr(last_message, "VR type=") != NULL);
-    puts("vision33: ACK/fresh QR gating, current/empty packet snapshots, 17 write locks, 12 stops, late frames, same-batch cancellation and repeated test IDs passed; no actuator calls");
+    puts("vision33: ACK/fresh QR gating, current/empty packet snapshots, 20 write locks, 12 stops, late frames, same-batch cancellation and repeated test IDs passed; no actuator calls");
     return 0;
 }
 
@@ -706,7 +910,7 @@ int main(void)
     CHECK(s_round == R_READY && last_w == 0.0f);
     reset_fixture(); run_cmd("30"); run_cmd("g"); tick(); run_cmd("0");
     CHECK(s_round == R_READY && last_w == 0.0f);
-    reset_fixture(); run_cmd("35"); CHECK(s_msel == R_FREE && strstr(last_message, "MODE_RANGE") != NULL);
+    reset_fixture(); run_cmd("42"); CHECK(s_msel == R_FREE && strstr(last_message, "MODE_RANGE") != NULL);
     for (int mode = 20; mode <= 22; mode += 2) {
         reset_fixture(); s_msel = mode; run_cmd("g"); tick();
         CHECK(s_round == R_RUN && last_w == T_TURN_MAX_W);
@@ -751,6 +955,9 @@ int main(void)
     CHECK(check_forward_compensation() == 0);
     CHECK(check_shared_turn_hold() == 0);
     CHECK(check_route_sequence() == 0);
+    CHECK(check_retained34_bucket_stub() == 0);
+    CHECK(check_route_cross_heading_restart(31u) == 0);
+    CHECK(check_route_cross_heading_restart(34u) == 0);
     CHECK(check_trial32_router() == 0);
     CHECK(check_vision33_router() == 0);
     puts("real g router: pending/running/terminal mission stop, a alias, closed gate, CRLF/idle framing, wheel/distance/turn/IMU/jog/servo/return passed");

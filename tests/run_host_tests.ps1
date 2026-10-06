@@ -31,6 +31,32 @@ function Invoke-HostPythonCase {
 
 Push-Location $projectRoot
 try {
+    # Grab XY uses the single MissionTask. Its float printf paths include
+    # indirect calls which Keil's reported known depth cannot fully bound.
+    $taskRtos = Get-Content 'Src/freertos.c' -Raw -Encoding utf8
+    $taskIoc = Get-Content 'jiejie.ioc' -Raw -Encoding utf8
+    $taskAttr = [regex]::Match($taskRtos, 'MissionTask_attributes\s*=\s*\{(?<body>.*?)\};', 'Singleline').Groups['body'].Value
+    $taskStack = [regex]::Match($taskAttr, '\.stack_size\s*=\s*(?<words>\d+)\s*\*\s*4')
+    $taskIocStack = [regex]::Match($taskIoc, 'MissionTask,32,(?<words>\d+),StartTask03,')
+    if (-not $taskStack.Success -or -not $taskIocStack.Success -or
+        [int]$taskStack.Groups['words'].Value -lt 512 -or
+        $taskStack.Groups['words'].Value -ne $taskIocStack.Groups['words'].Value) {
+        throw 'Grab XY stack contract: MissionTask needs at least 2 KB and matching IOC words'
+    }
+    Write-Output 'grab XY task stack contract: at least 2 KB and matching IOC configuration'
+    # 38..41 run in the existing DefaultTask; keep its existing 2 KB stack
+    # in CubeMX as well, so regeneration cannot revert it to the old 512 B.
+    $xyTaskAttr = [regex]::Match($taskRtos, 'defaultTask_attributes\s*=\s*\{(?<body>.*?)\};', 'Singleline').Groups['body'].Value
+    $xyTaskStack = [regex]::Match($xyTaskAttr, '\.stack_size\s*=\s*(?<words>\d+)\s*\*\s*4')
+    $xyIocStack = [regex]::Match($taskIoc, 'defaultTask,24,(?<words>\d+),StartDefaultTask,')
+    if (-not $xyTaskStack.Success -or -not $xyIocStack.Success -or
+        [int]$xyTaskStack.Groups['words'].Value -lt 512 -or
+        $xyTaskStack.Groups['words'].Value -ne $xyIocStack.Groups['words'].Value) {
+        throw 'Independent XY stack contract: DefaultTask needs at least 2 KB and matching IOC words'
+    }
+    Write-Output 'independent XY task stack contract: existing 2 KB DefaultTask and matching IOC configuration'
+    Invoke-HostPythonCase 'dedicated laser pin/init/fault contracts' 'tests/test_laser_tb_contract.py'
+    Invoke-HostCase 'eod_laser_tb6612_test' @('tests/laser_tb6612_test.c') @('tests/laser_stubs', 'App')
     Invoke-HostCase 'eod_arm_task_flow_test' @('tests/arm_task_flow_test.c', 'App/task_eod.c', 'App/task_rescue.c') @('App')
     Invoke-HostCase 'eod_anti_task_flow_test' @('tests/anti_task_flow_test.c', 'App/task_anti.c') @('App')
     Invoke-HostCase 'eod_target_fire_timing_test' @('tests/target_fire_timing_test.c', 'App/steps.c') @('tests/stubs', 'App') @('-ffunction-sections', '-fdata-sections', '-fno-asynchronous-unwind-tables', '-fno-unwind-tables', '-Wl,--gc-sections', '-lm')
@@ -42,11 +68,22 @@ try {
     Invoke-HostCase 'eod_forward_ff_ik_test' @('tests/forward_ff_ik_test.c', 'App/motion.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_precise_velocity_test' @('tests/precise_velocity_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-lm')
     Invoke-HostCase 'eod_speed_yaw_tuning_test' @('tests/speed_yaw_tuning_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_translation_post_yaw_test' @('tests/translation_post_yaw_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_translation_feedforward_test' @('tests/translation_feedforward_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_speed_yaw_heading_test' @('tests/speed_yaw_heading_test.c', 'App/steps.c', 'App/motion.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_route_softstop_test' @('tests/route_softstop_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_route31_tuning_scope_test' @('tests/route31_tuning_scope_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_route31_qr_gate_test' @('tests/route31_qr_gate_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_route34_no_qr_test' @('tests/route34_no_qr_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_bucket36_route_test' @('tests/bucket36_route_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_cross37_sequence_test' @('tests/cross37_sequence_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_route36_no_bucket_test' @('tests/route36_no_bucket_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_route31_bucket_integration_test' @('tests/route31_bucket_integration_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_target35_trial_test' @('tests/target35_trial_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_target35_parser_replay_test' @('tests/target35_parser_replay_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_vision_align_test_test' @('tests/vision_align_test_test.c', 'App/vision_align_test.c', 'App/proto.c') @('tests/stubs', 'App') @('-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_vision_align_fastmath_test' @('tests/vision_align_test_test.c', 'App/vision_align_test.c', 'App/proto.c') @('tests/stubs', 'App') @('-O2', '-ffast-math', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_vision_align_bluetooth_test' @('tests/vision_align_bluetooth_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_mission_departure_route_test' @('tests/mission_departure_route_test.c') @('tests/stubs', 'App') @('-lm')
     Invoke-HostCase 'eod_mission_trial_plan_test' @('tests/mission_trial_plan_test.c', 'App/mission_trial_plan.c') @('App') @('-lm')
     Invoke-HostCase 'eod_mission_trial_flow_test' @('tests/mission_trial_flow_test.c', 'App/mission_trial.c', 'App/mission_trial_plan.c') @('tests/stubs', 'App') @('-lm')
@@ -57,6 +94,7 @@ try {
     Invoke-HostCase 'eod_vision_scene_wait_test' @('tests/vision_scene_wait_test.c') @('tests/stubs', 'App') @('-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_rotate_continuous_test' @('tests/rotate_continuous_test.c', 'App/steps.c') @('tests/stubs', 'App') @('-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_align_timeout_test' @('tests/align_timeout_test.c', 'App/steps.c') @('tests/stubs', 'App') @('-DVISION_CX_FWD_SIGN=1', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_grab_xy_alignment_test' @('tests/grab_xy_alignment_test.c') @('tests/stubs', 'App') @('-ffunction-sections', '-fdata-sections', '-fno-asynchronous-unwind-tables', '-fno-unwind-tables', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_align_gate_test' @('tests/align_boundary_test.c') @('tests/stubs', 'App') @('-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     foreach ($pixelSign in @(1, -1)) {
         Invoke-HostCase "eod_align_left_axis_$pixelSign" @('tests/align_boundary_test.c') @('tests/stubs', 'App') @("-DVISION_CX_FWD_SIGN=$pixelSign", '-DSWEEP_FWD_MMS=100.0f', '-DSWEEP_BALL_DELTA_MM=10.0f', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')

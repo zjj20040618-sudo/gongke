@@ -26,6 +26,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "robot.h"
+#include "board_pins.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -96,6 +97,7 @@ int main(void)
   MX_TIM4_Init();
   MX_TIM8_Init();
   MX_TIM12_Init();
+  MX_TIM11_Init();
   MX_UART4_Init();
   MX_USART2_UART_Init();
   MX_USART3_UART_Init();
@@ -205,7 +207,7 @@ void Error_Handler(void)
   /* USER CODE BEGIN Error_Handler_Debug */
   /* 无论错误发生在初始化还是运行期，先关闭电机总使能与激光。 */
   GPIOC->BSRR = (uint32_t)GPIO_PIN_8 << 16u;
-  GPIOA->BSRR = (uint32_t)GPIO_PIN_15 << 16u;
+  bp_laser_emergency_off();
   __disable_irq();
   while (1)
   {

@@ -21,6 +21,7 @@ static float drive_x, drive_y, drive_w;
 static float fore_mm, lateral_mm, current_x, current_y;
 static int feed_frames = 1, stop_on_command = 1;
 static unsigned forward_calls, backward_calls;
+static int frame_cls;
 
 float motion_odo_mm(void) { return fore_mm; }
 float motion_lateral_odo_mm(void) { return lateral_mm; }
@@ -32,8 +33,9 @@ void osDelay(uint32_t ms)
     fore_mm += current_x * (float)ms / 1000.0f;
     lateral_mm += current_y * (float)ms / 1000.0f;
     if (!feed_frames || (feed_frames == 2 && current_x >= 0.0f)) return;
-    frame.type = PF_OBJ; frame.cls = CLS_BALL; frame.label = LAB_R;
+    frame.type = PF_OBJ; frame.cls = frame_cls; frame.label = LAB_R;
     frame.cx = 160 + pixel_error; frame.h = 10;
+    alignment_proto_stats.obj++;
     steps_feed_frame(&frame);
     frame_count++;
 }
@@ -57,6 +59,8 @@ static void reset_fixture(void)
     drive_x = drive_y = drive_w = current_x = current_y = 0.0f;
     fore_mm = 500.0f; lateral_mm = 200.0f;
     feed_frames = stop_on_command = 1;
+    frame_cls = CLS_TARGET;
+    memset(&alignment_proto_stats, 0, sizeof alignment_proto_stats);
     run_reset();
 }
 
@@ -64,7 +68,7 @@ static int check(int error, int expected_done, float expected_speed)
 {
     int done;
     reset_fixture(); pixel_error = error;
-    done = step_align(CLS_BALL, LAB_R, 5000u);
+    done = step_align(CLS_TARGET, LAB_R, 5000u);
     if (done != expected_done || drive_calls != (expected_done ? 0u : 1u) ||
         drive_x != (float)VISION_CX_FWD_SIGN * expected_speed || drive_y != 0.0f || drive_w != 0.0f ||
         brake_calls == 0u || frame_count < X_ALIGN_N) {
@@ -78,8 +82,15 @@ static int check(int error, int expected_done, float expected_speed)
 int main(void)
 {
     reset_fixture();
+    /* A calibrated X direction alone must never let a grab task move or
+     * succeed while its measured Y workpoint/polarity is still absent. */
+    if (!step_grab_alignment_set(CLS_BALL, 160, -1, 1, 0) ||
+        step_align(CLS_BALL, LAB_R, 5000u) || drive_calls || now_ms ||
+        brake_calls == 0u || strcmp(step_grab_alignment_config_missing(),
+                                    "BALL_GRAB_XY_WORKPOINT_SIGNS") != 0) return 1;
+    reset_fixture();
     if (VISION_CX_FWD_SIGN == 0) {
-        if (step_align(CLS_BALL, LAB_R, 5000u) || drive_calls || now_ms ||
+        if (step_align(CLS_TARGET, LAB_R, 5000u) || drive_calls || now_ms ||
             strcmp(steps_config_missing(), "VISION_CX_FWD_SIGN") != 0) return 1;
         puts("left-camera gate: uncalibrated pixel sign rejects alignment without drive");
         return 0;
@@ -103,9 +114,10 @@ int main(void)
     if (step_return_forward_odo(490.0f, 5000u) || drive_calls != 1u ||
         drive_x != -SWEEP_FWD_MMS || drive_y != 0.0f) return 1;
     reset_fixture(); feed_frames = 2; stop_on_command = 0;
+    frame_cls = CLS_BALL;
     if (!step_sweep(PF_OBJ, CLS_BALL, LAB_R, 0, 5000u) ||
         forward_calls == 0u || backward_calls == 0u || lateral_mm != 200.0f ||
         fore_mm <= 500.0f || fore_mm > 510.0f || current_x || current_y) return 1;
-    puts("left-camera axes: 11 alignment boundaries + depth2 + return2 + bounded scan1 passed");
+    puts("left-camera axes: target X 11 boundaries + grab Y missing rejection + depth2 + return2 + bounded scan1 passed");
     return 0;
 }

@@ -60,6 +60,18 @@ void Error_Handler(void);
 
 /* USER CODE BEGIN Private defines */
 
+/* Dedicated TB6612 A channel for a voltage-rated laser MODULE, not a bare diode.
+ * AO1=red, AO2=black (AO2 is NOT an extra ground connection).
+ * VCC=3.3V logic; VM must match the module rating. PC8 remains wheel STBY. */
+#define LASER_PWMA_Pin GPIO_PIN_9
+#define LASER_PWMA_GPIO_Port GPIOB       /* TIM11_CH1, AF3 */
+#define LASER_AIN1_Pin GPIO_PIN_0
+#define LASER_AIN1_GPIO_Port GPIOB
+#define LASER_AIN2_Pin GPIO_PIN_1
+#define LASER_AIN2_GPIO_Port GPIOB
+#define LASER_STBY_Pin GPIO_PIN_12
+#define LASER_STBY_GPIO_Port GPIOC
+
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus

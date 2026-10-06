@@ -26,6 +26,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "robot.h"
+#include "board_pins.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -65,7 +66,9 @@ const osThreadAttr_t ControlTask_attributes = {
 osThreadId_t MissionTaskHandle;
 const osThreadAttr_t MissionTask_attributes = {
   .name = "MissionTask",
-  .stack_size = 256 * 4,
+  /* Coupled XY alignment plus float diagnostics exceeds the former 1 KB
+   * stack (Keil's printf indirect paths are not included in Max Depth). */
+  .stack_size = 512 * 4,
   .priority = (osPriority_t) osPriorityAboveNormal,
 };
 /* Definitions for ImuTask */
@@ -252,7 +255,7 @@ void StartTask05(void *argument)
 static void rtos_emergency_stop(void)
 {
   GPIOC->BSRR = (uint32_t)GPIO_PIN_8 << 16u;
-  GPIOA->BSRR = (uint32_t)GPIO_PIN_15 << 16u;
+  bp_laser_emergency_off();
   taskDISABLE_INTERRUPTS();
   for (;;) { }
 }

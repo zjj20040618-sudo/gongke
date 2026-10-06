@@ -18,7 +18,8 @@ void     bp_motor_brake(int m);                      /* TB6612 两 IN 同高 = �
 int32_t  bp_enc_delta(int m);                        /* 距上次调用新增的编码器脉冲数(带符号) */
 int32_t  bp_enc_raw_total(int m);                    /* 自上次清零起的硬件原始计数 */
 void     bp_enc_raw_reset_all(void);
-void     bp_laser_set(int on);                       /* 激光 高=触发 */
+void     bp_laser_set(int on);                       /* TB6612 A: PB9/PB0/PB1, separate PC12 STBY */
+void     bp_laser_emergency_off(void);               /* direct registers, no HAL/RTOS/handle needed */
 void     bp_debug_send(const char *s);               /* 蓝牙 USART3，中断驱动 TX 队列，不阻塞 RTOS 任务 */
 uint32_t bp_debug_tx_dropped(void);                  /* TX 队列满导致的整条消息丢弃次数 */
 

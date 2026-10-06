@@ -14,6 +14,11 @@
  * QR 与 OBJ 分仓，避免 READY/PONG 或另一类业务帧覆盖刚收到的有效结果。 */
 static volatile int s_qr_pending, s_obj_pending;
 static ProtoFrame  s_qr_frame, s_obj_frame;
+/* Grab XY uses a receive-time snapshot, not the time a pending slot is read.
+ * Even a valid EMPTY object packet increments stats.obj, invalidating this
+ * sample immediately without altering the camera protocol/callback format. */
+static uint32_t s_obj_tick, s_obj_packet;
+static uint8_t s_obj_seen;
 static volatile int s_abort;
 /* Initially open for the power-on QR request. Closing a local stage never
  * commands the camera to stop; only a new scene/target request reopens it. */
@@ -26,6 +31,7 @@ static void select_object(int cls, int label)
     uint32_t pm = __get_PRIMASK();
     __disable_irq();
     s_obj_want_cls = cls; s_obj_want_label = label; s_obj_pending = 0;
+    s_obj_seen = 0u;
     __set_PRIMASK(pm);
 }
 
@@ -48,7 +54,10 @@ void steps_feed_frame(const ProtoFrame *f)
             __set_PRIMASK(pm);
             return;
         }
+        ProtoStats stats;
+        proto_stats_get(&stats);
         s_obj_frame = *f;
+        s_obj_tick = HAL_GetTick(); s_obj_packet = stats.obj; s_obj_seen = 1u;
         s_obj_pending = 1;
     }
     __set_PRIMASK(pm);
@@ -81,6 +90,7 @@ void step_vision_receive_end(void)
     __disable_irq();
     s_vision_receive_closed = 1u;
     s_qr_pending = s_obj_pending = 0;
+    s_obj_seen = 0u;
     s_obj_want_cls = s_obj_want_label = -1;
     proto_receive_end(); /* closes request/retries locally, not camera TX */
     __set_PRIMASK(pm);
@@ -94,6 +104,7 @@ void run_reset(void)
     uint32_t pm = __get_PRIMASK();
     __disable_irq();
     s_abort = 0; s_qr_pending = s_obj_pending = 0;
+    s_obj_seen = 0u;
     s_obj_want_cls = s_obj_want_label = -1;
     s_vision_receive_closed = 0u;
     /* Do not cancel/restart the QR already latched by proto during boot/R1. */
@@ -246,8 +257,203 @@ static int align_depth_move(float error_mm, uint32_t to)
     return step_strafe(dist_mm, (dist_mm > 0.0f) ? X_DEPTH_V : -X_DEPTH_V, to);
 }
 
+/* These RAM workpoints deliberately start UNCALIBRATED. A visually plausible
+ * center is not evidence that a fixed open-loop arm can reach the object. */
+static GrabAlignConfig s_grab_stand[2] = {
+    {-1, -1, 0, 0, GRAB_XY_TOL_PX, GRAB_XY_TOL_PX},
+    {-1, -1, 0, 0, GRAB_XY_TOL_PX, GRAB_XY_TOL_PX}
+};
+static volatile uint8_t s_grab_align_running;
+/* Formal and trial alignment both run in the single MissionTask. Keep the
+ * diagnostic buffer out of that task's small stack; no ISR formats it. */
+static char s_grab_trace[176];
+static int grab_index(int cls)
+{
+    return cls == CLS_BALL ? 0 : (cls == CLS_HOSTAGE ? 1 : -1);
+}
+static int grab_config_valid(const GrabAlignConfig *c)
+{
+    return c && c->cx >= 0 && c->cx < 65535 && c->cy >= 0 && c->cy < 65535
+        && (c->x_sign == 1 || c->x_sign == -1) && (c->y_sign == 1 || c->y_sign == -1)
+        && isfinite(c->x_tol_px) && c->x_tol_px > 0.0f && c->x_tol_px <= 100.0f
+        && isfinite(c->y_tol_px) && c->y_tol_px > 0.0f && c->y_tol_px <= 100.0f;
+}
+int step_grab_alignment_set(int cls, int cx, int cy, int xs, int ys)
+{
+    int i = grab_index(cls);
+    uint32_t pm;
+    if (i < 0 || cx < -1 || cx >= 65535 || cy < -1 || cy >= 65535
+        || xs < -1 || xs > 1 || ys < -1 || ys > 1) return 0;
+    pm = __get_PRIMASK(); __disable_irq();
+    if (s_grab_align_running) { __set_PRIMASK(pm); return 0; }
+    if (cx >= 0) s_grab_stand[i].cx = cx;
+    if (cy >= 0) s_grab_stand[i].cy = cy;
+    if (xs) s_grab_stand[i].x_sign = xs;
+    if (ys) s_grab_stand[i].y_sign = ys;
+    __set_PRIMASK(pm);
+    return 1;
+}
+const char *step_grab_alignment_config_missing(void)
+{
+    if (!grab_config_valid(&s_grab_stand[0])) return "BALL_GRAB_XY_WORKPOINT_SIGNS";
+    if (!grab_config_valid(&s_grab_stand[1])) return "HOSTAGE_GRAB_XY_WORKPOINT_SIGNS";
+    return 0;
+}
+/* Read the same latest packet under one IRQ guard. A newer empty/unmatched
+ * packet invalidates the saved frame even though it generated no callback. */
+static int grab_sample(ProtoFrame *f, uint32_t *packet, uint32_t *tick)
+{
+    ProtoStats stats;
+    uint32_t pm = __get_PRIMASK();
+    int valid;
+    __disable_irq();
+    proto_stats_get(&stats);
+    valid = s_obj_seen && !s_abort && !s_vision_receive_closed && s_obj_packet == stats.obj;
+    *f = s_obj_frame; *packet = s_obj_packet; *tick = s_obj_tick;
+    __set_PRIMASK(pm);
+    return valid;
+}
+static float grab_speed(float error, int sign)
+{
+    float v = (float)sign * X_ALIGN_KP * error;
+    if (v > X_ALIGN_VMAX) v = X_ALIGN_VMAX;
+    if (v < -X_ALIGN_VMAX) v = -X_ALIGN_VMAX;
+    if (fabsf(v) < X_ALIGN_VMIN) v = v > 0.0f ? X_ALIGN_VMIN : -X_ALIGN_VMIN;
+    return v;
+}
+int step_align_xy(int cls, int label, const GrabAlignConfig *cfg,
+                  float absolute_heading_deg, uint32_t to)
+{
+    GrabAlignConfig c;
+    uint32_t started = HAL_GetTick(), still_from = started, last_packet = 0u;
+    uint32_t bad_packet = 0u, trace_t0 = started;
+    uint16_t last_seq = 0u, width = 0u, height = 0u;
+    int32_t counts[4];
+    unsigned good = 0u;
+    int seen = 0, bad = 0, moving = 0, axis = 0, switching = 0, success = 0;
+    if (s_abort || grab_index(cls) < 0 || !grab_config_valid(cfg) || !isfinite(absolute_heading_deg)) {
+        motion_brake(); return 0;
+    }
+    c = *cfg;
+    s_grab_align_running = 1u;
+    motion_brake(); select_object(cls, label);
+    for (int i = 0; i < 4; ++i) counts[i] = ctrl_enc_total(i);
+    while (!s_abort) {
+        ProtoFrame f;
+        uint32_t packet, tick, now = HAL_GetTick();
+        float ex, ey, heading_error, vx = 0.0f, vy = 0.0f, w;
+        int changed = 0, fresh, is_new, want;
+        if (!imu_ok() || !isfinite(imu_heading_deg()) || proto_scene_status() < 0
+            || (to && (uint32_t)(now - started) >= to)) break;
+        for (int i = 0; i < 4; ++i) {
+            int32_t n = ctrl_enc_total(i);
+            if (n != counts[i]) { counts[i] = n; changed = 1; }
+        }
+        if (changed || moving) { still_from = now; good = 0u; }
+        fresh = grab_sample(&f, &packet, &tick)
+            && (uint32_t)(now - tick) <= GRAB_XY_FRESH_MS
+            && f.type == PF_OBJ && f.cls == cls && (label < 0 || f.label == label);
+        if (!fresh || (bad && packet == bad_packet)) {
+            motion_brake(); moving = switching = 0; good = 0u;
+            osDelay(5); continue; /* Never follow stale XY or declare success. */
+        }
+        if (!f.img_w || !f.img_h || c.cx >= f.img_w || c.cy >= f.img_h
+            || f.cx < 0 || f.cx >= f.img_w || f.cy < 0 || f.cy >= f.img_h) break;
+        if (width && (width != f.img_w || height != f.img_h)) break;
+        width = f.img_w; height = f.img_h;
+        is_new = !seen || packet != last_packet;
+        if (is_new) {
+            uint16_t delta = (uint16_t)(f.sequence - last_seq);
+            if (seen && (delta == 0u || delta >= 0x8000u)) {
+                bad = 1; bad_packet = packet; good = 0u;
+                motion_brake(); moving = switching = 0;
+                osDelay(5); continue;
+            }
+            if (seen && (packet - last_packet != 1u || delta != 1u)) good = 0u;
+            seen = 1; last_packet = packet; last_seq = f.sequence; bad = 0;
+        }
+        ex = (float)f.cx - (float)c.cx; ey = (float)f.cy - (float)c.cy;
+        want = fabsf(ex) > c.x_tol_px ? 1 : (fabsf(ey) > c.y_tol_px ? 2 : 0);
+        if (want) {
+            good = 0u;
+            if (axis && want != axis && (moving || (uint32_t)(now - still_from) < GRAB_XY_STILL_MS)) {
+                /* Keep the LAST moving axis across a temporary in-band,
+                 * empty or rejected frame. None of those proves inertia has
+                 * ended or permits the other axis to start immediately. */
+                motion_brake();
+                if (moving) still_from = now;
+                moving = 0; switching = 1;
+            }
+            /* The frame that requested a new axis cannot start that axis.
+             * Stop all wheels first, then require a NEW current image. */
+            if (switching && ((uint32_t)(now - still_from) < GRAB_XY_STILL_MS || !is_new)) {
+                motion_brake(); osDelay(5); continue;
+            }
+            if (!moving && !is_new) { osDelay(5); continue; }
+            switching = 0; axis = want; moving = 1; still_from = now;
+            if (want == 1) vx = grab_speed(ex, c.x_sign);
+            else vy = grab_speed(ey, c.y_sign);
+            heading_error = absolute_heading_deg - imu_heading_deg();
+            if (!isfinite(heading_error)) break;
+            heading_error = fmodf(heading_error, 360.0f);
+            if (heading_error > 180.0f) heading_error -= 360.0f;
+            if (heading_error < -180.0f) heading_error += 360.0f;
+            w = step_heading_kp_deg() * 0.0174533f * heading_error;
+            if (!isfinite(w)) break;
+            if (w > 2.0f) w = 2.0f;
+            if (w < -2.0f) w = -2.0f;
+            motion_vel_set_precise(vx, vy, w);
+        } else {
+            motion_brake();
+            if (moving) { still_from = now; good = 0u; }
+            moving = switching = 0;
+            if (is_new && good < GRAB_XY_GOOD_FRAMES) ++good;
+            if (is_new && good >= GRAB_XY_GOOD_FRAMES
+                && (uint32_t)(now - still_from) >= GRAB_XY_STILL_MS) {
+                uint32_t pm = __get_PRIMASK(), p2, t2;
+                ProtoFrame final;
+                int still = 1;
+                __disable_irq();
+                for (int i = 0; i < 4; ++i) if (counts[i] != ctrl_enc_total(i)) still = 0;
+                success = still && !s_abort && imu_ok() && proto_scene_status() >= 0
+                    && grab_sample(&final, &p2, &t2) && p2 == packet && final.sequence == f.sequence
+                    && (uint32_t)(HAL_GetTick() - t2) <= GRAB_XY_FRESH_MS
+                    && fabsf((float)final.cx - (float)c.cx) <= c.x_tol_px
+                    && fabsf((float)final.cy - (float)c.cy) <= c.y_tol_px;
+                if (success) step_vision_receive_end();
+                __set_PRIMASK(pm);
+                if (success) break;
+            }
+        }
+        if ((uint32_t)(now - trace_t0) >= 1000u) {
+            trace_t0 = now;
+            snprintf(s_grab_trace, sizeof s_grab_trace,
+                "GRAB_XY cls=%d lab=%d cx=%d cy=%d tx=%d ty=%d ex=%.1f ey=%.1f axis=%d vx=%.1f vy=%.1f good=%u seq=%u\r\n",
+                cls, label, f.cx, f.cy, c.cx, c.cy, ex, ey, axis, vx, vy, good, (unsigned)f.sequence);
+            bp_debug_send(s_grab_trace);
+        }
+        osDelay(5);
+    }
+    motion_brake(); s_grab_align_running = 0u;
+    return success;
+}
+static int steps_grab_align_formal(int cls, int label, uint32_t to)
+{
+    int i = grab_index(cls);
+    GrabAlignConfig cfg;
+    if (i < 0 || !grab_config_valid(&s_grab_stand[i]) || s_abort) { motion_brake(); return 0; }
+    cfg = s_grab_stand[i];
+    if (!step_prepare_leg()) return 0;
+    return step_align_xy(cls, label, &cfg, imu_heading_deg(), to);
+}
+
 int step_align(int cls, int label, uint32_t to)
 {
+    /* Ball/hostage now use coupled image X/Y, not the legacy one-shot depth
+     * estimate followed by X-only success. Target/bucket stay unchanged. */
+    if (cls == CLS_BALL || cls == CLS_HOSTAGE) {
+        return steps_grab_align_formal(cls, label, to);
+    }
     /* 目标该落在画面哪个 cx —— 直接取标定值（**不是**画面中心，也不用知道画面宽） */
     const float cx_tgt = (cls >= 0 && cls < 4) ? s_stand[cls].cx_stand_px : 0.0f;
     uint32_t t0  = HAL_GetTick();
@@ -371,6 +577,7 @@ const char *steps_config_missing(void)
     if (SWEEP_TARGET_DELTA_MM == 0.0f) return "SWEEP_TARGET_DELTA_MM";
     if (SWEEP_HOSTAGE_DELTA_MM == 0.0f) return "SWEEP_HOSTAGE_DELTA_MM";
     if (SWEEP_BUCKET_DELTA_MM == 0.0f) return "SWEEP_BUCKET_DELTA_MM";
+    if (step_grab_alignment_config_missing()) return step_grab_alignment_config_missing();
     return 0;
 }
 
@@ -458,8 +665,10 @@ int step_prepare_leg(void)
 /* 角度差归一到 [-180,180)（同 step_rotate_deg 里那段,抽出来复用） */
 static float wrap180f(float a)
 {
-    while (a >  180.0f) a -= 360.0f;
-    while (a < -180.0f) a += 360.0f;
+    if (!isfinite(a)) return a;
+    a = fmodf(a, 360.0f); /* bounded; invalid/huge input cannot hang stop handling */
+    if (a >  180.0f) a -= 360.0f;
+    if (a < -180.0f) a += 360.0f;
     return a;
 }
 
@@ -473,6 +682,7 @@ float step_heading_hold_w_kp(float heading0_deg, float kp)
 {
     if (!(kp >= 0.0f && kp <= 5.0f)) return 0.0f;
     float e = wrap180f(heading0_deg - imu_leg_heading_deg());
+    if (!isfinite(e)) return 0.0f;
     float w = kp * e * 0.0174533f;
     if (w >  NAV_W_MAX_RADS) w =  NAV_W_MAX_RADS;
     if (w < -NAV_W_MAX_RADS) w = -NAV_W_MAX_RADS;

@@ -82,7 +82,9 @@ static int start_stage(unsigned stage, const MotionProfileTune *global)
     CHECK(sequence_start_stage() == 0);
     CHECK(s_seq_state == SQ_RUN && s_dist_precise == 1u);
     CHECK(s_dist_ramp.acc == 700.0f && s_dist_ramp.dec == 350.0f);
-    CHECK(s_dist_heading_profile == 0u && s_dist_heading_kp == 0.3f && host_heading_kp == 0.3f);
+    CHECK(s_dist_heading_profile == 0u &&
+          s_dist_heading_kp == (stage == 3u || stage == 4u ? 0.0f : 0.3f) && host_heading_kp == 0.3f);
+    CHECK(s_route_heading_kp == 0.3f);
     CHECK(global_matches(global));
     CHECK(strstr(host_messages, "ROUTE_PROFILE mode=31 source=LOCAL acc=700 dec=350") != NULL);
     return 0;
@@ -91,9 +93,9 @@ static int start_stage(unsigned stage, const MotionProfileTune *global)
 static int check_local_profile_and_distance(void)
 {
     static const MotionProfileTune globals[] = { { 0.0f, 0.0f }, { 42.0f, 84.0f } };
-    static const unsigned stages[] = { 0u, 1u, 3u, 4u, 5u };
-    static const float targets[] = { -530.0f, -650.0f, 750.0f, -170.0f, 210.0f };
-    static const float speeds[] = { 100.0f, 100.0f, 300.0f, 20.0f, 100.0f };
+    static const unsigned stages[] = { 0u, 1u, 3u, 4u, 5u, 7u };
+    static const float targets[] = { -520.0f, -650.0f, -650.0f, 70.0f, -190.0f, -780.0f };
+    static const float speeds[] = { 100.0f, 100.0f, 300.0f, 20.0f, 100.0f, 100.0f };
     for (unsigned p = 0; p < sizeof globals / sizeof globals[0]; ++p) {
         for (unsigned s = 0; s < sizeof stages / sizeof stages[0]; ++s) {
             float previous, axis;
@@ -102,7 +104,7 @@ static int check_local_profile_and_distance(void)
             axis = captured_axis();
             CHECK(close_to(fabsf(axis), 14.0f) && axis * s_dist_target > 0.0f);
             CHECK(host_precise_calls > 0u && host_integer_calls == 0u);
-            for (unsigned i = 0; i < 24u; ++i) {
+            for (unsigned i = 0; i < 48u; ++i) {
                 previous = fabsf(captured_axis());
                 poll_20ms();
                 CHECK(fabsf(captured_axis()) >= previous);
@@ -113,7 +115,7 @@ static int check_local_profile_and_distance(void)
             /* Holding a sensor snapshot lets us inspect the real deceleration
              * recurrence independently of an invented physical plant. */
             put_remaining(5.0f);
-            for (unsigned i = 0; i < 48u; ++i) {
+            for (unsigned i = 0; i < 96u; ++i) {
                 previous = fabsf(captured_axis());
                 poll_20ms();
                 CHECK(s_round == R_RUN && s_seq_stage == stages[s]);
@@ -123,11 +125,13 @@ static int check_local_profile_and_distance(void)
             CHECK(close_to(fabsf(captured_axis()), fminf(s_v, sqrtf(2.0f * 350.0f * 5.0f))));
             CHECK(global_matches(&globals[p]));
 
-            /* A nonzero yaw error must still request the corrective turn,
-             * including while the forward/lateral speed is being reduced. */
+            /* Only reverse crossing/forward board contact ignore yaw while slowing down.
+             * Every other distance leg retains its route-owned gain. */
+            const float expected_kp = stages[s] == 3u || stages[s] == 4u ? 0.0f : 0.3f;
             host_yaw = 3.0f; poll_20ms();
-            CHECK(last_w < 0.0f && close_to(last_w, -0.3f * 3.0f * 0.0174533f));
-            host_yaw = -3.0f; poll_20ms(); CHECK(last_w > 0.0f);
+            CHECK(close_to(last_w, -expected_kp * 3.0f * 0.0174533f));
+            host_yaw = -3.0f; poll_20ms();
+            CHECK(close_to(last_w, expected_kp * 3.0f * 0.0174533f));
             host_yaw = 0.0f;
 
             /* The integer legacy IK would deliver four zeros before distance
@@ -155,6 +159,7 @@ static int check_local_profile_and_distance(void)
             CHECK(s_seq_stage == stages[s] && brake_calls > (int)previous);
             CHECK(last_x == 0.0f && last_y == 0.0f && last_w == 0.0f);
             host_tick += T_DIST_STILL_MS; test_poll();
+            fixture_complete_distance_alignment();
             if (s_seq_state == SQ_QR_WAIT) CHECK(sequence_release_qr() == 0);
             CHECK(s_seq_stage == stages[s] + 1u && s_seq_state == SQ_STILL);
             CHECK(global_matches(&globals[p]));
@@ -186,6 +191,60 @@ static int check_immediate_cancellation(void)
     return 0;
 }
 
+static int check_lateral_reverse_and_ff_wheel_dispatch(void)
+{
+    const MotionProfileTune global = { 0.0f, 0.0f };
+    float baseline[4];
+    CHECK(start_stage(0u, &global) == 0);
+    CHECK(s_msel == 17 && s_dist_target == -520.0f && s_v == 100.0f);
+    CHECK(last_x == 0.0f && last_y < 0.0f && last_w == 0.0f && s_dist_ff_ratio == 0.0f);
+    delivered_mask = 0u;
+    real_motion_vel_set_precise(last_x, last_y, last_w);
+    CHECK(delivered_mask == 15u);
+    CHECK(delivered_rpm[0] > 0.0f && delivered_rpm[1] < 0.0f &&
+          delivered_rpm[2] > 0.0f && delivered_rpm[3] < 0.0f);
+    CHECK(close_to(delivered_rpm[0], delivered_rpm[2]) && close_to(delivered_rpm[1], delivered_rpm[3]));
+    CHECK(close_to(delivered_rpm[0], -delivered_rpm[1]));
+    run_cmd("g");
+    /* Right35 was removed from the route; preserve its signed IK coverage
+     * as an unchanged manual mode18 command rather than inventing a node. */
+    run_cmd("18"); run_cmd("v100"); run_cmd("d35"); run_cmd("g");
+    poll_20ms();
+    CHECK(s_msel == 18 && s_dist_target == 35.0f && s_v == 100.0f);
+    CHECK(last_x == 0.0f && last_y > 0.0f && last_w == 0.0f && s_dist_ff_ratio == 0.0f);
+    delivered_mask = 0u;
+    real_motion_vel_set_precise(last_x, last_y, last_w);
+    CHECK(delivered_mask == 15u);
+    CHECK(delivered_rpm[0] < 0.0f && delivered_rpm[1] > 0.0f &&
+          delivered_rpm[2] < 0.0f && delivered_rpm[3] > 0.0f);
+    CHECK(close_to(delivered_rpm[0], delivered_rpm[2]) && close_to(delivered_rpm[1], delivered_rpm[3]));
+    CHECK(close_to(delivered_rpm[0], -delivered_rpm[1]));
+    run_cmd("g");
+    CHECK(start_stage(5u, &global) == 0);
+    CHECK(s_msel == 16 && s_dist_target == -190.0f && s_v == 100.0f);
+    CHECK(last_x < 0.0f && last_y < 0.0f && last_w == 0.0f && s_dist_ff_ratio == 0.00625f);
+    CHECK(close_to(last_y, -0.00625f * fabsf(last_x)));
+    delivered_mask = 0u;
+    real_motion_vel_set_precise(last_x, last_y, last_w);
+    CHECK(delivered_mask == 15u);
+    for (int motor = 0; motor < 4; ++motor) CHECK(delivered_rpm[motor] < 0.0f);
+    run_cmd("g");
+    CHECK(start_stage(9u, &global) == 0);
+    CHECK(s_dist_ff_ratio == -0.00625f && last_x > 0.0f && last_y > 0.0f && last_w == 0.0f);
+    CHECK(close_to(last_y, last_x * 0.00625f));
+    real_motion_ik_precise(last_x, 0.0f, 0.0f, baseline);
+    delivered_mask = 0u;
+    real_motion_vel_set_precise(last_x, last_y, last_w);
+    CHECK(delivered_mask == 15u);
+    for (int motor = 0; motor < 4; ++motor) CHECK(delivered_rpm[motor] > 0.0f);
+    CHECK(delivered_rpm[0] < baseline[0] && delivered_rpm[2] < baseline[2]);
+    CHECK(delivered_rpm[1] > baseline[1] && delivered_rpm[3] > baseline[3]);
+    CHECK(close_to(delivered_rpm[0], delivered_rpm[2]) && close_to(delivered_rpm[1], delivered_rpm[3]));
+    run_cmd("g");
+    puts("real precise IK: route31 left520/manual right35 signed lateral targets; reverse190 negative axis with separateleftBFF; defaultfrontFFFnegative ->positive lateral and four changed forwardRPM targets passed");
+    return 0;
+}
+
 static int check_manual_profile_preservation(void)
 {
     static const MotionProfileTune globals[] = { { 0.0f, 0.0f }, { 42.0f, 84.0f } };
@@ -207,7 +266,8 @@ int main(void)
 {
     CHECK(check_local_profile_and_distance() == 0);
     CHECK(check_immediate_cancellation() == 0);
+    CHECK(check_lateral_reverse_and_ff_wheel_dispatch() == 0);
     CHECK(check_manual_profile_preservation() == 0);
-    puts("route31 real soft-stop: local700/350/global isolation, -530/-650/+750(v300)/-170(v20)/+210(v100), ramp/deceleration, fractional endpoint, local ykp0.3 routing, immediate g/a/0/IMU cancellation and manual profile preservation passed");
+    puts("route31 real soft-stop: local700/350/global isolation, exactsix legs, crossing/contact yaw/FF disabled including deceleration, back190 restoresykp0.3 + BFF; post-yaw-before-next, fractional endpoint, g/a/0/IMU cancellation and manualprofile preservation passed");
     return 0;
 }

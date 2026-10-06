@@ -7,16 +7,16 @@
 static int route34_near(float a, float b)
 { return fabsf(a - b) < 0.000001f; }
 
-static int check_complete_recipe_without_camera(void)
+static int check_complete_recipe_without_qr(void)
 {
-    static const int modes[12] = {17,16,30,15,16,15,17,15,20,15,20,15};
-    static const int commands[12] = {-530,-650,-92,750,-170,210,-730,780,90,2450,90,2125};
-    static const float speeds[12] = {100,100,100,300,20,100,100,100,100,100,100,100};
+    static const int modes[15] = {17,16,20,16,15,16,30,0,16,20,15,20,15,20,15};
+    static const int commands[15] = {-530,-650,90,-650,80,-190,-92,0,-730,90,780,90,2450,90,2125};
+    static const float speeds[15] = {100,100,100,300,20,100,100,0,100,100,100,100,100,100,100};
+    CHECK(ROUTE_TEST_STAGES == 15u && ROUTE_TEST_ALIGN_STAGE == 7u && ROUTE_TEST_BACK_STAGE == 8u);
     CHECK(wire_boot() == 0);
     unsigned background_commands = wire_commands;
     run_cmd("34");
     CHECK(s_msel == 34 && s_seq_mode == 34 && s_seq_state == SQ_READY && stopped());
-    CHECK(strcmp(s_mname[34], "route_only_no_qr_sequence") == 0);
     CHECK(!s_receiving && !s_due && !proto_qr_get(NULL));
     run_cmd("fff0.01000"); run_cmd("ykp1.2");
     CHECK(route34_near(s_route_forward_ff_ratio, 0.01f) && route34_near(s_route_heading_kp, 1.2f));
@@ -27,24 +27,44 @@ static int check_complete_recipe_without_camera(void)
     CHECK(strstr(host_messages, "source=ROUTE34 global_ykp=0.300") != NULL);
     CHECK(s_seq_run == 1u && s_seq_state == SQ_STILL && stopped());
     for (unsigned stage = 0u; stage < ROUTE_TEST_STAGES; ++stage) {
+        if (stage == ROUTE_TEST_ALIGN_STAGE) {
+            CHECK(s_route_test_plan[stage].mode == 0u && s_route_test_plan[stage].heading_hold == 1u);
+            CHECK(route_wire_bucket_wait_d() == 0);
+            CHECK(!notice_calls && !s_seq_qr[0] && !laser_state && !pulse_calls && !servo_calls);
+            continue;
+        }
+        if (stage == ROUTE_TEST_BACK_STAGE) {
+            CHECK(s_seq_state == SQ_MANUAL_D_WAIT && stopped());
+            run_cmd("d730");
+            CHECK(s_seq_state == SQ_STILL && s_bucket36_back_mm == 730u && stopped());
+        }
         CHECK(s_seq_stage == stage && s_seq_mode == 34 && sequence_start_stage() == 0);
         CHECK(s_msel == modes[stage] && s_seq_state != SQ_QR_WAIT);
+        CHECK(s_route_test_plan[stage].heading_hold == (stage == 3u || stage == 4u ? 0u : 1u));
         if (dist_mode()) {
+            const float expected_kp = stage == 3u || stage == 4u ? 0.0f : 1.2f;
             CHECK(s_dist_target == commands[stage] && s_v == speeds[stage]);
-            CHECK(s_dist_precise && route34_near(s_dist_heading_kp, 1.2f));
+            CHECK(s_dist_precise && route34_near(s_dist_heading_kp, expected_kp));
+            CHECK(route34_near(s_route_heading_kp, 1.2f) && step_heading_kp_deg() == 0.3f);
             CHECK(s_dist_ramp.acc == 700.0f && s_dist_ramp.dec == 350.0f);
-            CHECK(route34_near(s_dist_ff_ratio, modes[stage] == 15 && stage != 3u ? 0.01f : 0.0f));
+            CHECK(route34_near(s_dist_ff_ratio, stage == 10u || stage == 12u || stage == 14u ? 0.01f :
+                  stage == 1u || stage == 5u || stage == 8u ? 0.00625f : 0.0f));
             unsigned precise_before = host_precise_calls, integer_before = host_integer_calls;
             host_yaw = 3.0f; tick();
-            CHECK(last_w < 0.0f && host_precise_calls == precise_before + 1u && host_integer_calls == integer_before);
+            CHECK(route34_near(last_w, -expected_kp * 3.0f * 0.0174533f) &&
+                  host_precise_calls == precise_before + 1u && host_integer_calls == integer_before);
+            host_yaw = -3.0f; tick();
+            CHECK(route34_near(last_w, expected_kp * 3.0f * 0.0174533f));
+            host_yaw = 0.0f;
         } else {
             CHECK(turn_target_deg() == commands[stage]);
         }
         CHECK(sequence_finish_stage() == 0);
         wire_sync();
-        CHECK(s_seq_state != SQ_QR_WAIT && wire_commands == background_commands);
-        CHECK(!s_receiving && !s_due && !notice_calls && !s_seq_qr[0]);
-        CHECK(s_seq_state == (stage == 11u ? SQ_DONE : SQ_STILL));
+        CHECK(s_seq_state != SQ_QR_WAIT && wire_commands == background_commands + (stage >= 6u ? 1u : 0u));
+        CHECK(!notice_calls && !s_seq_qr[0]);
+        CHECK(s_receiving == (stage == 6u) && !s_due);
+        CHECK(s_seq_state == (stage == 14u ? SQ_DONE : stage == 6u ? SQ_BUCKET_ALIGN : SQ_STILL));
         CHECK(!pulse_calls && !servo_calls && !laser_state && !s_go);
     }
     CHECK(s_msel == 34 && s_round == R_DONE && s_seq_state == SQ_DONE);
@@ -55,9 +75,9 @@ static int check_complete_recipe_without_camera(void)
     CHECK(strstr(last_message, "select34_then_g_to_rerun") != NULL);
     run_cmd("34"); run_cmd("g"); wire_sync();
     CHECK(s_seq_run == run_number + 1u && s_seq_state == SQ_STILL);
-    CHECK(wire_commands == background_commands && !s_receiving);
+    CHECK(wire_commands == background_commands + 1u && !s_receiving && !wire_bad);
     run_cmd("g"); CHECK(s_seq_state == SQ_STOPPED && stopped() && s_msel == 34);
-    puts("route34: all 12 shared31 actions/speeds/turns, precise local700/350/ykp/fff, automatic mode34 PARAM, no QR/vision/arm/laser, terminal/manual restart passed");
+    puts("retained route34: 15-node recipe, reverse650/v300, forward80/v20, back190/yaw/BFF, real bucket4/0 ACK/five frames/1s/manual d730, no QR/arm/laser, post-yaw-before-next, terminal restart passed");
     return 0;
 }
 
@@ -96,7 +116,9 @@ static int check_all_phase_cancellations_and_write_locks(void)
     for (unsigned stage = 0u; stage < ROUTE_TEST_STAGES; ++stage)
         for (unsigned phase_index = 0u; phase_index < 4u; ++phase_index)
             for (unsigned key = 0u; key < 3u; ++key) {
+                if (stage == ROUTE_TEST_ALIGN_STAGE) continue; /* Real bucket phases below. */
                 CHECK(wire_boot() == 0); run_cmd("34"); run_cmd("g");
+                if (stage == ROUTE_TEST_BACK_STAGE) s_bucket36_back_mm = 730u;
                 s_seq_stage = (uint8_t)stage; route_seq_prepare();
                 if (phase_index == 1u) {
                     host_tick += T_DIST_STILL_MS; wire_poll(); CHECK(s_seq_state == SQ_WAIT);
@@ -130,15 +152,18 @@ static int check_all_phase_cancellations_and_write_locks(void)
     host_imu_valid = 0; wire_poll();
     CHECK(s_seq_state == SQ_STOPPED && stopped() && wire_commands == 1u);
     CHECK(strstr(last_message, "status=IMUERR") != NULL);
-    puts("route34: 144 g/a/0 PREP/WAIT/RUN/BRAKE cancellations, no resume/return or camera TX, 15 write locks and IMU stop passed");
+    puts("route34: 168 g/a/0 motion PREP/WAIT/RUN/BRAKE cancellations, no resume/return or camera TX, 15 write locks and IMU stop passed");
     return 0;
 }
 
 static int check_post_cross_back_to_forward_preparation(void)
 {
-    CHECK(wire_boot() == 0); run_cmd("34"); run_cmd("g");
+    CHECK(wire_boot() == 0); run_cmd("34"); run_cmd("ykp1.2"); run_cmd("g");
     s_seq_stage = 4u; route_seq_prepare();
-    CHECK(sequence_start_stage() == 0 && s_dist_target == -170.0f && s_v == 20.0f);
+    CHECK(sequence_start_stage() == 0 && s_dist_target == 80.0f && s_v == 20.0f);
+    CHECK(s_dist_heading_kp == 0.0f && route34_near(s_route_heading_kp, 1.2f));
+    host_yaw = 6.0f; tick(); CHECK(last_w == 0.0f);
+    host_yaw = -6.0f; tick(); CHECK(last_w == 0.0f);
     unsigned before_finish = (unsigned)zero_calls;
     CHECK(sequence_finish_stage() == 0);
     CHECK(s_seq_stage == 5u && s_seq_state == SQ_STILL && stopped());
@@ -154,11 +179,15 @@ static int check_post_cross_back_to_forward_preparation(void)
     host_tick += NAV_SETTLE_MS - 1u; wire_poll();
     CHECK(s_seq_state == SQ_WAIT && stopped() && zero_calls == (int)before_node + 1);
     host_tick++; wire_poll();
-    CHECK(s_seq_state == SQ_RUN && s_round == R_RUN && s_msel == 15);
-    CHECK(s_dist_target == 210.0f && s_v == 100.0f && s_dist_precise);
+    CHECK(s_seq_state == SQ_RUN && s_round == R_RUN && s_msel == 16);
+    CHECK(s_dist_target == -190.0f && s_v == 100.0f && s_dist_precise && s_dist_ff_ratio == 0.00625f);
+    CHECK(s_dist_heading0 == 0.0f && route34_near(s_dist_heading_kp, 1.2f));
+    CHECK(host_yaw == 0.0f && last_w == 0.0f && step_heading_kp_deg() == 0.3f);
+    host_yaw = 3.0f; tick(); CHECK(route34_near(last_w, -1.2f * 3.0f * 0.0174533f));
+    host_yaw = -3.0f; tick(); CHECK(route34_near(last_w, 1.2f * 3.0f * 0.0174533f));
     CHECK(!s_receiving && wire_commands == 1u && !notice_calls && !prepare_calls);
     run_cmd("g");
-    puts("route34 post-cross: back170/v20 ends -> changed wheel delays zero -> 250ms still -> heading zero -> full existing NAV_SETTLE_MS -> forward210/v100 passed");
+    puts("route34 post-cross: forward80/v20 mechanical contact -> changed wheel delays zero ->250ms still ->zero ->full NAV_SETTLE_MS ->back190/v100 restores yaw and independentBFF passed");
     return 0;
 }
 
@@ -167,7 +196,7 @@ static int check_shared_tuning_and_legacy_isolation(void)
     CHECK(wire_boot() == 0); run_cmd("34"); run_cmd("ykp2"); run_cmd("fff0.02");
     host_messages[0] = '\0'; run_cmd("param");
     CHECK(strstr(host_messages, "ROUTE_PROFILE mode=34 source=LOCAL") != NULL);
-    CHECK(strstr(host_messages, "fff=0.02000 ykp=2.000") != NULL);
+    CHECK(strstr(host_messages, "fff=0.02000 bff=0.00625 ykp=2.000") != NULL);
     CHECK(test_forward_ff_ratio() == 0.0125f && step_heading_kp_deg() == 0.3f);
     run_cmd("31"); wire_sync();
     CHECK(s_seq_mode == 31 && s_route_heading_kp == 2.0f && route34_near(s_route_forward_ff_ratio, 0.02f));
@@ -177,24 +206,26 @@ static int check_shared_tuning_and_legacy_isolation(void)
     CHECK(s_msel == 32 && s_seq_state == SQ_OFF && step_heading_kp_deg() == 0.3f);
     CHECK(test_forward_ff_ratio() == 0.0125f && trial_report_calls > 0);
     run_cmd("15"); run_cmd("v100"); run_cmd("d100"); run_cmd("g");
-    CHECK(s_dist_heading_kp == 0.3f && s_dist_ff_ratio == 0.0125f);
+    CHECK(s_dist_heading_kp == 0.3f && s_dist_ff_ratio == -0.00625f);
     run_cmd("a");
     run_cmd("20"); CHECK(turn_target_deg() == 90.0f);
     run_cmd("22"); CHECK(turn_target_deg() == 180.0f);
     run_cmd("30"); CHECK(turn_target_deg() == -92.0f);
     CHECK(wire_boot() == 0); run_cmd("34");
-    CHECK(s_route_heading_kp == 0.3f && s_route_forward_ff_ratio == 0.00625f);
-    run_cmd("35"); CHECK(s_msel == 34 && strstr(last_message, "MODE_RANGE") != NULL);
+    CHECK(s_route_heading_kp == 0.3f && s_route_forward_ff_ratio == -0.00625f);
+    run_cmd("42"); CHECK(s_msel == 34 && strstr(last_message, "MODE_RANGE") != NULL);
     puts("route34 tuning: shared31 RAM ykp/fff, explicit MODE34 report,31 reopens QR; manual/32/global/90/180 unchanged and power-on defaults passed");
     return 0;
 }
 
 int main(void)
 {
-    CHECK(check_complete_recipe_without_camera() == 0);
+    CHECK(check_complete_recipe_without_qr() == 0);
     CHECK(check_pending_background_and_late_packets() == 0);
     CHECK(check_all_phase_cancellations_and_write_locks() == 0);
+    CHECK(check_route_bucket_manual_stop(34u) == 0);
     CHECK(check_post_cross_back_to_forward_preparation() == 0);
+    CHECK(check_route_cross_heading_restart(34u) == 0);
     CHECK(check_shared_tuning_and_legacy_isolation() == 0);
     puts("route34_no_qr_test: all host checks passed; no hardware or visual source changed");
     return 0;

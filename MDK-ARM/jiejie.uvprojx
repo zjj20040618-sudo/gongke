@@ -506,6 +506,11 @@
               <FilePath>../App/test.c</FilePath>
             </File>
             <File>
+              <FileName>vision_align_test.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/vision_align_test.c</FilePath>
+            </File>
+            <File>
               <FileName>auto_steps.c</FileName>
               <FileType>1</FileType>
               <FilePath>../App/auto_steps.c</FilePath>

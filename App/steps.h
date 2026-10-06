@@ -21,14 +21,41 @@ void step_vision_receive_end(void); /* local RX stage end + clear slots; camera 
 void step_object_select(int cls, int label); /* new phase: clear slot and filter ISR inputs */
 int  step_object_take(ProtoFrame *out);      /* consume the latest matching fresh object */
 
-/* ---- 视觉对准（两步，2026-09-13 实现）----
+/* Left-facing camera grab alignment: image X -> body forward/backward,
+ * image Y -> body right/left. Workpoints are measured, never image center.
+ * Signs: +1 means positive pixel error requests positive body-axis speed.
+ * Inclusive tolerances are pixels; default trial seeds are 8px on each axis. */
+typedef struct {
+    int cx, cy, x_sign, y_sign;
+    float x_tol_px, y_tol_px;
+} GrabAlignConfig;
+#define GRAB_XY_TOL_PX 8.0f
+#define GRAB_XY_GOOD_FRAMES 5u
+#define GRAB_XY_FRESH_MS 300u
+#define GRAB_XY_STILL_MS 250u
+/* Caller prepares/stops the leg and captures an absolute heading FIRST.
+ * Does not clear heading/odom. Rechecks BOTH pixels on every new frame,
+ * X priority; brakes and settles before changing axis. Only BALL/HOSTAGE.
+ * Missing/empty/stale coordinates brake and wait, never release the gate. */
+int step_align_xy(int cls, int label, const GrabAlignConfig *cfg,
+                  float absolute_heading_deg, uint32_t to);
+/* Formal grab calibration, RAM-only: -1 keeps cx/cy, 0 keeps each sign.
+ * No defaults for workpoints/signs; false while XY alignment is running. */
+int step_grab_alignment_set(int cls, int cx, int cy, int x_sign, int y_sign);
+const char *step_grab_alignment_config_missing(void);
+
+/* ---- 视觉对准 ----
+ * BALL/HOSTAGE: step_grab_alignment_set先给实测cx/cy/两个符号，
+ * 再调用共享step_align_xy反复X(前后)/Y(左右)单轴闭环；同一新帧两轴
+ * 同时达标，连续5个新seq且四轮静止250ms才成功。未标定不驱动。
+ * TARGET/BUCKET保留以下历史两步路径，35独立打靶仍只看X。
  * 左侧相机阶段1：用目标像素高估距离，再左平移靠近/右平移离开（最多3次）。
  *        `d_站` 填0可关闭粗调；它不是沿车头方向移动。
  * 阶段2：沿车身前后轴把cx拉到每类标定值，不是画面中心；容差外最小速度+限幅。
  *        连续N帧偏差均达标才对准。VISION_CX_FWD_SIGN须实测为±1，0拒绝驱动。
  * 分时做先纵深后画面左右，两轴不能按旧朝前相机的车体系混用。
  * 语义：三个要用视觉的任务都是「**等到对齐为止**」——调用方传 to=0（不设超时兜底）。
- * 标定值（站距 / 站位处像素高 / 目标 cx）在 steps.c 的 `s_stand[4]` 表里，按 cls 查：
+ * 靶/桶历史标定值（站距 / 站位处像素高 / cx）在 steps.c 的 `s_stand[4]` 表里，按 cls 查：
  *   0球 / 1靶 / 2人质 / 3桶。**把车摆到满意站位时，这三个一次量齐。**
  * label = 在 3 个同色/同形并列里挑 QR 选中的那个；label<0 → 该类全场只此一只
  *   （如排爆桶，无色可挑），不挑 label。to==0 → 不限时。

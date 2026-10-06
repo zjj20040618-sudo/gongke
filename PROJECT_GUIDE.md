@@ -6,7 +6,16 @@
 
 这是一张**找代码的地图**，不是“全部参数已经调好”的证明。`TODO`、`0` 和标注为“种子”的值都要按实车测试填写。当前正式整场有配置闸门，不能因工程能编译就直接上车跑。
 
-## 当前入口（2026-10-05：ROUTE34-NOQR）
+## 当前入口（2026-10-06：XY38-41-SLOW-T10）
+
+最新固件`20261006-XY38-41-SLOW-T10`，Keil工程仍`MDK-ARM/jiejie.uvprojx`。本次修改/验证/实测边界以[README_本次更新.md](README_本次更新.md)为准；下面10月5日入口与旧数值均为历史，不能用于填写当前31或38～41。
+
+- **38/39/40/41独立对位**：分别球、桶、人质、球停5秒→共享22的180°→桶停5秒。选号新建QR会话，g启动；合法三码前绝不移动，运行中g/a/0取消。X→Y反复修正、刹停纠角后取新图复核，两轴±10、连续5新帧；移动v16，不超过原v50的1/3。引擎`App/vision_align_test.c`，工作点/速度/帧门常量`App/vision_align_test.h`；蓝牙wrapper在`test.c::xy_trial_*`。与31/32/35独立，不调用机构/激光。
+- **31道路**：独立`route_test_plan.h::s_route31_plan`12节点，首段520、靠板70、右730/后780/左90，不看桶、不等d。R1纠角且合法QR后放行R2。仍只走道路，新的球/桶/靶/人质任务链尚未接入。
+- **34/36/37**：34保留旧15节点桶x500/手发d，36无桶十节点，37仅共享越障三段；这三模式靠板80仍不被31的70覆盖。32旧路线/任务表与35X-only持续激光均不连改。
+- **坐标边界**：x190/球420/桶400/人质220只是独立试验值。config默认480×320，实际OBJECT从模型读取；须从设备日志/01核对宽高。若高度320，球/桶Y不可达并报IMAGE_GEOMETRY，不自动缩放。未烧录或实机验收。
+
+## 历史入口（2026-10-05：ROUTE34-NOQR）
 
 固件号 `20261005-ROUTE34-NOQR`，配套视觉 `6a20efe` / App2.1.1 / 9564。保留扫码53、四阶段63与本地接收闸门；前一QR53实机日志仍只有60请求回显，ACK/QR尚未接通。新增34未实机验证，更新范围和证据见 [README_本次更新.md](README_本次更新.md)，视觉队友先读 [CONTROL_TO_VISION.md](CONTROL_TO_VISION.md)。
 
@@ -223,7 +232,8 @@ App/robot.c               初始化、三路串口分流、蓝牙服务
 | [arm.c](App/arm.c) / [arm.h](App/arm.h) | 两路步进 STEP/DIR 脉冲、爪舵机 PWM | `CLAW_OPEN_US`、`CLAW_CLOSE_US`、STEP/DIR pin 数组；当前机械挡块**没有**回零电信号 |
 | [imu.c](App/imu.c) / [imu.h](App/imu.h) | IMU 串口帧解析、连续 yaw/pitch/roll、链路有效性、分段航向软件零点 | `IMU_LINK_TIMEOUT_MS`、协议字段；方向/零点须结合实车数据查，不靠改常数猜 |
 | [proto.c](App/proto.c) / [proto.h](App/proto.h) | 当前视觉 AA55/CRC16 二进制接收、QR/OBJ 类别转换；保留旧 ASCII 解析用于回归，二进制模式尚无切场景命令 | `proto_set_binary_mode`、`CLS_*`、`LAB_*`、`ProtoFrame`；按 `VISION_INTEGRATION.md` 核对映射与目标工作点 |
-| [test.c](App/test.c) / [test.h](App/test.h) | 蓝牙台架模式 1–29、`g` 控制、数据回传、RAM 调参；**不是**正式整场路线 | 执行器/命令解析在 `.c`；命令见下文，测试 `d/v` 不会写入 `mission.c` |
+| [test.c](App/test.c) / [test.h](App/test.h) | 蓝牙台架模式1～41、g控制、数据回传、RAM调参；**不是**正式整场路线 | 31道路与38～41 wrapper在.c；独立对位算法见vision_align_test.c，测试d/v不会写入mission.c |
+| [vision_align_test.c](App/vision_align_test.c) / [vision_align_test.h](App/vision_align_test.h) | 38～41非阻塞同帧XY对位、掉帧刹停、原航向纠角及41的球/桶衔接 | VAT_X_PX/VAT_*_Y_PX/VAT_TOL_PX/VAT_SPEED_MMS/VAT_GOOD_FRAMES；180实体转动仍由test.c原22执行 |
 | [test_config.h](App/test_config.h) | 台架命令长度、模式上限、采样周期、默认速度/距离/补偿种子及上电安全开关集中入口 | `BENCH_AUTO=0` 必须保持；只改变台架默认，不会自动改变正式路线；右转 90°仍复用 `turn_profile.h` |
 | [turn_profile.h](App/turn_profile.h) | 已做过落地测试的右转 90° 参数组，供测试模式20与正式 90°分支共用 | `TURN90_*`；模式22 的 180°只是候选，正式通用 180°参数在 `steps.c` |
 
