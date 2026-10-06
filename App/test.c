@@ -1116,10 +1116,10 @@ static int xy_trial_active(void)
 
 static void xy_trial_report(void)
 {
-    static char b[320];
+    static char b[512];
     vision_align_test_status(&s_xy_snapshot);
     snprintf(b, sizeof b,
-             "XY test=%lu mode=%u phase=%u align=%u task=%u digit=%u req=%u QR=%ld,%ld,%ld x=%d y=%d seq=%u img=%u,%u latest=%u age=%lu good=%u/5 axis=%u vx=%.0f vy=%.0f w=%.3f yaw_error=%.2f reason=%s",
+             "XY test=%lu mode=%u phase=%u align=%u task=%u digit=%u req=%u QR=%ld,%ld,%ld x=%d y=%d seq=%u img=%u,%u latest=%u age=%lu good=%u/5 axis=%u vx=%.0f vy=%.0f w=%.3f reason=%s rx=%d,%d rx_seq=%u rx_img=%u,%u rx_fresh=%u yaw_target=%.2f yaw_err=%.2f yfix=%u y_moved=%u step=%lu step_mm=%.2f step_ms=%lu cap=%u",
              (unsigned long)s_xy_test, (unsigned)s_xy_owner, (unsigned)s_xy_state,
              (unsigned)s_xy_snapshot.state, (unsigned)s_xy_snapshot.task,
              (unsigned)s_xy_snapshot.digit, (unsigned)s_xy_snapshot.request,
@@ -1129,8 +1129,14 @@ static void xy_trial_report(void)
              (unsigned)s_xy_snapshot.latest, (unsigned long)s_xy_snapshot.age_ms,
              (unsigned)s_xy_snapshot.good, (unsigned)s_xy_snapshot.axis,
              s_xy_snapshot.vx, s_xy_snapshot.vy, s_xy_snapshot.w,
-             s_xy_snapshot.heading_error_deg,
-             s_xy_state == XT_QR_WAIT ? "QR_WAIT" : s_xy_snapshot.reason);
+             s_xy_state == XT_QR_WAIT ? "QR_WAIT" : s_xy_snapshot.reason,
+             s_xy_snapshot.rx_cx, s_xy_snapshot.rx_cy, (unsigned)s_xy_snapshot.rx_sequence,
+             (unsigned)s_xy_snapshot.rx_img_w, (unsigned)s_xy_snapshot.rx_img_h,
+             (unsigned)s_xy_snapshot.rx_fresh, s_xy_snapshot.yaw_target,
+             s_xy_snapshot.yaw_error, (unsigned)s_xy_snapshot.yaw_dirty,
+             (unsigned)s_xy_snapshot.yaw_ever, (unsigned long)s_xy_snapshot.step,
+             s_xy_snapshot.step_mm, (unsigned long)s_xy_snapshot.step_ms,
+             (unsigned)s_xy_snapshot.step_capped);
     send(b);
 }
 
@@ -1150,17 +1156,27 @@ static void xy_trial_g(void)
 {
     if (xy_trial_active()) { xy_trial_stop("STOP"); return; }
     motion_brake(); bp_laser_set(0);
-    /* First g preserves only the NEW QR session opened by this selection.
-     * A finished/stopped run always starts a new request; never reuse boot QR. */
-    if (s_xy_state != XT_READY) {
+    /* 39 is direct bucket: cancel pending boot/old QR, never request new QR.
+     * Other modes' first g preserves only this selection's NEW QR session;
+     * finished/stopped runs always require another fresh request. */
+    if (s_xy_owner == 39u) {
+        vision_align_test_cancel(); proto_qr_cancel();
+    } else if (s_xy_state != XT_READY) {
         vision_align_test_cancel(); proto_send_scene(SCENE_QR);
     }
     memset(s_xy_qr, 0, sizeof s_xy_qr);
     begin_recorded_test(); s_xy_test = s_active_test;
-    s_xy_state = XT_QR_WAIT; s_round = R_RUN; s_msel = s_xy_owner;
+    s_xy_state = s_xy_owner == 39u ? XT_ACTIVE : XT_QR_WAIT;
+    s_round = R_RUN; s_msel = s_xy_owner;
     s_xy_report_t0 = HAL_GetTick();
+    if (s_xy_owner == 39u && !vision_align_test_start(39u, NULL)) {
+        xy_trial_stop("ALIGN_START_ERROR"); return;
+    }
     robot_diag_report(); cmd_param_report();
-    send("OK XY_START QR_WAIT stopped=1; complete_fresh_QR_before_motion; g/a/0 cancels; no_arm_or_laser");
+    if (s_xy_owner == 39u)
+        send("OK XY_START BUCKET_DIRECT no_QR=1 task4/digit0_requested; new_ACK_and_coordinates_required; g/a/0 cancels; no_arm_or_laser");
+    else
+        send("OK XY_START QR_WAIT stopped=1; complete_fresh_QR_before_motion; g/a/0 cancels; no_arm_or_laser");
     xy_trial_report();
 }
 
@@ -1187,7 +1203,9 @@ static void xy_trial_turn_done(int success)
     s_xy_state = XT_ACTIVE;
     vision_align_test_notify_turn_result(success);
     if (!success) { xy_trial_stop("TURN_FAILED"); return; }
-    send("OK XY_TURN180_DONE bucket_new_request=1; reject_pre_turn_coordinates; heading_fix_then_fresh_XY");
+    vision_align_test_status(&s_xy_snapshot);
+    if (s_xy_snapshot.state == VAT_STOPPED) { xy_trial_stop(s_xy_snapshot.reason); return; }
+    send("OK XY_TURN180_DONE bucket_new_request=1 new_heading_reference=1; reject_pre_turn_coordinates; fresh_XY_required");
 }
 
 static void xy_trial_poll(void)
@@ -1202,11 +1220,11 @@ static void xy_trial_poll(void)
         motion_brake();
         if (proto_scene_status() < 0) { xy_trial_stop("QR_LINK_ERROR"); return; }
         if (!proto_qr_get(s_xy_qr)) return;
-        if (!vision_align_test_start(s_xy_owner, s_xy_qr, step_heading_kp_deg())) {
+        if (!vision_align_test_start(s_xy_owner, s_xy_qr)) {
             xy_trial_stop("ALIGN_START_ERROR"); return;
         }
         s_xy_state = XT_ACTIVE;
-        send("OK XY_QR_VALID selected_task_requested; x190 both_axes_tol10; y_small_left/y_large_right; v16; yawfix_before_fresh_recheck");
+        send("OK XY_QR_VALID selected_task_requested; x190 both_axes_tol10; y_small_left/y_large_right; X20 Y30 step3mm cap250ms; post_Y_yawfix_then_new_XY");
         return;
     }
     if (s_xy_state >= XT_TURN_STILL && s_xy_state <= XT_TURN_RUN) {
@@ -2615,16 +2633,18 @@ static void cmd_select(int32_t m, int quiet)
     s_jog_request = 0; s_jog_done = 0u; s_jog_hold_t0 = 0u;
     s_servo_target_us = 0u; s_servo_origin_us = 0u; s_servo_hold_t0 = 0u;
     if (s_msel >= 38 && s_msel <= 41) {
-        static char xy_msg[176];
+        static char xy_msg[224];
         motion_brake(); bp_laser_set(0); step_vision_receive_end();
         vision_align_test_init();
         memset(s_xy_qr, 0, sizeof s_xy_qr);
         s_xy_owner = (uint8_t)s_msel; s_xy_state = XT_READY; s_round = R_READY;
         s_v = VAT_SPEED_MMS; s_d = -1.0f;
-        proto_send_scene(SCENE_QR); /* Always NEW, not the cached boot/old-run QR. */
+        if (s_msel != 39)
+            proto_send_scene(SCENE_QR); /* Always NEW, not cached boot/old-run QR. */
         snprintf(xy_msg, sizeof xy_msg,
-                 "OK MODE=%d %s fresh_QR_scan_active; g_starts_after_QR; x190/y%d +/-10 frames5 v16; y_small_left/y_large_right; no_arm/laser; g/a/0 stops",
-                 s_msel, s_mname[s_msel], s_msel == 39 ? VAT_BUCKET_Y_PX :
+                 "OK MODE=%d %s %s; x190/y%d +/-10 frames5 X20 Y30 step3mm/cap250ms; post_Y_yawfix_new_XY; no_arm/laser; g/a/0 stops",
+                 s_msel, s_mname[s_msel], s_msel == 39 ? "no_QR; g_requests_bucket4/digit0" :
+                     "fresh_QR_scan_active; g_starts_after_QR", s_msel == 39 ? VAT_BUCKET_Y_PX :
                      s_msel == 40 ? VAT_HOSTAGE_Y_PX : VAT_BALL_Y_PX);
         send(xy_msg); return;
     }
@@ -2727,8 +2747,8 @@ static void cmd_set(char key, int32_t val)
     if (!bench_ok()) { send("ERR PARAM_LOCKED mission_running"); return; }
     if (xy_trial_selected()) {
         if (key == 'v' && val == (int32_t)VAT_SPEED_MMS && !xy_trial_active()) {
-            s_v = VAT_SPEED_MMS; send("OK XY_V=16");
-        } else send("ERR XY_FIXED_V16 no_duty_or_distance_slot; points_in_vision_align_test.h");
+            s_v = VAT_SPEED_MMS; send("OK XY_V=20 X20_Y30_fixed");
+        } else send("ERR XY_FIXED_X20_Y30 no_duty_or_distance_slot; points_in_vision_align_test.h");
         return;
     }
     if (s_round == R_RUN || s_round == R_BRAKE || s_round == R_RET || s_round == R_ALIGN) {
@@ -2767,10 +2787,10 @@ static void cmd_help(void)
     send("  19 turn sign 250ms (suspended); 20 turn +90 hold (right compensation=0deg).");
     send("  21 suspended speed probe: +w 800ms, -w 800ms, auto brake, 200ms RPM trace.");
     send("  22 turn +180 hold within 0.3deg (ground, experimental).");
-    send("  38 QR->ball XY(190,420);39 QR->bucket XY(190,400);40 QR->hostage XY(190,220), then STOP.");
+    send("  38 QR->ball XY(190,420);39 noQR g->bucket XY(190,400);40 QR->hostage XY(190,220), then STOP.");
     send("  41 QR->ball XY,hold5s->request_bucket->+180->new_bucket_request->bucket XY,hold5s->STOP.");
-    send("  38..41: both axes +/-10px,5 new frames; yawfix+fresh XY; X+ forward/X- backward,Y- left/Y+ right; fixed v16.");
-    send("  Select38..41 starts a fresh QR request, g arms motion; nextg/a/0 cancels; no arm/laser/auto-return. XY logs each500ms.");
+    send("  38..41: X20/Y30,w0,3mm encoder step/cap250ms->brake250ms->NEW_XY; afterY original_heading_fix first. +/-10px,5 new frames; X+ forward/X- backward,Y- left/Y+ right.");
+    send("  Select38/40/41 starts freshQR, g arms motion;39 waits for g then requests bucket directly. nextg/a/0 cancels; no arm/laser/auto-return. XY logs each500ms.");
     send("  30 turn LEFT -92 hold within 0.3deg (90 + 2deg trial compensation).");
     send("  31 fixed12: LEFT520/BACK650/RIGHT90/BACK650-v300/FWD70-v20/BACK190/RIGHT730/BACK780/LEFT90/FWD2450/RIGHT90/FWD2125.");
     send("  Cross/board yaw_hold=0; fresh stopped heading before BACK190;31 has no bucket/manual-d wait, all right-angle turns90.");
@@ -2889,13 +2909,19 @@ static void cmd_param_report(void)
                  s_route_left_ff_ratio, s_route_right_ff_ratio, (unsigned)s_dist_align_on);
         send(b);
     }
-    snprintf(b, sizeof b,
-             "YAW mode=%d v_mms=%.0f ykp=%.3f source=%s global_ykp=%.3f RAM-only",
-             s_msel, s_v, kp, s_seq_state != SQ_OFF
-                 ? (s_seq_mode == CROSS_ONLY_MODE ? "ROUTE37" :
-                    (s_seq_mode == BUCKET_ROUTE_MODE ? "ROUTE36" :
-                     (s_seq_mode == ROUTE_NO_QR_MODE ? "ROUTE34" : "ROUTE31"))) : (profile ? "PROFILE" : "GLOBAL"),
-             step_heading_kp_deg());
+    if (xy_trial_selected()) {
+        snprintf(b, sizeof b,
+                 "YAW mode=%u source=POST_Y original_heading=1 zeroed=0 tol_deg=0.30; X20 Y30 step3mm cap250ms translation_w0; explicit_mode41_turn_uses22",
+                 (unsigned)s_xy_owner);
+    } else {
+        snprintf(b, sizeof b,
+                 "YAW mode=%d v_mms=%.0f ykp=%.3f source=%s global_ykp=%.3f RAM-only",
+                 s_msel, s_v, kp, s_seq_state != SQ_OFF
+                     ? (s_seq_mode == CROSS_ONLY_MODE ? "ROUTE37" :
+                        (s_seq_mode == BUCKET_ROUTE_MODE ? "ROUTE36" :
+                         (s_seq_mode == ROUTE_NO_QR_MODE ? "ROUTE34" : "ROUTE31"))) : (profile ? "PROFILE" : "GLOBAL"),
+                 step_heading_kp_deg());
+    }
     send(b);
     if (s_msel == TARGET_TRIAL_MODE) target35_report();
     if (route_seq_bucket_enabled() && s_seq_state != SQ_OFF) bucket36_report();

@@ -19,13 +19,19 @@ static volatile VatSample s_sample;
 static VisionAlignTestStatus s_vat;
 static int32_t s_counts[4];
 static int32_t s_qr[3];
-static uint32_t s_last_poll, s_still_from, s_fix_from, s_fix_stable_from;
+static uint32_t s_last_poll, s_still_from;
 static uint32_t s_hold_from, s_used_packet, s_recheck_packet, s_session_packet, s_rejected_packet;
 static uint16_t s_last_seq;
 static uint16_t s_width, s_height;
-static float s_kp, s_fix_last_yaw;
 static int s_y_target, s_direction;
-static uint8_t s_have_seq, s_seen_target, s_need_new, s_initial_search, s_stable;
+static uint8_t s_have_seq, s_seen_target, s_need_new, s_initial_search;
+static uint32_t s_yaw_from, s_yaw_stable_from;
+static float s_yaw_stable_heading;
+static uint8_t s_yaw_stable;
+static uint32_t s_step_from, s_step_image_at;
+static float s_step_odo0;
+static uint8_t s_step_has_target;
+static volatile uint8_t s_step_saw_target;
 
 static int vat_running(void)
 {
@@ -79,25 +85,28 @@ static int vat_finite(float value)
     memcpy(&bits, &value, sizeof bits);
     return (bits & 0x7f800000u) != 0x7f800000u;
 }
-static int vat_error(float *out)
+static float vat_heading_error(float target, float yaw)
 {
-    float yaw = imu_heading_deg(), error;
-    if (!vat_finite(yaw) || !vat_finite(s_vat.heading_target_deg)) return 0;
-    error = s_vat.heading_target_deg - yaw;
-    if (!vat_finite(error)) return 0;
-    error = fmodf(error, 360.0f);
-    if (!vat_finite(error)) return 0;
-    if (error > 180.0f) error -= 360.0f;
-    if (error < -180.0f) error += 360.0f;
-    *out = error; return 1;
+    float e = target - yaw;
+    if (!vat_finite(e)) return e;
+    e = fmodf(e, 360.0f);
+    if (e > 180.0f) e -= 360.0f;
+    if (e < -180.0f) e += 360.0f;
+    return e;
+}
+static int vat_heading_update(void)
+{
+    float yaw = imu_heading_deg();
+    if (!imu_ok() || !vat_finite(yaw) || !vat_finite(s_vat.yaw_target)) return 0;
+    s_vat.yaw_error = vat_heading_error(s_vat.yaw_target, yaw);
+    return vat_finite(s_vat.yaw_error);
 }
 static void vat_begin_brake(uint32_t now, int need_new)
 {
     vat_brake(); vat_count_reset(now);
-    s_vat.state = VAT_BRAKE; s_vat.reason = "BRAKE_YAW";
+    s_vat.state = VAT_BRAKE; s_vat.reason = "BRAKE_STILL";
     s_vat.axis = s_vat.good = s_vat.latest = 0u; s_direction = 0;
-    s_need_new = (uint8_t)need_new; s_stable = 0u;
-    s_fix_from = now;
+    s_need_new = (uint8_t)need_new;
 }
 static int vat_request(ProtoTask task, uint8_t digit, uint32_t now)
 {
@@ -115,6 +124,8 @@ static int vat_request(ProtoTask task, uint8_t digit, uint32_t now)
     s_vat.cls = cls; s_vat.label = label; s_vat.request = diag.request;
     s_session_packet = s_used_packet = s_recheck_packet = stats.obj;
     s_have_seq = s_seen_target = 0u; s_width = s_height = 0u; s_rejected_packet = 0u;
+    s_vat.yaw_dirty = s_vat.yaw_ever = 0u;
+    s_step_saw_target = 0u;
     s_vat.latest = s_vat.good = 0u; s_vat.age_ms = UINT32_MAX;
     __set_PRIMASK(pm);
     s_y_target = task == PROTO_TASK_BALL ? VAT_BALL_Y_PX :
@@ -123,17 +134,24 @@ static int vat_request(ProtoTask task, uint8_t digit, uint32_t now)
     vat_begin_brake(now, 0);
     return 1;
 }
-int vision_align_test_start(uint8_t mode, const int32_t qr[3], float heading_kp)
+int vision_align_test_start(uint8_t mode, const int32_t qr[3])
 {
     int32_t current[3];
     float heading = imu_heading_deg();
-    if (vat_running() || mode < 38u || mode > 41u || !qr || !vat_finite(heading_kp)
-        || heading_kp < 0.0f || heading_kp > 5.0f || !imu_ok() || !vat_finite(heading)
-        || run_aborted() || !proto_qr_get(current)) return 0;
-    for (unsigned i = 0; i < 3u; ++i)
-        if (qr[i] < 1 || qr[i] > 3 || qr[i] != current[i]) return 0;
-    memset(&s_vat, 0, sizeof s_vat); s_vat.mode = mode; s_vat.heading_target_deg = heading;
-    memcpy(s_qr, qr, sizeof s_qr); s_kp = heading_kp; s_last_poll = HAL_GetTick();
+    if (vat_running() || mode < 38u || mode > 41u || run_aborted()) return 0;
+    if (!imu_ok() || !vat_finite(heading)) return 0;
+    /* Only the standalone black bucket has no QR-selected color/shape.
+     * Do not fabricate a QR or weaken the other three modes' parser gate. */
+    if (mode != 39u) {
+        if (!qr || !proto_qr_get(current)) return 0;
+        for (unsigned i = 0; i < 3u; ++i)
+            if (qr[i] < 1 || qr[i] > 3 || qr[i] != current[i]) return 0;
+    }
+    memset(&s_vat, 0, sizeof s_vat); s_vat.mode = mode;
+    s_vat.yaw_target = heading; /* Capture once; never zero a twisted heading. */
+    memset(s_qr, 0, sizeof s_qr);
+    if (mode != 39u) memcpy(s_qr, qr, sizeof s_qr);
+    s_last_poll = HAL_GetTick();
     bp_laser_set(0); vat_brake();
     ProtoTask task = mode == 39u ? PROTO_TASK_BUCKET : mode == 40u ? PROTO_TASK_HOSTAGE : PROTO_TASK_BALL;
     uint8_t digit = task == PROTO_TASK_BUCKET ? 0u : (uint8_t)s_qr[task == PROTO_TASK_HOSTAGE ? 2u : 0u];
@@ -151,6 +169,9 @@ void vision_align_test_feed_frame(const ProtoFrame *frame)
     proto_stats_get(&stats);
     s_sample.frame = *frame; s_sample.packet = stats.obj; s_sample.at = HAL_GetTick();
     s_sample.seen = (uint8_t)(frame->cls == s_vat.cls && (s_vat.label < 0 || frame->label == s_vat.label));
+    /* Keep the fact that a blind step saw its selected target even if an empty
+     * packet arrives before the next poll. No ISR motor/geometry decisions. */
+    if (s_vat.state == VAT_STEP_MOVE && s_sample.seen) s_step_saw_target = 1u;
 }
 static int vat_snapshot(VatSample *sample, ProtoStats *stats)
 {
@@ -178,30 +199,112 @@ static void vat_drive(float vx, float vy, float w)
     s_vat.vx = vx; s_vat.vy = vy; s_vat.w = w;
     motion_vel_set_precise(vx, vy, w);
 }
-static float vat_motion_w(void)
+static float vat_step_odo(void)
 {
-    float w = s_kp * 0.0174533f * s_vat.heading_error_deg;
-    if (fabsf(w) > 2.0f) w = copysignf(2.0f, w);
-    return w;
+    return s_vat.axis == 1u ? motion_odo_mm() : motion_lateral_odo_mm();
+}
+static void vat_begin_step(uint32_t now, float vx, float vy, int has_target, uint32_t image_at)
+{
+    float odo = vat_step_odo();
+    if (!vat_finite(odo)) { vat_stop("ODOERR", VAT_STOPPED); return; }
+    s_step_from = now; s_step_odo0 = odo; s_step_image_at = image_at;
+    s_step_has_target = (uint8_t)has_target;
+    s_vat.step++; s_vat.step_mm = 0.0f; s_vat.step_ms = 0u; s_vat.step_capped = 0u;
+    s_vat.state = VAT_STEP_MOVE; s_vat.reason = has_target ? "STEP_MOVE" : "SEARCH_STEP";
+    s_vat.good = 0u;
+    vat_drive(vx, vy, 0.0f);
+    if (vy != 0.0f) s_vat.yaw_dirty = s_vat.yaw_ever = 1u;
 }
 static void vat_drive_target(uint32_t packet, uint32_t now, float vx, float vy)
 {
     VatSample current;
     ProtoStats stats;
-    float error = 0.0f;
     uint32_t pm = __get_PRIMASK();
     __disable_irq();
     /* A newer empty/missing packet can arrive between the main snapshot and
      * dispatch. Never issue an old-coordinate command after that invalidation. */
     if (vat_snapshot(&current, &stats) && current.packet == packet
         && packet != s_rejected_packet && (uint32_t)(now - current.at) <= VAT_FRESH_MS
-        && proto_scene_status() == 1 && !run_aborted() && imu_ok() && vat_error(&error)) {
-        s_vat.heading_error_deg = error;
-        vat_drive(vx, vy, vat_motion_w());
+        && proto_scene_status() == 1 && !run_aborted()) {
+        vat_begin_step(now, vx, vy, 1, current.at);
     } else {
         s_initial_search = 0u; vat_begin_brake(now, 1);
     }
     __set_PRIMASK(pm);
+}
+static void vat_step_poll(uint32_t now)
+{
+    VatSample sample;
+    ProtoStats stats;
+    float odo = vat_step_odo(), progress;
+    if (!vat_finite(odo)) { vat_stop("ODOERR", VAT_STOPPED); return; }
+    progress = (odo - s_step_odo0) * (float)s_direction;
+    if (!vat_finite(progress)) { vat_stop("ODOERR", VAT_STOPPED); return; }
+    s_vat.step_mm = progress; s_vat.step_ms = now - s_step_from;
+    if (s_step_saw_target) { s_seen_target = 1u; s_initial_search = 0u; }
+    /* A newly seen object ends future blind search, but never reverses or
+     * changes THIS bounded step. Empty/intermittent frames do not chatter the
+     * motors; their old coordinates still cannot start another step. */
+    if (vat_snapshot(&sample, &stats) &&
+        (uint32_t)(now - sample.at) <= VAT_FRESH_MS && proto_scene_status() == 1) {
+        if (!vat_geometry(&sample.frame)) { vat_stop("IMAGE_GEOMETRY", VAT_STOPPED); return; }
+        s_seen_target = 1u; s_initial_search = 0u;
+    }
+    int expired = s_step_has_target && (uint32_t)(now - s_step_image_at) > VAT_FRESH_MS;
+    if (progress >= VAT_STEP_MM || s_vat.step_ms >= VAT_STEP_MAX_MS || expired) {
+        s_vat.step_capped = (uint8_t)(s_vat.step_ms >= VAT_STEP_MAX_MS && progress < VAT_STEP_MM);
+        vat_begin_brake(now, s_seen_target ? 1 : 0);
+        s_vat.reason = expired ? "STEP_OLD_BRAKE" : s_vat.step_capped ? "STEP_CAP_BRAKE" : "STEP_DONE_BRAKE";
+    }
+    /* Direction/velocity stay latched; only cancellation/faults bypass this
+     * cadence. Coordinates received during motion never count as arrival. */
+}
+/* Discard images captured before the wheels/yaw became stable. Preserve the
+ * task's seq history on rechecks so duplicate/backwards frames stay rejected. */
+static void vat_after_stop(int initial)
+{
+    ProtoStats stats;
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    proto_stats_get(&stats); s_recheck_packet = stats.obj;
+    memset((void *)&s_sample, 0, sizeof s_sample);
+    s_vat.latest = s_vat.good = 0u;
+    if (initial) {
+        s_session_packet = s_used_packet = stats.obj;
+        s_have_seq = 0u; s_rejected_packet = 0u;
+    }
+    s_vat.state = initial ? VAT_ALIGN : VAT_RECHECK;
+    s_vat.reason = initial ? "ALIGN" : "NEW_XY_AFTER_STOP";
+    __set_PRIMASK(pm);
+}
+static void vat_yaw_poll(uint32_t now, int changed)
+{
+    float yaw = imu_heading_deg(), e, w;
+    if (!imu_ok() || !vat_finite(yaw)) { vat_stop("IMUERR", VAT_STOPPED); return; }
+    e = vat_heading_error(s_vat.yaw_target, yaw);
+    if (!vat_finite(e)) { vat_stop("IMUERR", VAT_STOPPED); return; }
+    s_vat.yaw_error = e;
+    if ((uint32_t)(now - s_yaw_from) >= T_DIST_ALIGN_MAX_MS) {
+        vat_stop("YAW_TIMEOUT", VAT_STOPPED); return;
+    }
+    if (fabsf(e) > T_DIST_ALIGN_TOL_DEG) {
+        s_yaw_stable = 0u; s_vat.reason = "YAW_CORRECT";
+        w = T_DIST_ALIGN_KP * e;
+        if (w > T_DIST_ALIGN_MAX_W) w = T_DIST_ALIGN_MAX_W;
+        if (w < -T_DIST_ALIGN_MAX_W) w = -T_DIST_ALIGN_MAX_W;
+        if (fabsf(w) < VAT_YAW_MIN_W) w = e > 0.0f ? VAT_YAW_MIN_W : -VAT_YAW_MIN_W;
+        vat_drive(0.0f, 0.0f, w); return;
+    }
+    vat_brake(); s_vat.reason = "YAW_SETTLE";
+    if (!s_yaw_stable || changed ||
+        fabsf(vat_heading_error(s_yaw_stable_heading, yaw)) > T_DIST_ALIGN_STILL_DEG) {
+        s_yaw_stable = 1u; s_yaw_stable_from = now; s_yaw_stable_heading = yaw;
+    }
+    if ((uint32_t)(now - s_yaw_stable_from) >= T_DIST_ALIGN_STABLE_MS &&
+        (uint32_t)(now - s_still_from) >= T_DIST_STILL_MS) {
+        s_vat.yaw_dirty = 0u;
+        vat_after_stop(0); /* Not the old five frames; require post-yaw images. */
+    }
 }
 static void vat_finish_alignment(uint32_t now)
 {
@@ -216,14 +319,15 @@ static int vat_final_check(uint32_t packet, uint32_t now)
 {
     VatSample final;
     ProtoStats stats;
-    float error = 0.0f;
     uint32_t pm = __get_PRIMASK();
     int valid;
     __disable_irq();
     valid = vat_snapshot(&final, &stats) && final.packet == packet
-        && (uint32_t)(now - final.at) <= VAT_FRESH_MS && !run_aborted() && imu_ok()
-        && proto_scene_status() == 1 && vat_error(&error) && fabsf(error) <= T_DIST_ALIGN_TOL_DEG
+        && (uint32_t)(now - final.at) <= VAT_FRESH_MS && !run_aborted()
+        && proto_scene_status() == 1
         && abs(final.frame.cx - VAT_X_PX) <= VAT_TOL_PX && abs(final.frame.cy - s_y_target) <= VAT_TOL_PX;
+    if (!vat_heading_update() || (s_vat.yaw_ever &&
+        fabsf(s_vat.yaw_error) > T_DIST_ALIGN_TOL_DEG)) valid = 0;
     for (int i = 0; i < 4; ++i) if (ctrl_enc_total(i) != s_counts[i]) valid = 0;
     if (valid) vat_finish_alignment(now);
     __set_PRIMASK(pm); return valid;
@@ -233,17 +337,20 @@ void vision_align_test_poll(void)
     uint32_t now = HAL_GetTick();
     VatSample sample;
     ProtoStats stats;
-    float heading_error = 0.0f;
     int matching, fresh, is_new, changed;
     if (!vat_running()) return;
-    if (run_aborted() || !imu_ok() || !vat_error(&heading_error)) {
-        vat_stop(run_aborted() ? "ABORT" : "IMU", VAT_STOPPED); return;
-    }
+    if (run_aborted()) { vat_stop("ABORT", VAT_STOPPED); return; }
     if (proto_scene_status() < 0) { vat_stop("NACK", VAT_STOPPED); return; }
     if (s_vat.state == VAT_TURN_ACTIVE) return; /* Mode22 exclusively owns motors. */
+    if (!vat_heading_update()) { vat_stop("IMUERR", VAT_STOPPED); return; }
     if ((uint32_t)(now - s_last_poll) < VAT_POLL_MS) return;
     s_last_poll = now;
-    s_vat.heading_error_deg = heading_error;
+    /* Also harvest at BRAKE: a target ISR can set the sticky bit just after
+     * the final STEP poll read. Never restart a blind step across that race. */
+    if (s_step_saw_target) {
+        s_seen_target = 1u; s_initial_search = 0u;
+        if (s_vat.state == VAT_BRAKE) s_need_new = 1u;
+    }
     changed = vat_counts_changed(now);
     if (s_vat.state == VAT_HOLD_BALL || s_vat.state == VAT_HOLD_BUCKET) {
         vat_brake();
@@ -254,42 +361,18 @@ void vision_align_test_poll(void)
         s_vat.state = VAT_TURN_REQUEST; s_vat.reason = "TURN180_REQUEST"; return;
     }
     if (s_vat.state == VAT_TURN_REQUEST) { vat_brake(); return; }
+    if (s_vat.state == VAT_STEP_MOVE) { vat_step_poll(now); return; }
+    if (s_vat.state == VAT_YAW_FIX) { vat_yaw_poll(now, changed); return; }
     if (s_vat.state == VAT_BRAKE) {
         vat_brake();
         if ((uint32_t)(now - s_still_from) < T_DIST_STILL_MS) return;
-        s_vat.state = VAT_YAW_FIX; s_fix_from = now; s_stable = 0u;
-    }
-    if (s_vat.state == VAT_YAW_FIX) {
-        float error = s_vat.heading_error_deg, yaw = imu_heading_deg();
-        if (!vat_finite(yaw)) { vat_stop("IMU", VAT_STOPPED); return; }
-        if ((uint32_t)(now - s_fix_from) >= T_DIST_ALIGN_MAX_MS) { vat_stop("YAW_TIMEOUT", VAT_STOPPED); return; }
-        if (fabsf(error) > T_DIST_ALIGN_TOL_DEG) {
-            float w = error * T_DIST_ALIGN_KP;
-            if (fabsf(w) > T_DIST_ALIGN_MAX_W) w = copysignf(T_DIST_ALIGN_MAX_W, w);
-            if (fabsf(w) < T_DIST_ALIGN_MIN_W) w = copysignf(T_DIST_ALIGN_MIN_W, w);
-            s_stable = 0u; s_still_from = now; vat_drive(0.0f, 0.0f, w); return;
+        if (s_vat.yaw_dirty) {
+            s_vat.state = VAT_YAW_FIX; s_vat.reason = "YAW_CORRECT";
+            s_yaw_from = now; s_yaw_stable = 0u; s_vat.latest = s_vat.good = 0u;
+            return;
         }
-        vat_brake();
-        if (!s_stable || changed || fabsf(yaw - s_fix_last_yaw) > T_DIST_ALIGN_STILL_DEG) {
-            s_stable = 1u; s_fix_stable_from = now; s_fix_last_yaw = yaw;
-        }
-        if ((uint32_t)(now - s_fix_stable_from) < T_DIST_ALIGN_STABLE_MS
-            || (uint32_t)(now - s_still_from) < T_DIST_STILL_MS) return;
-        uint32_t pm = __get_PRIMASK();
-        __disable_irq();
-        proto_stats_get(&stats); s_recheck_packet = stats.obj;
-        memset((void *)&s_sample, 0, sizeof s_sample);
-        s_vat.latest = s_vat.good = 0u;
-        if (!s_need_new) {
-            /* Initial correction must discard its own cached image too.
-             * Keep ALIGN so the permitted no-first-frame search still works. */
-            s_session_packet = s_used_packet = stats.obj;
-            s_have_seq = 0u; s_rejected_packet = 0u;
-        }
-        s_vat.state = s_need_new ? VAT_RECHECK : VAT_ALIGN;
-        s_vat.reason = s_need_new ? "NEW_IMAGE_AFTER_YAW" : "ALIGN";
-        __set_PRIMASK(pm);
-        return; /* A frame captured before heading settled never proves arrival. */
+        vat_after_stop(!s_need_new);
+        return; /* A frame captured before stopping never proves arrival. */
     }
     matching = vat_snapshot(&sample, &stats);
     fresh = matching && sample.packet != s_rejected_packet
@@ -298,9 +381,9 @@ void vision_align_test_poll(void)
     if (fresh && !vat_geometry(&sample.frame)) { vat_stop("IMAGE_GEOMETRY", VAT_STOPPED); return; }
     if (!fresh) {
         s_vat.good = 0u;
-        if (s_vat.state == VAT_ALIGN && !s_seen_target && s_initial_search && vat_ack_ready()) {
+        if (s_vat.state == VAT_ALIGN && !s_seen_target && !s_step_saw_target && s_initial_search && vat_ack_ready()) {
             s_vat.axis = 1u; s_direction = 1; s_still_from = now;
-            vat_drive(VAT_SPEED_MMS, 0.0f, vat_motion_w()); return;
+            vat_begin_step(now, VAT_X_SPEED_MMS, 0.0f, 0, now); return;
         }
         if (s_vat.axis) { s_initial_search = 0u; vat_begin_brake(now, 1); }
         else vat_brake();
@@ -328,44 +411,41 @@ void vision_align_test_poll(void)
     int ex = sample.frame.cx - VAT_X_PX, ey = sample.frame.cy - s_y_target;
     uint8_t axis = abs(ex) > VAT_TOL_PX ? 1u : abs(ey) > VAT_TOL_PX ? 2u : 0u;
     int direction = axis == 1u ? (ex > 0 ? 1 : -1) : axis == 2u ? (ey > 0 ? 1 : -1) : 0;
-    if (s_vat.axis && (axis != s_vat.axis || direction != s_direction)) {
-        s_initial_search = 0u; vat_begin_brake(now, 1); return;
-    }
-    if (fabsf(s_vat.heading_error_deg) > T_DIST_ALIGN_TOL_DEG && !axis) {
-        vat_begin_brake(now, 1); return;
-    }
     if (axis) {
         s_vat.good = 0u;
         if (!s_vat.axis && !is_new) { vat_brake(); return; }
         s_vat.axis = axis; s_direction = direction; s_still_from = now;
-        float speed = VAT_SPEED_MMS * (float)direction;
+        float speed = (axis == 1u ? VAT_X_SPEED_MMS : VAT_Y_SPEED_MMS) * (float)direction;
         vat_drive_target(sample.packet, now, axis == 1u ? speed : 0.0f,
                          axis == 2u ? speed : 0.0f); return;
     }
     vat_brake();
+    /* A later X repair/inertia may twist a task that previously moved in Y.
+     * Do not call it aligned merely because the earlier correction completed. */
+    if (s_vat.yaw_ever && fabsf(s_vat.yaw_error) > T_DIST_ALIGN_TOL_DEG) {
+        s_vat.yaw_dirty = 1u; s_initial_search = 0u; vat_begin_brake(now, 1); return;
+    }
     if (is_new && s_vat.good < VAT_GOOD_FRAMES) s_vat.good++;
     if (is_new && s_vat.good >= VAT_GOOD_FRAMES && (uint32_t)(now - s_still_from) >= T_DIST_STILL_MS)
         (void)vat_final_check(sample.packet, now);
 }
 int vision_align_test_take_turn_request(void)
 {
-    float error = 0.0f;
     if (s_vat.state != VAT_TURN_REQUEST) return 0;
-    if (run_aborted() || !imu_ok() || !vat_error(&error) || proto_scene_status() < 0) {
+    if (run_aborted() || !imu_ok() || !vat_finite(imu_heading_deg()) || proto_scene_status() < 0) {
         vat_stop("TURN180_PREP", VAT_STOPPED); return 0;
     }
     s_vat.state = VAT_TURN_ACTIVE; s_vat.reason = "TURN180_ACTIVE"; return 1;
 }
 void vision_align_test_notify_turn_result(int success)
 {
-    float error = 0.0f;
     if (s_vat.state != VAT_TURN_ACTIVE) return;
-    if (!success || !imu_ok() || !vat_error(&error) || run_aborted() || proto_scene_status() < 0) {
+    float heading = imu_heading_deg();
+    if (!success || run_aborted() || !imu_ok() || !vat_finite(heading) || proto_scene_status() < 0) {
         vat_stop("TURN180_FAILED", VAT_STOPPED); return;
     }
-    s_vat.heading_target_deg += 180.0f;
-    if (!vat_error(&error)
-        || fabsf(error) > T_TURN_LIMIT_DEG) { vat_stop("TURN180_RESIDUAL", VAT_STOPPED); return; }
+    /* Only the explicit completed +180 changes the task's heading reference. */
+    s_vat.yaw_target = heading; s_vat.yaw_error = 0.0f;
     if (!vat_request(PROTO_TASK_BUCKET, 0u, HAL_GetTick())) { vat_stop("REQUEST", VAT_STOPPED); return; }
     s_initial_search = 0u; s_need_new = 1u;
 }
@@ -379,8 +459,16 @@ void vision_align_test_status(VisionAlignTestStatus *out)
     now = HAL_GetTick();
     int matching = vat_snapshot(&current, &stats);
     out->age_ms = current.seen ? now - current.at : UINT32_MAX;
+    out->rx_cx = out->rx_cy = 0;
+    out->rx_sequence = out->rx_img_w = out->rx_img_h = 0u;
+    out->rx_fresh = (uint8_t)(matching && out->age_ms <= VAT_FRESH_MS && vat_ack_ready());
+    if (out->rx_fresh) {
+        out->rx_cx = current.frame.cx; out->rx_cy = current.frame.cy;
+        out->rx_sequence = current.frame.sequence;
+        out->rx_img_w = current.frame.img_w; out->rx_img_h = current.frame.img_h;
+    }
     /* cx/cy remain historical values in logs; latest never blesses stale data
-     * during yaw correction, holds, cancellation or a rejected sequence. */
+     * during braking, holds, cancellation or a rejected sequence. */
     if (!matching || current.packet != s_used_packet || current.packet == s_rejected_packet || out->age_ms > VAT_FRESH_MS
         || proto_scene_status() != 1) out->latest = 0u;
 }

@@ -6,14 +6,15 @@
 
 这是一张**找代码的地图**，不是“全部参数已经调好”的证明。`TODO`、`0` 和标注为“种子”的值都要按实车测试填写。当前正式整场有配置闸门，不能因工程能编译就直接上车跑。
 
-## 当前入口（2026-10-06：XY38-41-SLOW-T10）
+## 当前本地入口（2026-10-06：XY-STEP3-X20-Y30）
 
-最新固件`20261006-XY38-41-SLOW-T10`，Keil工程仍`MDK-ARM/jiejie.uvprojx`。本次修改/验证/实测边界以[README_本次更新.md](README_本次更新.md)为准；下面10月5日入口与旧数值均为历史，不能用于填写当前31或38～41。
+本次发布电控`20261006-XY-STEP3-X20-Y30`，成功以远端提交核对为准，未烧录；Keil工程仍`MDK-ARM/jiejie.uvprojx`。完整主机回归exit0（普通/fast-math及真实蓝牙专项，仍有既有motion.c未用th警告），Keil全量0 Error / 0 Warning。新视觉`vision-task-filter-20261006@5d5e812`/App2.1.16已审核但不合并，main保留上轮7a2ab10；原任务/坐标协议兼容，54站位未接入。修改/验证边界见[README_本次更新.md](README_本次更新.md)，下方历史入口不填入当前参数。
 
-- **38/39/40/41独立对位**：分别球、桶、人质、球停5秒→共享22的180°→桶停5秒。选号新建QR会话，g启动；合法三码前绝不移动，运行中g/a/0取消。X→Y反复修正、刹停纠角后取新图复核，两轴±10、连续5新帧；移动v16，不超过原v50的1/3。引擎`App/vision_align_test.c`，工作点/速度/帧门常量`App/vision_align_test.h`；蓝牙wrapper在`test.c::xy_trial_*`。与31/32/35独立，不调用机构/激光。
+- **38/39/40/41独立对位**：分别球、桶、人质、球停5秒→共享22的180°→桶停5秒。38/40/41选号新QR，g启动且合法三码前绝不移动；39免QR，g新请求桶4/0。均须有效IMU，记录本任务连续航向，无初始纠角/IMU清零。X20/Y30、XY移动w=0；开步锁定方向，编码器投影3mm或软件250ms检查阈值后刹停（调度/制动额外存在，非物理3mm或250ms硬停保证），四轮静止250ms后清旧图复看，不逐帧立即改方向。Y动后纠回原航向0.3°/稳定700ms，再用新图联合XY；局部w0.18～0.30/最长12秒，不改共享w0.08。双轴±10、五新帧/停稳才完成，Y后X又扰动航向也重纠。41的180成功后才记录桶新航向/新请求ACK/新图。引擎`App/vision_align_test.c`，速度/短步/工作点常量`App/vision_align_test.h`，蓝牙wrapper在`test.c::xy_trial_*`；step/mm/ms/cap和rx_*是观测，不作到位替代。g/a/0取消，不调用机构/激光，不改31/32/35。
+- **初始找目标**：球/人质仅在ACK后从未见过指定目标时规律+X短步搜索，每步停轮复看；见过后缺图只等。桶一直无图不盲动。07:47旧人质包该轮画幅640×480已实证，Y已在容差内且X有过冲；不能作为新短步/纠角验证。
 - **31道路**：独立`route_test_plan.h::s_route31_plan`12节点，首段520、靠板70、右730/后780/左90，不看桶、不等d。R1纠角且合法QR后放行R2。仍只走道路，新的球/桶/靶/人质任务链尚未接入。
 - **34/36/37**：34保留旧15节点桶x500/手发d，36无桶十节点，37仅共享越障三段；这三模式靠板80仍不被31的70覆盖。32旧路线/任务表与35X-only持续激光均不连改。
-- **坐标边界**：x190/球420/桶400/人质220只是独立试验值。config默认480×320，实际OBJECT从模型读取；须从设备日志/01核对宽高。若高度320，球/桶Y不可达并报IMAGE_GEOMETRY，不自动缩放。未烧录或实机验收。
+- **坐标边界与新视觉**：x190/球420/桶400/人质220仍临时。新5d5e812的config初值480×320，但cam.open读模型尺寸；新部署须真实01核对，07:47旧640×480不能替代。若实际640×480可容纳球/桶；若480×320则38/39/41 IMAGE_GEOMETRY停车，40点虽在画幅内仍需实测。新双缓冲配上一输入/换任务清配帧/首帧不报，HOLD200不发旧图；USER短按人工暂停至更大新request，不能代g。真实Python writer→当前C/VAT40的同seq01+54五帧在640×480和480×320均达good5/DONE，只证明合成回放；54拒绝计数+5、obj仅+5，未存站位。54解析/锁存/返回路线待补，不能把QR形状当站位或默认1。
 
 ## 历史入口（2026-10-05：ROUTE34-NOQR）
 
@@ -233,7 +234,7 @@ App/robot.c               初始化、三路串口分流、蓝牙服务
 | [imu.c](App/imu.c) / [imu.h](App/imu.h) | IMU 串口帧解析、连续 yaw/pitch/roll、链路有效性、分段航向软件零点 | `IMU_LINK_TIMEOUT_MS`、协议字段；方向/零点须结合实车数据查，不靠改常数猜 |
 | [proto.c](App/proto.c) / [proto.h](App/proto.h) | 当前视觉 AA55/CRC16 二进制接收、QR/OBJ 类别转换；保留旧 ASCII 解析用于回归，二进制模式尚无切场景命令 | `proto_set_binary_mode`、`CLS_*`、`LAB_*`、`ProtoFrame`；按 `VISION_INTEGRATION.md` 核对映射与目标工作点 |
 | [test.c](App/test.c) / [test.h](App/test.h) | 蓝牙台架模式1～41、g控制、数据回传、RAM调参；**不是**正式整场路线 | 31道路与38～41 wrapper在.c；独立对位算法见vision_align_test.c，测试d/v不会写入mission.c |
-| [vision_align_test.c](App/vision_align_test.c) / [vision_align_test.h](App/vision_align_test.h) | 38～41非阻塞同帧XY对位、掉帧刹停、原航向纠角及41的球/桶衔接 | VAT_X_PX/VAT_*_Y_PX/VAT_TOL_PX/VAT_SPEED_MMS/VAT_GOOD_FRAMES；180实体转动仍由test.c原22执行 |
+| [vision_align_test.c](App/vision_align_test.c) / [vision_align_test.h](App/vision_align_test.h) | 38～41非阻塞X20/Y30规律短步(w=0)→停轮新图、后Y回原航向/联合XY复核与41球桶衔接 | VAT_X_PX/VAT_*_Y_PX/VAT_TOL_PX/VAT_X_SPEED_MMS/VAT_Y_SPEED_MMS/VAT_STEP_MM/VAT_STEP_MAX_MS/VAT_YAW_MIN_W/VAT_GOOD_FRAMES；180仍由test.c原22执行 |
 | [test_config.h](App/test_config.h) | 台架命令长度、模式上限、采样周期、默认速度/距离/补偿种子及上电安全开关集中入口 | `BENCH_AUTO=0` 必须保持；只改变台架默认，不会自动改变正式路线；右转 90°仍复用 `turn_profile.h` |
 | [turn_profile.h](App/turn_profile.h) | 已做过落地测试的右转 90° 参数组，供测试模式20与正式 90°分支共用 | `TURN90_*`；模式22 的 180°只是候选，正式通用 180°参数在 `steps.c` |
 

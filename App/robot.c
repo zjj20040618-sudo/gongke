@@ -18,7 +18,7 @@ static uint8_t s_rx2, s_rx3, s_rx4;   /* 2=视觉(USART2 PD5/6) 3=蓝牙(USART3 
 
 /* BT 输入环形缓冲(huart3,ISR 写 / robot_bt_service 读) */
 #define BT_RX_N 64u
-#define FW_BUILD_ID "20261006-XY38-41-SLOW-T10"
+#define FW_BUILD_ID "20261006-XY-STEP3-X20-Y30"
 static volatile uint8_t s_bt[BT_RX_N];
 static volatile uint8_t s_bt_wr, s_bt_rd;
 static volatile uint32_t s_bt_drop;
