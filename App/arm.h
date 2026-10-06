@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 /* 机械臂：爪子开合 = 舵机(TIM12 CH2, PB15, 50Hz)；两轴步进：
- * axis0 STEP/DIR=PA9/PA10，axis1 STEP/DIR=PA11/PA12（开漏、低有效）。
+ * axis0 STEP/DIR=PA10/PA9，axis1 STEP/DIR=PA12/PA11（2026-10-06实板纠正；开漏、低有效）。
  * STEP 低脉宽由 Cortex-M4 DWT 周期计数器产生。 */
 
 #define ARM_STEPPER_NUM 2

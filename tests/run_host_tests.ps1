@@ -57,6 +57,39 @@ try {
     Write-Output 'independent XY task stack contract: existing 2 KB DefaultTask and matching IOC configuration'
     Invoke-HostPythonCase 'dedicated laser pin/init/fault contracts' 'tests/test_laser_tb_contract.py'
     Invoke-HostCase 'eod_laser_tb6612_test' @('tests/laser_tb6612_test.c') @('tests/laser_stubs', 'App')
+    Invoke-HostCase 'eod_arm_stepper_pin_test' @('tests/arm_stepper_pin_test.c') @('tests/laser_stubs', 'App')
+    # STEP/DIR remain open-drain with an initial high (Hi-Z); swapping both
+    # axes must not turn any wire into a push-pull output on regeneration.
+    $armGpio = Get-Content 'Src/gpio.c' -Raw -Encoding utf8
+    $armPinGroup = 'GPIO_PIN_9\s*\|\s*GPIO_PIN_10\s*\|\s*GPIO_PIN_11\s*\|\s*GPIO_PIN_12'
+    if ($armGpio -notmatch "HAL_GPIO_WritePin\(GPIOA,\s*$armPinGroup\s*,\s*GPIO_PIN_SET\);" -or
+        $armGpio -notmatch "GPIO_InitStruct.Pin\s*=\s*$armPinGroup\s*;\s*GPIO_InitStruct.Mode\s*=\s*GPIO_MODE_OUTPUT_OD;\s*GPIO_InitStruct.Pull\s*=\s*GPIO_NOPULL;") {
+        throw 'Arm pin contract: PA9..PA12 must start high and remain open-drain/no-pull'
+    }
+    foreach ($armPin in @('PA9', 'PA10', 'PA11', 'PA12')) {
+        foreach ($armProperty in @('GPIO_ModeDefaultOutputPP=GPIO_MODE_OUTPUT_OD', 'GPIO_PuPd=GPIO_NOPULL', 'PinState=GPIO_PIN_SET', 'Signal=GPIO_Output')) {
+            if ($taskIoc -notmatch ('(?m)^' + [regex]::Escape("$armPin.$armProperty") + '\r?$')) {
+                throw "Arm IOC contract: $armPin.$armProperty missing"
+            }
+        }
+    }
+    $armMainHeader = Get-Content 'Inc/main.h' -Raw -Encoding utf8
+    $armTestSource = Get-Content 'tests/arm_stepper_pin_test.c' -Raw -Encoding utf8
+    $armPinLabels = @{ PA9 = 'ARM_AXIS0_DIR'; PA10 = 'ARM_AXIS0_STEP'; PA11 = 'ARM_AXIS1_DIR'; PA12 = 'ARM_AXIS1_STEP' }
+    foreach ($armPin in $armPinLabels.Keys) {
+        $armLabel = $armPinLabels[$armPin]
+        $armPinNumber = $armPin.Substring(2)
+        if ($taskIoc -notmatch ('(?m)^' + [regex]::Escape("$armPin.GPIO_Label=$armLabel") + '\r?$')) {
+            throw "Arm IOC label contract: $armPin must be $armLabel"
+        }
+        foreach ($armHeader in @($armMainHeader, $armTestSource)) {
+            if ($armHeader -notmatch ('(?m)^#define\s+' + $armLabel + '_Pin\s+GPIO_PIN_' + $armPinNumber + '\s*$') -or
+                $armHeader -notmatch ('(?m)^#define\s+' + $armLabel + '_GPIO_Port\s+GPIOA\s*$')) {
+                throw "Arm header/test contract: $armLabel must match $armPin on GPIOA"
+            }
+        }
+    }
+    Write-Output 'arm GPIO/IOC contract: PA9..PA12 high initial level, open-drain/no-pull preserved (host only)'
     Invoke-HostCase 'eod_arm_task_flow_test' @('tests/arm_task_flow_test.c', 'App/task_eod.c', 'App/task_rescue.c') @('App')
     Invoke-HostCase 'eod_anti_task_flow_test' @('tests/anti_task_flow_test.c', 'App/task_anti.c') @('App')
     Invoke-HostCase 'eod_target_fire_timing_test' @('tests/target_fire_timing_test.c', 'App/steps.c') @('tests/stubs', 'App') @('-ffunction-sections', '-fdata-sections', '-fno-asynchronous-unwind-tables', '-fno-unwind-tables', '-Wl,--gc-sections', '-lm')

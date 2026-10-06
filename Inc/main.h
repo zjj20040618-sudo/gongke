@@ -58,6 +58,15 @@ void Error_Handler(void);
 
 /* Private defines -----------------------------------------------------------*/
 
+#define ARM_AXIS0_DIR_Pin GPIO_PIN_9
+#define ARM_AXIS0_DIR_GPIO_Port GPIOA
+#define ARM_AXIS0_STEP_Pin GPIO_PIN_10
+#define ARM_AXIS0_STEP_GPIO_Port GPIOA
+#define ARM_AXIS1_DIR_Pin GPIO_PIN_11
+#define ARM_AXIS1_DIR_GPIO_Port GPIOA
+#define ARM_AXIS1_STEP_Pin GPIO_PIN_12
+#define ARM_AXIS1_STEP_GPIO_Port GPIOA
+
 /* USER CODE BEGIN Private defines */
 
 /* Dedicated TB6612 A channel for a voltage-rated laser MODULE, not a bare diode.

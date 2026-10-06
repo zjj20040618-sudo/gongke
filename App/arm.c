@@ -16,7 +16,7 @@ static void claw_set_cmp_us(uint16_t us)
     __HAL_TIM_SET_COMPARE(&htim12, CLAW_TIM_CH, (uint32_t)us / 2u);
 }
 
-/* 机械臂初始化:爪回中立脉宽、步进 DIR 先回高阻不驱动(robot_init 调一次) */
+/* 机械臂初始化:爪回中立脉宽、步进 DIR 设方向0(开漏拉低)(robot_init 调一次) */
 void arm_init(void)
 {
     /* Cortex-M4 DWT 周期计数器用于稳定的微秒级 STEP 脉宽。 */
@@ -30,7 +30,7 @@ void arm_init(void)
         Error_Handler();
     }
     for (int a = 0; a < ARM_STEPPER_NUM; a++)
-        arm_stepper_dir(a, 0);                              /* DIR 开漏先回高阻(Hi-Z) */
+        arm_stepper_dir(a, 0);                              /* DIR 拉低；STEP 保持初始高阻 */
 }
 
 /* 设爪舵机脉宽 us(自动限幅到 SERVO_MIN/MAX;OPEN/CLOSE 两个极限在上面) */
@@ -48,12 +48,13 @@ uint16_t arm_claw_command_us(void) { return s_claw_command_us; }
 void arm_claw_open(void)  { arm_claw_set_us(CLAW_OPEN_US); }
 void arm_claw_close(void) { arm_claw_set_us(CLAW_CLOSE_US); }
 
-/* 步进脚（共阳极光耦，低有效；开漏初始高=Hi-Z 不驱动）：
- * 2026-09-12 改（按队友布线版）：axis0 = 铰链① STEP=PA9  DIR=PA10 ；axis1 = 铰链② STEP=PA11 DIR=PA12 */
-static GPIO_TypeDef *const s_step_port[ARM_STEPPER_NUM] = { GPIOA, GPIOA };
-static const uint32_t       s_step_pin[ARM_STEPPER_NUM]  = { GPIO_PIN_9, GPIO_PIN_11 };
-static GPIO_TypeDef *const s_dir_port[ARM_STEPPER_NUM]  = { GPIOA, GPIOA };
-static const uint32_t       s_dir_pin[ARM_STEPPER_NUM]   = { GPIO_PIN_10, GPIO_PIN_12 };
+/* 步进脚（开漏、低有效；初始高=Hi-Z；驱动器输入电气规格需独立核对）：
+ * 2026-10-06 按用户确认的实板接线：axis0 STEP=PA10 DIR=PA9；axis1 STEP=PA12 DIR=PA11。
+ * 两轴板上 STEP/DIR 与旧图相反；24~27及正式机械动作统一使用CubeMX对应标签。 */
+static GPIO_TypeDef *const s_step_port[ARM_STEPPER_NUM] = { ARM_AXIS0_STEP_GPIO_Port, ARM_AXIS1_STEP_GPIO_Port };
+static const uint32_t       s_step_pin[ARM_STEPPER_NUM]  = { ARM_AXIS0_STEP_Pin, ARM_AXIS1_STEP_Pin };
+static GPIO_TypeDef *const s_dir_port[ARM_STEPPER_NUM]  = { ARM_AXIS0_DIR_GPIO_Port, ARM_AXIS1_DIR_GPIO_Port };
+static const uint32_t       s_dir_pin[ARM_STEPPER_NUM]   = { ARM_AXIS0_DIR_Pin, ARM_AXIS1_DIR_Pin };
 
 /* DWT 周期计数微秒延时；系统时钟 168MHz 时不依赖编译优化级别。 */
 static void busy_us(uint32_t us)
