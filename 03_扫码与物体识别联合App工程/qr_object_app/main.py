@@ -236,12 +236,14 @@ def main():
                     ",".join(str(cid) for cid in hostage_order.order) or "NONE", hostage_order.target_rank)
             status = "{} {}".format(task_status, status or "").strip()
             if modes.mode == config.MODE_QR:
-                # 原始灰度图只解码；与07相同，先缩到屏幕再转RGB绘制预览。
+                # 原始灰度图仍解码；预览关闭只改显示背景，触屏范围映射保持不变。
                 canvas = img
                 display_qrs = cached_qrs if cached_qr_left > 0 else []
                 display_roi = qr_reader.roi(img)
                 if screen is not None:
-                    canvas, display_qrs, display_roi = make_qr_preview(img, display_qrs, display_roi, display_size)
+                    canvas, display_qrs, display_roi = make_qr_preview(
+                        img, display_qrs, display_roi, display_size,
+                        show_camera=config.QR_CAMERA_PREVIEW_ENABLED)
                 header_bottom = draw_header(canvas, modes.mode, fps_value, work_ms, uart_ms,
                     control.remote_owned, status, source_size=(width, height), text_scale=3) or 0
                 draw_qrs(canvas, display_qrs, display_size, header_bottom, roi=display_roi)
@@ -249,9 +251,13 @@ def main():
                     cached_qr_left -= 1
             else:
                 canvas = img
-                header_bottom = draw_header(img, modes.mode, fps_value, work_ms, uart_ms, control.remote_owned, status) or 0
+                if screen is not None and not config.OBJECT_CAMERA_PREVIEW_ENABLED:
+                    # 保持模型图幅，确保框、点触和串口使用同一组原始坐标。
+                    canvas = image.Image(width, height, image.Format.FMT_RGB888)
+                    canvas.draw_rect(0, 0, width, height, image.Color.from_rgb(0, 0, 0), thickness=-1)
+                header_bottom = draw_header(canvas, modes.mode, fps_value, work_ms, uart_ms, control.remote_owned, status) or 0
                 # 单独的显示列表；上面的任务筛选和UART已完成，不受触摸影响。
-                draw_objects(img, display_objects, display_size, header_bottom, inspector.selected,
+                draw_objects(canvas, display_objects, display_size, header_bottom, inspector.selected,
                              info_objects=visible_objects)
             if screen is not None:
                 screen.show(canvas)

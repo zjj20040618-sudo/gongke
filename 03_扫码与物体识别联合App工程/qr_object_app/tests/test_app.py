@@ -125,6 +125,9 @@ class FakeImage:
     def draw_edges(self, *args, **kwargs): pass
 
 
+maix.image.Image = FakeImage
+
+
 class AppTests(unittest.TestCase):
     def setUp(self):
         clock[0] = 0

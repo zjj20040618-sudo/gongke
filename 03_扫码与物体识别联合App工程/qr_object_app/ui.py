@@ -151,16 +151,29 @@ def draw_objects(img, objects, display_size=None, min_y=0, details=False, info_o
                     background=color,
                     avoid_rect=(obj.x, obj.y, obj.w, obj.h), occupied=occupied)
 
-def make_qr_preview(frame, qrs, roi, display_size):
-    """与07一致：解码后缩小灰度图、转屏幕RGB；不转换解码输入。"""
+def make_qr_preview(frame, qrs, roi, display_size, show_camera=True):
+    """解码后生成RGB显示页；关闭预览时跳过相机图缩放/转换，保留原坐标映射。"""
     sw, sh = display_size
     iw, ih = frame.width(), frame.height()
     ratio = min(1.0, sw / iw, sh / ih)
-    if ratio == 1:
+    if ratio == 1 and show_camera:
         return frame.to_format(image.Format.FMT_RGB888), qrs, roi
-    small = frame.resize(sw, sh, fit=image.Fit.FIT_CONTAIN)
-    canvas = small.to_format(image.Format.FMT_RGB888)
+    if show_camera:
+        small = frame.resize(sw, sh, fit=image.Fit.FIT_CONTAIN)
+        canvas = small.to_format(image.Format.FMT_RGB888)
+    else:
+        # 新建黑底，不能把原始灰度图涂黑，否则下一步可能拿不到真实画面。
+        if ratio == 1:
+            canvas = image.Image(iw, ih, image.Format.FMT_RGB888)
+            canvas.draw_rect(0, 0, iw, ih, image.Color.from_rgb(0, 0, 0), thickness=-1)
+            return canvas, qrs, roi
+        canvas = image.Image(sw, sh, image.Format.FMT_RGB888)
+        canvas.draw_rect(0, 0, sw, sh, image.Color.from_rgb(0, 0, 0), thickness=-1)
     ox, oy = (sw - iw * ratio) / 2, (sh - ih * ratio) / 2
+    if not show_camera:
+        # 白框标出有效图像范围；框外是黑边，点触不会移动扫码区域。
+        canvas.draw_rect(int(ox), int(oy), max(1, int(iw * ratio) - 1),
+                         max(1, int(ih * ratio) - 1), image.COLOR_WHITE, thickness=1)
     def point(x, y):
         return int(ox + x * ratio), int(oy + y * ratio)
     def box(x, y, w, h):

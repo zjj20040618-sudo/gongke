@@ -109,6 +109,7 @@ class QrRegionTests(unittest.TestCase):
         incoming = iter([build_control_packet(17, 1)] + [b""] * (len(taps) - 1))
         exits = iter([False] * len(taps) + [True])
         with patch.object(test_app.maix.camera, "Camera", Camera, create=True), \
+             patch.object(test_app.maix.image, "Image", Frame), \
              patch.object(test_app.maix.display, "Display", return_value=SimpleNamespace(width=lambda: 480, height=lambda: 320, show=lambda img: None), create=True), \
              patch.object(test_app.maix.app, "need_exit", side_effect=lambda: next(exits), create=True), \
              patch.object(main, "init_uart", return_value=SimpleNamespace(read=lambda **kwargs: next(incoming))), \
@@ -142,12 +143,14 @@ class QrRegionTests(unittest.TestCase):
                 events.append(("decode", tuple(roi)))
                 return []
             def draw_rect(self, x, y, w, h, color, **kwargs):
-                events.append(("outline", (x, y, w, h)))
+                if color == (0, 255, 255):
+                    events.append(("outline", (x, y, w, h)))
         class Camera(test_app.FakeCamera):
             def read(self, **kwargs):
                 return Frame(self.width, self.height, self.pixel_format)
         exits = iter((False, False, True))
         with patch.object(test_app.maix.camera, "Camera", Camera, create=True), \
+             patch.object(test_app.maix.image, "Image", Frame), \
              patch.object(test_app.maix.display, "Display", return_value=SimpleNamespace(width=lambda: 480, height=lambda: 320, show=lambda img: events.append(("show", None))), create=True), \
              patch.object(test_app.maix.app, "need_exit", side_effect=lambda: next(exits), create=True), \
              patch.object(main, "init_uart", return_value=None), \
