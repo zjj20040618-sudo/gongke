@@ -23,6 +23,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "board_pins.h"
+#include "arm.h"
+#include "test.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -55,6 +57,11 @@
 
 static void fault_outputs_off(void)
 {
+  arm_stepper_clock_stop();
+  /* A fault may interrupt the 20us low pulse. Release STEP directly without
+   * invoking HAL or a DWT delay; open-drain HIGH is the existing Hi-Z idle. */
+  ARM_AXIS0_STEP_GPIO_Port->BSRR = ARM_AXIS0_STEP_Pin;
+  ARM_AXIS1_STEP_GPIO_Port->BSRR = ARM_AXIS1_STEP_Pin;
   GPIOC->BSRR = (uint32_t)GPIO_PIN_8 << 16u;   /* 电机 STBY=0 */
   bp_laser_emergency_off();                 /* dedicated laser STBY/PWM/IN off */
 }
@@ -226,5 +233,14 @@ void TIM6_DAC_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
+
+void TIM7_IRQHandler(void)
+{
+  if ((TIM7->SR & TIM_SR_UIF) != 0u &&
+      (TIM7->DIER & TIM_DIER_UIE) != 0u) {
+    TIM7->SR = ~TIM_SR_UIF; /* RC_W0: clear only the serviced update flag. */
+    test_stepper_timer_irq();
+  }
+}
 
 /* USER CODE END 1 */

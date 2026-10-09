@@ -9,6 +9,26 @@
 #define PROTO_BINARY_MAX_LEN     280u /* legacy payload plus request envelope */
 #define PROTO_BINARY_GAP_MS      100u /* incomplete-frame gap, not mission timeout */
 
+/* Opt-in only: the boot owner must supply a fresh hardware-random nonce.
+ * This macro never enables the transport by itself; proto_init stays legacy. */
+#ifndef PROTO_BOOT_SESSION_ENABLE
+#define PROTO_BOOT_SESSION_ENABLE 0u
+#endif
+#define PROTO_SESSION_VERSION    1u
+#define PROTO_SESSION_NONCE_LEN  8u
+#define PROTO_SESSION_RETRY_MS   500u
+
+typedef enum {
+    PROTO_SESSION_NONE = 0, PROTO_SESSION_HELLO, PROTO_SESSION_CONFIRM,
+    PROTO_SESSION_READY, PROTO_SESSION_FAILED
+} ProtoSessionState;
+
+typedef struct {
+    uint8_t enabled, state;
+    uint8_t client[PROTO_SESSION_NONCE_LEN], server[PROTO_SESSION_NONCE_LEN];
+    uint32_t tx, mismatch, bare, pre_ready, bad;
+} ProtoSessionDiag;
+
 typedef enum {
     PF_NONE = 0,
     PF_READY, PF_PONG, PF_PING,          /* 无字段 */
@@ -82,6 +102,15 @@ typedef struct {
 } ProtoWireDiag;
 
 void proto_init(void);
+/* Enable64/65/67/68 boot handshake and66 nonce-bound business transport.
+ * Nonces are opaque eight-byte values (no numeric endian conversion).
+ * Invalid/nonbinary input fails closed; no TX here or in RX ISR. Existing
+ * business selection may remain queued, but all previous authority is cleared.
+ * Only successful READY permits wrapped60/63 TX and wrapped61/62 RX.
+ * Calling proto_init is the only explicit reset back to legacy transport. */
+int proto_session_begin(const uint8_t client[PROTO_SESSION_NONCE_LEN]);
+void proto_session_fail(void); /* RNG/setup failure: enabled+FAILED, never downgrade. */
+void proto_session_diag_get(ProtoSessionDiag *out); /* IRQ-safe snapshot. */
 void proto_set_binary_mode(int enabled); /* before arming RX; no autodetection */
 void proto_set_tx(void (*tx)(const char *s));          /* 用户提供串口发送 */
 void proto_set_binary_tx(void (*tx)(const uint8_t *data, uint16_t length));

@@ -46,7 +46,7 @@ static int target_ready(void)
 {
     reset_fixture(); target_sequence = 0u;
     run_cmd("35");
-    CHECK(TARGET_TRIAL_MODE == 35 && T_MODE_MAX == 41);
+    CHECK(TARGET_TRIAL_MODE == 35 && T_MODE_MAX == 43);
     CHECK(s_msel == TARGET_TRIAL_MODE && s_target35_phase == TA_READY);
     CHECK(target_stopped() && !laser_state && !s_go && !pulse_calls && !servo_calls);
     CHECK(host_target_calls == 0);
@@ -240,6 +240,16 @@ static int check_new_scan_and_preparation_boundaries(void)
 static int check_direction_boundaries_and_independent_frames(void)
 {
     CHECK(target_seek(2) == 0);
+    /*31 now has a350-pixel coarse200/fine30 gate plus right6.5% approach.
+     * Independent35 MUST NOT inherit any of those parameters or latch. */
+    target_frame(400);
+    CHECK(last_x == 50.0f && last_y == 0.0f && !s_target31_fine && !s_target35_route);
+    target_frame(351);
+    CHECK(last_x == 50.0f && last_y == 0.0f && !s_target31_fine);
+    target_frame(350);
+    CHECK(last_x == 50.0f && last_y == 0.0f && !s_target31_fine);
+    target_empty();
+    CHECK(last_x == 50.0f && last_y == 0.0f && !s_target31_fine);
     target_frame(249); CHECK(last_x == -50.0f && s_target35_phase == TA_SEEK);
     target_frame(261); CHECK(last_x == 50.0f && last_y == 0.0f);
     target_frame(250); CHECK(target_stopped() && s_target35_good == 1u);
@@ -255,7 +265,98 @@ static int check_direction_boundaries_and_independent_frames(void)
     CHECK(s_target35_good == 4u && s_target35_phase == TA_SEEK);
     target_frame(260);
     CHECK(s_target35_phase == TA_SETTLE && target_stopped() && !laser_state);
-    puts("target35 directions/boundaries: x249 -50, x261 +50; x250/260 included; brake on first good; cache/same-seq cannot complete five passed");
+    puts("target35 directions/boundaries: x400/351/350 and loss still50/no lateral/no31 latch; x249 -50, x261 +50; x250/260 included; brake on first good; cache/same-seq cannot complete five passed");
+    return 0;
+}
+
+static void target31_trial_wire_diag(ProtoWireDiag *out)
+{
+    memset(out,0,sizeof *out);
+    out->request=1u;out->receiving=(uint8_t)!host_receive_closed;
+    out->ack=(uint8_t)(host_scene_status==1);out->failed=(uint8_t)(host_scene_status<0);
+    out->mode=2u;out->task=(uint8_t)host_target_task;out->selection=host_target_digit;
+}
+static int check_route31_fine_gate_is_not_an_aim_gate(void)
+{
+    for (unsigned burst = 0u; burst < 2u; ++burst) {
+        reset_fixture(); run_cmd("31"); run_cmd("g");
+        s_seq_qr[0] = 1; s_seq_qr[1] = 2; s_seq_qr[2] = 3;
+        host_wire_diag_hook=target31_trial_wire_diag;
+        s_seq_stage = ROUTE31_TARGET_STAGE; route_seq_prepare();
+        CHECK(s_target35_route && s_target35_phase == TA_TASK_WAIT && target_stopped());
+        host_scene_status = 1; test_poll();
+        host_tick += T_DIST_STILL_MS; test_poll();
+        host_tick += NAV_SETTLE_MS; test_poll();
+    CHECK(s_target35_phase == TA_SEEK && last_x == 200.0f && last_y == 13.0f && !s_target31_fine);
+        target_packet(CLS_TARGET, LAB_G, 400, 10u);
+        target_packet(CLS_TARGET, LAB_G, 350, 10u); /* Duplicate. */
+        CHECK(last_x == 200.0f && last_y == 13.0f && !s_target31_fine);
+        target_packet(CLS_TARGET, LAB_G, 349, 9u); /* Backwards. */
+        CHECK(last_x == 200.0f && last_y == 13.0f && !s_target31_fine);
+        target_cache_packet(CLS_TARGET, LAB_G, 350, 11u);
+        if (burst) { target_cache_packet(CLS_TARGET, LAB_G, 400, 12u); test_poll(); }
+        else target_empty();
+        CHECK(last_x == 30.0f && last_y == 0.0f && s_target31_fine &&
+              s_target35_phase == TA_SEEK && !s_target35_good && !laser_state);
+        host_tick += T_TARGET35_FRESH_MS + 1u; test_poll();
+        CHECK(last_x == 30.0f && last_y == 0.0f && s_target31_fine && !laser_state);
+        run_cmd("0"); CHECK(s_seq_state == SQ_STOPPED && target_stopped() && !laser_state);
+    }
+    puts("31-only direct RX:far400 then duplicate/backward350 cannot latch; fresh350->empty/far400 samepoll permanentlyfine30/noFF, never fakegood/laser;35 isolated passed");
+    return 0;
+}
+
+static int check_route31_private_band_geometry(void)
+{
+    CHECK(ROUTE31_TARGET_CX == 240 && ROUTE31_TARGET_LOW_CX == 237 && ROUTE31_TARGET_HIGH_CX == 243);
+    for (unsigned width = 243u; width <= 245u; ++width) {
+        ProtoFrame frame;
+        reset_fixture(); run_cmd("31"); run_cmd("g");
+        s_seq_qr[0] = 1; s_seq_qr[1] = 2; s_seq_qr[2] = 3;
+        host_wire_diag_hook = target31_trial_wire_diag;
+        s_seq_stage = ROUTE31_TARGET_STAGE; route_seq_prepare();
+        host_scene_status = 1; test_poll();
+        host_tick += T_DIST_STILL_MS; test_poll();
+        host_tick += NAV_SETTLE_MS; test_poll();
+        CHECK(s_target35_phase == TA_SEEK && !s_target31_fine);
+        memset(&frame, 0, sizeof frame);
+        frame.type = PF_OBJ; frame.cls = CLS_TARGET; frame.label = LAB_G;
+        frame.cx = 240; frame.cy = 160; frame.w = frame.h = 2;
+        frame.conf = 95; frame.img_w = (uint16_t)width; frame.img_h = 320;
+        frame.sequence = 1;
+        host_proto_stats.obj++; host_proto_stats.lines++;
+        test_vision_feed_frame(&frame); test_poll();
+        if (width == 243u) CHECK(s_seq_state == SQ_STOPPED && !laser_state);
+        else CHECK(s_target31_fine && s_target35_good == 1u && target_stopped() && !laser_state);
+        CHECK(T_TARGET35_CX == 255 && T_TARGET35_LOW_CX == 250 && T_TARGET35_HIGH_CX == 260);
+        run_cmd("0");
+    }
+    puts("31 private240/237..243: valid image widths244..245 latch fine at240,243 width rejected; standalone35 constants unchanged passed");
+    return 0;
+}
+
+static int check_route31_private_band_endpoints(void)
+{
+    static const int points[] = {236,237,240,243,244};
+    for (unsigned i = 0u; i < sizeof points / sizeof points[0]; ++i) {
+        reset_fixture(); run_cmd("31"); run_cmd("g");
+        s_seq_qr[0] = 1; s_seq_qr[1] = 2; s_seq_qr[2] = 3;
+        host_wire_diag_hook = target31_trial_wire_diag;
+        s_seq_stage = ROUTE31_TARGET_STAGE; route_seq_prepare();
+        host_scene_status = 1; test_poll();
+        host_tick += T_DIST_STILL_MS; test_poll();
+        host_tick += NAV_SETTLE_MS; test_poll();
+        CHECK(s_target35_phase == TA_SEEK && target35_point() == 240 &&
+              target35_low() == 237 && target35_high() == 243);
+        target_packet(CLS_TARGET, LAB_G, points[i], 1u);
+        CHECK(s_target31_fine && s_target35_phase == TA_SEEK && !laser_state && !last_y && !last_w);
+        if (points[i] < 237) CHECK(last_x == -30.0f && !s_target35_good);
+        else if (points[i] > 243) CHECK(last_x == 30.0f && !s_target35_good);
+        else CHECK(target_stopped() && s_target35_good == 1u);
+        run_cmd("0"); CHECK(target_stopped() && !laser_state);
+    }
+    CHECK(target_ready() == 0 && target35_point() == 255 && target35_low() == 250 && target35_high() == 260);
+    puts("31 band237/243 included and236/244 correct directions;240 center;standalone35 remains255/250..260 passed");
     return 0;
 }
 
@@ -449,6 +550,9 @@ int main(void)
     CHECK(check_search_without_ack_or_coordinates() == 0);
     CHECK(check_new_scan_and_preparation_boundaries() == 0);
     CHECK(check_direction_boundaries_and_independent_frames() == 0);
+    CHECK(check_route31_fine_gate_is_not_an_aim_gate() == 0);
+    CHECK(check_route31_private_band_geometry() == 0);
+    CHECK(check_route31_private_band_endpoints() == 0);
     CHECK(check_empty_wrong_color_and_expiry() == 0);
     CHECK(check_settle_revalidation_and_fire_timing() == 0);
     CHECK(check_final_snapshot_transition() == 0);

@@ -13,12 +13,15 @@
 #include "test.h"
 #include <string.h>
 #include <stdio.h>
+#if PROTO_BOOT_SESSION_ENABLE
+#include "boot_session_rng.h"
+#endif
 
 static uint8_t s_rx2, s_rx3, s_rx4;   /* 2=视觉(USART2 PD5/6) 3=蓝牙(USART3 PD8/9) 4=IMU(UART4 PC10/11) */
 
 /* BT 输入环形缓冲(huart3,ISR 写 / robot_bt_service 读) */
 #define BT_RX_N 64u
-#define FW_BUILD_ID "20261006-XY-STEP3-STEPPER-SWAP"
+#define FW_BUILD_ID "20261009-R31-3200-FINE30-SESSION1-OPTIN"
 static volatile uint8_t s_bt[BT_RX_N];
 static volatile uint8_t s_bt_wr, s_bt_rd;
 static volatile uint32_t s_bt_drop;
@@ -101,6 +104,15 @@ void robot_init(void)
         s_uart_err[i] = 0u; s_uart_last_err[i] = 0u; s_uart_arm_fail[i] = 0u;
     }
     uart_rx_ensure_all();                           /* 三路首次挂接；失败由 DefaultTask 重试 */
+#if PROTO_BOOT_SESSION_ENABLE
+    {
+        uint8_t boot_nonce[8];
+        if (!boot_session_nonce(boot_nonce) || !proto_session_begin(boot_nonce)) {
+            proto_session_fail(); /* Never silently fall back to the old wire protocol. */
+            bp_debug_send("SESSION RNG_ERROR: QR BLOCKED; NO LEGACY FALLBACK\r\n");
+        }
+    }
+#endif
     proto_qr_begin(); /* Camera starts scanning at power-on; BENCH_AUTO stays 0. */
     bp_debug_send("\r\nREADY FW=" FW_BUILD_ID " SEND ? OR diag\r\n");
 }

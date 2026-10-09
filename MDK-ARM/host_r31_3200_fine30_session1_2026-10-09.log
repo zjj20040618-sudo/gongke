@@ -1,0 +1,1568 @@
+grab XY task stack contract: at least 2 KB and matching IOC configuration
+independent XY task stack contract: existing 2 KB DefaultTask and matching IOC configuration
+boot RNG synthetic adapter: byte order/clock guard/owner protection/error bits/read errors/duplicates/zero/bounded stalled-tick/wrap/shutdown PASS (not physical RNG validation)
+boot RNG synthetic adapter: byte order/clock guard/owner protection/error bits/read errors/duplicates/zero/bounded stalled-tick/wrap/shutdown PASS (not physical RNG validation)
+test_actual_four_pin_mappings_match_test_stubs (__main__.LaserTBSourceContract.test_actual_four_pin_mappings_match_test_stubs) ... ok
+test_all_fatal_paths_use_handle_independent_laser_off (__main__.LaserTBSourceContract.test_all_fatal_paths_use_handle_independent_laser_off) ... ok
+test_gpio_pwm_safe_init_and_no_timer_irq (__main__.LaserTBSourceContract.test_gpio_pwm_safe_init_and_no_timer_irq) ... ok
+test_ioc_unique_resources_and_pwm_parameters_match_source (__main__.LaserTBSourceContract.test_ioc_unique_resources_and_pwm_parameters_match_source) ... ok
+test_no_old_pa15_laser_output_in_current_source (__main__.LaserTBSourceContract.test_no_old_pa15_laser_output_in_current_source) ... ok
+
+----------------------------------------------------------------------
+Ran 5 tests in 0.028s
+
+OK
+TB6612 laser adapter: 5 groups passed (real board_pins.c; init/off/order/IRQ/fatal/isolation).
+arm stepper: axis0 STEP PA9/DIR PA10; axis1 STEP PA11/DIR PA12; low/high pulse and virtual 20us passed
+arm TIM7: 1..20000pps fit; APB1 x1/x2; restart/stop/IRQ/fault; TIM6 untouched passed
+arm TIM7 rephase: active reset; inactive no-op; PSC/ARR/PRIMASK retained passed
+arm servo: 500..2500us actual CCR2 conversion/clamp, boot1150/CCR575 independent of open1000/grip1700 passed
+arm GPIO/IOC contract: PA9..PA12 high initial level, open-drain/no-pull preserved (host only)
+arm task flow: selected BALL/HOSTAGE digits1..3, TURN180 -> BUCKET0 handshake, unchanged arm order/gates, invalid labels and entry/handshake/turn stops passed (host mocks)
+anti task flow: selected TARGET digits1..3, stopped1s then laser2s, invalid labels and handshake/settle/laser/entry stops passed (host mocks)
+target timing: real steps.c stopped/off1000ms -> laser2000ms -> off before continuation; 2 normal/wrap starts, entry/between-phase and 8 timed aborts passed (no hardware)
+obstacle abort/timeout: 5 cases passed
+mission QR mapping: 27 valid + 7 invalid; startup abort: 1; production gate closed
+trial32 mission request: independent gate, pending abort, no formal motion, QR log delegation, DONE/ABORT terminal passed
+left90 entry: signed start/overshoot/settle/stop, mirrored limits, timeout/IMU, a/0, right90/180 preservation passed
+distance FF: forward-right/reverse-left trial seeds at100/200/300; independent direction RAM and preserved v300 strafe parameters, manual/mission isolation, off/override/PARAM passed
+90/180 shared hold: preserved 180 constants, signed P/min/clamp, overshoot recovery, still-window reset, 12s budget passed
+route31: nine-road prefix R2back630/board_tilt1.5_wait1s_guard300_confirm100_v40, crossing/contact yaw/FF disabled, QRgate/right800/back760/rackDIR0nl3200predeploy/left90 then actual ball/bucket41 task handoff; independent3200 recipe and3199-not-DONE boundary, no legacybucket/manuald, three backwardBFF legs, post-yaw-before-next, terminal router policy,108 road g/a/0 cancellations, locks and IMU/abort/turn failure passed
+route31 two-run post-cross: back650/v300 ->forwardtilt_contact/v40 yaw/FF disabled; wheel-still/node zero/750ms wait ->fresh back190/v200 restoresykp + independentBFF; manual/32 unchanged passed
+route34 two-run post-cross: back650/v300 ->forward80/v20 yaw/FF disabled; wheel-still/node zero/750ms wait ->fresh back190/v100 restoresykp + independentBFF; manual/32 unchanged passed
+trial32 router: selection/RAM XY workpoints/both signs/first-leg aliases, malformed writes, queued start, pending g/a/0, laser-off, terminal no-restart and write lock passed
+vision33: ACK/fresh QR gating, current/empty packet snapshots, 20 write locks, 12 stops, late frames, same-batch cancellation and repeated test IDs passed; no actuator calls
+bounded jog: 24..27 two-direction 1/500/1000/5000/5001/100000 limits, 26/27 READY-g repeat, 32-bit exact return count and unchanged 24/25 clear passed
+bounded jog cancel: 26/27 both directions g/a/0 in OUT/WAIT/RETURN clears request and never resumes passed
+jog frequency: default500, f1/50/333/500/1000/2000/5000/10000/20000, range20001 rejection, active locks, v-use-f, mode/repeat retention and virtual TIM7 timing passed
+jog TIM7 engine: boot inert, 2ms DIR gate, high-rate same-HAL-ms IRQs, one STEP/no UART per IRQ, delayed report isolation, clock failure and uint32 wrap passed
+jog 24/25: both directions OUT/DONE g/a/0 stop the TIM7 clock without extra STEP or auto-return passed
+servo router: 500..2500 bounds, invalid/no-output, u READY-only/g start, exact 28 return and 29 hold, g/a/0 cancel, active/mission locks passed
+real g router: pending/running/terminal mission stop, a alias, closed gate, CRLF/idle framing, wheel/distance/turn/IMU/jog/servo/return passed
+board tilt:31/43 wheel-still250 then300/1000ms stopped rezero, wheel motion restarts wait, frozen baseline survives startup changes passed
+board tilt:user-log100ms/+0.56/1.7mm rejected; startup guard300ms and sustained100ms after first fresh qualifying frame passed
+board tilt:31/43 +/-pitch/roll1.49reject/1.50 accept ->BACK10/FWD15 fixed40 no yaw/FF/zero/750wait;rolling resets250;43 freshg each;BACK190 only then zero+750 passed
+board tilt:nonzero frozen baseline,decimal/wrap,duplicate timestamp cannot confirm,low frame and over100ms gap restart sustained interval passed
+board tilt:encoder40/1000 and yaw cannot finish;10s timeout wins over sustained contact,tick wrap,noadvance/noresume passed
+board tilt:invalid/stale IMU abort in startup/run/rezero,31/43 g/a/0 during wait/run/one-hit/braking never advance passed
+31 board nudges:BACK10/FWD15 g/a/0 in preparation/run/braking abort without zero/advance/resume;IMU/abort running stops both passed
+board tilt:legacy34/36/37 retain80mm/v20/NAV750,manual15 encoder endpoint,43 d rejects sensor-only contact passed
+route31/43 board tilt wait300/1000ms/guard300ms/confirm100ms/threshold1.5 host-only regression passed
+imu snapshot:6/18 layouts and signed hundredths, no partial-frame update, coherent timestamp, yaw zero leaves tilt unchanged passed
+imu snapshot:bad checksum/ACK/garbage do not renew valid timestamp,199ms valid/200ms stale with outputs unchanged, fresh recovery passed
+imu snapshot:pending UART blocked through entire copy, previous PRIMASK restored, unsigned timestamp age across HAL wrap passed
+real App/imu.c tilt snapshot host-only regression passed
+grab42 selection/start: private default e2500 h0 u1900 f500 completes and repeats on g; global grip1700/start1150 unchanged; defensive internal-u0 rejection, explicit override, idle su origin and unknown-origin rejection passed
+grab42 full/repeat: extend-DIR0,250ms,down-DIR1,250ms,u,2s,prior-u,2s,up-DIR0,250ms,retract-DIR1,250ms; exact emitted returns and retained params repeat passed
+grab42 isolation: global cc remains1700; private default1900 grips then returns to captured cc1700 origin, reselect retains physical command/f500 passed
+grab42 limits: zero axes skip all clocks; nl alias and two 100000-step axes at f20000 return exactly400000 total pulses passed
+grab42 origin: startup1150 independent; complete trials return to pre-g su1600 then su900, not hard-coded startup/open/close passed
+grab42 parser: zero/one/max counts,u endpoints,f endpoints,negative-zero/malformed/range/overflow rejections and no write-time actuation passed
+grab42 stops:30 g/a/0 cancellations across10 active phases, immediate staleIRQ-safe clock cancellation, no extra servo/reversal/resume; reselect restores privateu1900 and permits only a new run passed
+grab42 ownership:31 mode/tune/arm writes blocked in each active phase; only ?/diag/param read-only, frozen params and no chassis/QR/vision/laser-on passed
+grab42 failure/timing: four motor-job clock-start failures abort without later action; externalabort cancels and HAL tick rollover preserves waits passed
+grab42 countfault: externally cancelled partial jobs in all4 motor phases STOPPED without later grip/return; software-only fault injection passed
+grab42 public Bluetooth router/sequence host regression passed; no physical acceptance claimed
+App/motion.c: In function 'motion_pose_update':
+App/motion.c:234:11: warning: unused variable 'th' [-Wunused-variable]
+  234 |     float th = s_pose.th;                                      /* 用上一拍航向做本拍旋转 */
+      |           ^~
+real forward FF IK: v100 zero/positive/negative and dispatched integer targets passed; nominal quantized vy is not measured ground drift
+In file included from tests/precise_velocity_test.c:43:
+tests/../App/motion.c: In function 'motion_pose_update':
+tests/../App/motion.c:234:11: warning: unused variable 'th' [-Wunused-variable]
+  234 |     float th = s_pose.th;                                      /* 用上一拍航向做本拍旋转 */
+      |           ^~
+precise velocity: fractional yaw/FFF reach real PI; legacy integer targets/PWM, open-loop, brake/coast and history reset passed
+speed ykp: 12 independent mode/v profiles, exact-key fallback, no interpolation, reset/retention passed
+speed ykp: missing v, invalid/range values, zero, 32-slot no-eviction/update, RUN/BRAKE/RET/mission locks passed
+speed ykp: 12 per-run snapshots, negative feedback, precise dispatch, automatic START/TRC/REC actual gain, g stop passed
+speed ykp: 20/22/30 turn profiles unchanged; mode31 local gain0.3 stays isolated from global/manual table passed
+post-yaw: four distance directions return to captured start heading before zero, signed overshoot, encoder coast/final still and no translation passed
+post-yaw: wrapped headings take the short signed correction; already-aligned completion does not issue a rotation passed
+post-yaw: nine g/a/0 cancellations across brake/correction/final hold; manual partial-distance stop never corrects or auto-returns passed
+post-yaw: IMU loss and abort during initial brake/correction cancel without later motion passed
+post-yaw: default/toggle/invalid/running locks, yfix0 legacy path,12s timeout and non-finite IMU never declare correction success or zero passed
+post-yaw: translation end distance/counts frozen before correction; REC separates pre-correction and corrected pre-zero heading passed
+post-yaw:14 mode/speed/distance/gain/FFF/servo writes rejected duringR_ALIGN; param/diag/help stay read-only, g stays immediate passed
+post-yaw: finite subtraction overflow inRUN/ALIGN stops without zero; huge finite wrapped error returns bounded motion and immediate g remains usable passed
+post-yaw: reverse crossing650 and forward80 board-contact legs remain exempt; normal back190 corrects before route terminal passed
+post-yaw:31/34/36/37 all19 existing distance nodes plus1 fixedright4pct final15 correct before advance/DONE; all8 back650/31tilt-contact-legacyforward80 heading-disabled crossing/contact nodes remain exempt passed
+post-yaw:36 g/a/0 cancellations across all4 route owners and brake/correction/hold; no resume/zero; yfix0 preserves each legacy completion path passed
+post-yaw:31 continuous true0 accepts either-side initial0/0.01/0.29/0.39 without crossing or rotation, requires400ms hold, keeps0.29/0.31 jitter stable and other owners at0.3/700ms passed
+post-yaw:31 both+/-0.4 strict boundary and0.41/1/1.5/2/4 reject completion, continuously command past600ms with min0.18/no-progress400ms-floor0.30, reverse on measured overshoot toward true0 without pulse/gap or bias passed
+post-yaw:31 tiny true0/either-side changes do not demand crossing; strict0.4 excursion, encoder coast and in-band>0.2 angular change restart400ms before zero/advance passed
+post-yaw:real nextBACK760, stopped-owner reselect31 and fixture reset each receive fresh400ms hold; initial true0 never issues a forced rotation passed
+post-yaw:31 nine g/a/0 stops across far/near continuous correction and hold; eight correction/hold12s/IMU/abort/NaN faults never zero, advance or move later passed
+post-yaw:31 wrapped +/-359 correction follows shortest signed error and accepts same-side wrapped0.25; real31 +/-90 and independent20/22/30 still reject0.35, accept same-side0.25 after400ms(31)/700ms(independent) passed
+post-yaw:standalone15..18 and34/36/37 still reject0.31, accept0.3 only after700ms and preserve original next/terminal states passed
+post-yaw:31 real executor boosts only after400ms insufficient progress; wrong-way and0.049 preserve boost,0.05/sign/in-band/newleg/reselect reset;g/a/0 stop boosted command;43 stays700/no boost passed
+translation_post_yaw_test: all host checks passed; physical yaw/road projection remains unverified
+In file included from tests/translation_feedforward_test.c:35:
+tests/../App/motion.c: In function 'ff_real_motion_pose_update':
+tests/../App/motion.c:234:11: warning: unused variable 'th' [-Wunused-variable]
+  234 |     float th = s_pose.th;                                      /* 用上一拍航向做本拍旋转 */
+      |           ^~
+FFF: all normal speeds1/20/100/200/300/350/600; forward-left-drift gets body-right, backward-body-right gets body-left; precise IK dispatch/roundtrip passed
+FFF: fff/bff independent RAM ratios, both signs/zero/range/malformed rejection, speed switches, run snapshot/write locks and test_init restoration passed
+FFF: lff/rff originalv300 gate and signed orthogonal axis unchanged;90/180/left92 rotation behavior isolated passed
+FFF:37 crossing650 and board80 keep zero correction despite nonzero RAM values; normal back190 uses route-only bff, global slots untouched passed
+FFF: +/- sign always refers to vehicle-body left/right independent of forward/backward travel; candidate manual defaults do not leak to formal32 or activate35 passed
+routeFFF: default unmeasured lateral slots0 reported,37 accepts/preserves inert LFF/RFF slots then36 applies them atv100; route/manual values never leak; test_init restores0 passed
+routeFFF: all4 route owners,91 existing plus7 final15 direction/speed input cases includingv100/v300;31dynamic12/final15 both fixedright4pct, other FFF/BFF/LFF/RFF unchanged; all reach real precise4wheel IK, active snapshots locked passed
+translation_feedforward_test: all host checks passed; drift ratio/sign with installed load still needs ruler measurement
+App/motion.c: In function 'motion_pose_update':
+App/motion.c:234:11: warning: unused variable 'th' [-Wunused-variable]
+  234 |     float th = s_pose.th;                                      /* 用上一拍航向做本拍旋转 */
+      |           ^~
+real heading helper: NaN/Inf inputs and finite subtraction overflow return0; six huge finite differences return bounded targets without revolution loops passed
+real injected yaw/IK: sign, zero, wrapping, clamp, global isolation, 12 direction/velocity targets and fractional propagation passed
+In file included from tests/route_softstop_test.c:24:
+tests/../App/motion.c: In function 'real_motion_pose_update':
+tests/../App/motion.c:234:11: warning: unused variable 'th' [-Wunused-variable]
+  234 |     float th = s_pose.th;                                      /* 用上一拍航向做本拍旋转 */
+      |           ^~
+real precise IK: route31 left535/manual right35 signed lateral targets; reverse190 negative axis with separateleftBFF; stage12 green420 right4pct ->positive lateral and four changed forwardRPM targets passed
+route31 real soft-stop: local700/350/global isolation, six distance legs including rank2 final1315, crossing yaw/FF disabled including deceleration, sensor-contact checked separately, back190 restoresykp0.3 + BFF; post-yaw-before-next/terminal, fractional endpoint, g/a/0/IMU cancellation and manualprofile preservation passed
+route31stage12 always private CORNER_RIGHT_FF independent of ordinaryFFF inputs; retained34 FFF zero/negative/positive lateral signs; routeRAM/manual/32 unchanged passed
+pair180:31 holds400 then new bucket request, discards turn pixels and gates matchingACK/new frame;43 holds700 then preserves gatedLEFT40; manual stop passed
+route31 new tail:return180 stable400 then direct target240[237..243], noLEFT20;43 stable700 retains gatedLEFT20; dynamic520/420/320/right90/hostage40/dynamicrankexit15;16stages,grip/release2s retained;standalone35 stays255;parameter ownership/handoffs and stop passed
+route31 workpoints: ball135/bucket125/hostage215 private; tolerance10/Y390/420/220 unchanged and standalone38..41 remainX190 passed
+route31 final15 executor: ranks1/2/3 ->1415/1315/1215 atv200 independently of QR shape, speed-scaled private HOSTAGE_EXIT_RIGHT_FF despite ordinaryFFF zero/negative/positive; ordinaryFFF RAM and routeykp/yawfix preserved, terminal STOP passed
+route31 two-run post-cross: back650/v300 ->forwardtilt_contact/v40 yaw/FF disabled; wheel-still/node zero/750ms wait ->fresh back190/v200 restoresykp + independentBFF; manual/32 unchanged passed
+route31/43 xkp:0..5 private RIGHT800 gain; actual yaw command, malformed rejection, active lock, retention/reset and ordinary/manual isolation passed
+route31 tuning scope:16-stage task plan nine-road prefix/R2back630/tilt-contact-v40/back760 and direct ball180/bucket and return180/target handoffs withoutLEFT40/LEFT20;43 legacy offsets40/20 retained; fff-.00625/bff+.00625/ykp.3 trialseeds; five prefix heading-feedback/three BFFlegs; crossing/contact yaw/FF disabled; freshback190 restoresykp+BFF; overrides/mission32 isolation, RAM reset, reports, invalid/36road-phase locks and route-only90 turn targets passed
+route31 v:1/100/200/300/600, malformed/range rejection; READY/STOPPED/DONE RAM slot, reselect retention/init reset and auto PARAM; all non-speed tuning unchanged passed
+route31 pv:1/100/200/300/600, malformed/range rejection; straight v independent, READY/STOPPED/DONE/reselect retention/init reset and auto PARAM; other-mode rejection with no writes/motion passed
+route31 defaults without overrides: all16 stages straight/search200 and lateral250; fixed turns100/cross300/contact40 and cancellation preserved passed
+route31 v:all16 stages at1/100/200/600; ordinary back/forward only; explicit lateral100 override, turns, cross300/contact40, limits/acc/dec/ykp retained; 34/36/37 isolated passed
+route31 pv:all16 stages at1/100/200/600; actual LEFT/RIGHT executor commands and compensated signs/units; straight200, cross300/contact40, turns/search/fine unchanged; 34/36/37 isolated passed
+route31 v/pv:STILL/WAIT/RUN/BRAKE/QR_WAIT/PREDEPLOY/TASK/LEFT_RUN/RIGHT_RUN locks preserve active speed/distance/tuning and motor commands; g cancellation intact passed
+route31 v/pv:actual ACK ball/hostage acc700 ->0/14/28/199.5/clamp200 with FF on actual speed;target coarse instant200 despite pv600;farcx400 retains coarse,abs_error29 fineX20/target350 fine30 one-way latch;independent39/35/42 isolated passed
+route31 independent straight/lateral speed host regression passed; no hardware accepted
+route31 R1-only535/v250: select starts QR53 without motion; g preserves earlyQR; exact0.4 corrects continuously, same-side0.3/exact0 brake with no crossing requirement; full400ms hold precedes QR release/R2; shared34/36 recipes stay530 passed
+route31 startup QR: power-on/READY/running R1 first-tuple cache; one success notice; R2 only after completed R1; same request reused passed
+route31 real QR parser: 27 tuples; pre-ACK/old request/bad CRC/legacy/partial/out-of-range/empty/NACK/no-time-release passed
+route31 QR cancellations: 9 R1/wait g/a/0 cases, boot a/0, mode change/reselection/new notice, late frames, 15 write locks and pending-g priority passed
+QR notice race: RX after notice poll -> local close/OBJECT preserves one OK without IDLE; explicit cancel/new QR/init/NACK clear pending snapshot passed
+route31: legal R1 QR -> nine R2back630/crossing-v300/tilt-contact-v40/right800/back760/left90 road actions -> selected ball from R1 tuple; no old bucket detour/manuald; cancellation closes task passed
+route bucket: 15 g/a/0 STILL/PREP_WAIT/SEEK/SETTLE/WAIT_D cancellations; late ACK/object/d cannot resume, local-close without IDLE passed
+route31 boot QR regression passed; no hardware driven
+retained route34: 15-node recipe, reverse650/v300, forward80/v20, back190/yaw/BFF, real bucket4/0 ACK/five frames/1s/manual d730, no QR/arm/laser, post-yaw-before-next, terminal restart passed
+route34: queued boot QR canceled locally before TX; late ACK/QR drain without success or route gate; no camera IDLE/STOP passed
+route34: 168 g/a/0 motion PREP/WAIT/RUN/BRAKE cancellations, no resume/return or camera TX, 15 write locks and IMU stop passed
+route bucket: 15 g/a/0 STILL/PREP_WAIT/SEEK/SETTLE/WAIT_D cancellations; late ACK/object/d cannot resume, local-close without IDLE passed
+route34 post-cross: forward80/v20 mechanical contact -> changed wheel delays zero ->250ms still ->zero ->full NAV_SETTLE_MS ->back190/v100 restores yaw and independentBFF passed
+route34 two-run post-cross: back650/v300 ->forward80/v20 yaw/FF disabled; wheel-still/node zero/750ms wait ->fresh back190/v100 restoresykp + independentBFF; manual/32 unchanged passed
+route34 tuning: shared31 RAM ykp/fff, explicit MODE34 report,31 reopens QR; manual/32/global/90/180 unchanged and power-on defaults passed
+route34_no_qr_test: all host checks passed; no hardware or visual source changed
+recipe isolation:31 independent16-task stages with nine-road prefix/left535/R2back630/tilt-contact-v40/right800/back760; no OLD bucket-anchor/manuald;34 retains15-node bucket/530/80/manual-d730,36 ten/530/80/right730,37 three/80; global left92 unchanged passed
+route31/34 cardinal geometry: mirrored prefix preserves every field displacement and final nominal heading; left-92 calibration not treated as measured exact90 or physical no-slip acceptance
+bucket34 two-run node: forward80/v20 mechanical square-up has no yaw/FF; wheel change delays zero until250ms still; freshzero + full750ms ->back190/v100 restoresRAMykp + independentBFF; thenleft92; global/manual untouched passed
+bucket integration on34: exact15 nodes, task4/digit0, five fresh frames + still hold -> NEW d730 back100 -> whole2450/2125 tail; no QR/laser/arm/auto-distance/resume passed
+bucket36 real parser: 63/4/0 CRC request/retry, pre-ACK/old request/badCRC/wrong class/empty stop; no ACK or missing bucket never search; cx494 backward50/cx506 forward50, 300ms current and301ms stale brake passed
+bucket36 aim gate: inclusive495..505 brakes, duplicate packets cannot supply5; skipped seq/stale/empty invalidate aim; independent5+fresh1s with all four wheel counts still before manual distance wait passed
+bucket36 d command: only manual wait accepts d1..d20000 and automatically prepares backward100; malformed/negative/zero/overflow/early/repeated-running writes rejected, all active-mode/actuator/tuning writes locked, old d not reused passed
+bucket34 stop/error: g/a/0 stop14 motion nodes x4 phases, fivebucket phases inclWAIT_D; noresume/latecoordinates/autoreverse/laser; NACK/IMU/run-abort stop passed
+bucket36 final snapshot: intervening empty/out-of-band/wrong-class/new-in-band/IMU/abort/NACK cannot accept old aim; next tick consumes new state;500px target rejects480/505-wide image while506 is valid passed
+bucket36_route_test: all host checks passed; not physical angle, traction, UART or camera acceptance
+cross37 current recipe:34/36/37 retain back650v300/forward80v20/back190v100;31-only tilt-contact-v40 and16 task stages;36 ten and37 three withoutbucket/manuald;34 retainsbucket tail passed
+cross37 exact3: backward650/v300 ->forward80/v20 ->backward190/v100, yaw/FF0/0/normalBFF; lastleg post-yaw beforeDONE; no offset/turn/QR/camera/arm/laser; PARAM, terminal/noresume and rerun passed
+cross37 post-board: forward80/v20 has no yaw/FF; moving wheel delays zero until250ms still, then reset+750ms ->backward190/v100 restores localykp and independentBFF; global/manual untouched passed
+cross37 stops:36 g/a/0 cancellations across3 nodes x PREP/WAIT/RUN/BRAKE; early g cancels before motion; no return/resume,16 mode/parameter/actuator writes locked and reports remain read-only passed
+cross37 safety: queued bootQR cancelled without camera command; late QR cannot become success;6 IMU-invalid prep/run cases incl yaw-disabled legs and run-abort stop passed
+cross37_sequence_test: all host checks passed; not real obstacle, slip, contact, distance or angle acceptance
+cross37 current recipe:34/36/37 retain back650v300/forward80v20/back190v100;31-only tilt-contact-v40 and16 task stages;36 ten and37 three withoutbucket/manuald;34 retainsbucket tail passed
+route36 exact10: left530/back650/right90/back650v300/forward80v20/back190/right730/back780/left92/forward200STOP; no QR/bucket/manual-d/target/arm/laser, automaticPARAM, no auto resume passed
+route36 stop:120 g/a/0 cancellations across10 nodes x PREP/WAIT/RUN/BRAKE; early stop/active parameter locks, no automatic reverse/restart or camera command passed
+route36 isolation/error: pendingbootQR cancelled before TX, lateQR ignored,10 IMU-invalid cases and run-abort stop; no target/bucket/laser/arm request passed
+route36_no_bucket_test: all host checks passed; not physical obstacle, traction, contact, distance, yaw or road-projection acceptance
+recipe isolation:31 independent16-task stages with nine-road prefix/left535/R2back630/tilt-contact-v40/right800/back760; no OLD bucket-anchor/manuald;34 retains15-node bucket/530/80/manual-d730,36 ten/530/80/right730,37 three/80; global left92 unchanged passed
+integrated31 realQR53: early331 stays through roadprefix, R2back630/tilt-contact-v40/right800/back760/left90; after nine road actions ball request starts from latched QR, no old2450/2125 road-only tail passed
+integrated31 cancellation:108 g/a/0 across9 roadprefix nodes x4phases; lateQR/object cannot drive orresume passed
+turn scope:31 active route right90/left90 with0comp; standalone30 and36 keep calibratedleft92,22 keeps180 passed
+retained34 exact15: left530/back650/right90/back650v300/forward80v20/back190/left92 -> bucket4/0 -> NEW d back100 -> right90/forward780/right90/whole2450/right90/whole2125; no extra200, laser, arm, STOP/IDLE or automatic return passed
+integrated31 QR53: R1 waits indefinitely until matching61 + legal complete331; preACK/wrongrequest/badCRC/illegal rejected; afterright800 no bucket63 or WAIT_D; locallyclosed oldQR/bucket packets cannot drive; cancel drains late packets without STOP/IDLE passed
+retained34 aim: no ACK/no coordinates stays stopped; ID9 only/CRC/freshness, cx494 back50/cx506 forward50, duplicate seq cannot count five; inclusive band and full1s wheel-still gate reset by wheel motion passed
+retained34 d gate: positive NEW d only in WAIT_D starts backwardv100 automatically; malformed/early/running writes locked; cancellation/reselection clears oldd and oldQR/bucket requests; NACK/IMU/abort stop passed
+retained34 cancellation:168 g/a/0 across14 motion nodes x4 phases plus15 bucket prepare/seek/settle/manual-wait cases; all15 nodes stop, cleard/localRX, reject late coordinates and do not resume or send IDLE passed
+route31_bucket_integration_test: all host checks passed; not physical distance, obstacle, UART, camera, aim or road-projection acceptance
+target35 QR/request gate: pre-g legal cache/no movement, complete legal tuple, second digit1..3, no QR time release; queued target permits preparation without ACK/data; failure/NACK passed
+target35 no-coordinate search: legal QR starts +50 after preparation with no target ACK/data or ACK-only; time never fakes aim, NACK/error stops passed
+target35 restart/preparation: selection/manual-stop restart require new QR; encoder motion resets still/prep; pre-preparation coordinates discarded passed
+target35 directions/boundaries: x400/351/350 and loss still50/no lateral/no31 latch; x249 -50, x261 +50; x250/260 included; brake on first good; cache/same-seq cannot complete five passed
+31-only direct RX:far400 then duplicate/backward350 cannot latch; fresh350->empty/far400 samepoll permanentlyfine30/noFF, never fakegood/laser;35 isolated passed
+31 private240/237..243: valid image widths244..245 latch fine at240,243 width rejected; standalone35 constants unchanged passed
+31 band237/243 included and236/244 correct directions;240 center;standalone35 remains255/250..260 passed
+target35 loss search: wrong selected color/class, empty packet and >300ms stale clear good/resume +50 rather than old reverse; fresh reacquisition needs five passed
+target35 settle/fire: out-of-band or empty restarts alignment, no stale shot; full fresh1s then continuous laser at2s/30s, stationary/local-close until manual stop passed
+target35 final snapshot fault injection: intervening empty/out-of-band/wrong-color/new-in-band packet/IMU invalid/abort/NACK cannot fire old cached aim; next tick consumes newest state passed
+target35 abort/locks: 21 g/a/0 active phases incl30s continuous FIRE and fresh-QR restart; 238 parameter/actuator/mode writes locked; read-only commands, mode-exit laser-off, IMU/run-abort fire safety/pending-g priority passed
+target35_trial_test: all host checks passed; no hardware driven
+target35 real QR53: pre-ACK/old request/illegal or partial tuple/empty/CRC/NACK rejected; READY cache and no timed release passed
+target35 real63: all27 tuples use second digit and selected target mapping; same-request CRC retry, coordinates require ACK/request, bareQR53/bareOBJECT01/old/pre-ACK/CRC/NACK/wrong-mode gates passed
+target35 no-coordinate search: legalQR prepares/forward50 without targetACK or first frame; ACK-only stays forward; x249 reverse -> empty forward; stale SETTLE cancels fire/forward and needs5 new frames passed
+target35 real objects: inclusive250..260, x249 backward50/x261 forward50, duplicate/seq-gap/wrong-color/class/empty/301ms stale break5 with forward search; 1s fresh-still then persistent laser/no timed-DONE and terminal local-close passed
+target35 settle: empty/wrong-color/stale/sequence-gap re-arm full dwell; matching63 NACK stops/closes/no-fire;16bit seq rollover preserves independent5 passed
+target35 parser stop: g/a/0 close current window; batched late ACK/QR/object never resumes; explicit restart isolates new QR,target request and color passed
+target35 persistent fire: 2s/30s stays laserON/braked/no-DONE; g/a/0 turnsOFF; g restarts fresh QR and rejects old QR,target requests passed
+target35 real parser replay passed; no physical UART, wheel, arm or laser operated
+route coarse: ball/hostage goal+30 stayscoarse,goal+29 latchesfine; stale/empty/oldrequest/class do not latch; FF and standalone isolation; rank1bucket far400 backward/owner200/noFF then abs(error)<30 fine20 passed
+route coarse signed: +/-30 staycoarse, +/-29 brake/stickyfine but not arrival; accepted sequence alone reverses ramp0/14/28, positive-onlyFF, negativeFF0, fresh/still final5frames passed
+bucket coarse: +/-30 remaincoarse, +/-29 stickyfine; rank1back/rank3forward/rank2coords, all noFF; fine usespixel sign and retains +/-10/fivefresh arrival passed
+route taskX: ball135/125..145 inclusive,124/146 microstep,old190 cannot align,new135 needs5 fresh; bucket125/115..135 inclusive,114/136 microstep,width136 accepts/135 rejects;hostage215/205..225 inclusive,204/226 microstep,width226 accepts/225 rejects; both pairedbucketrequests updategoal; standalone38..41 remain190,geometry/finalarrival use currentgoal passed
+bucket31: completed180+newACK starts2s; rank1back owner200 ramp/heading/noFF; abs(error)<30 stickyfine+empty brakes/yaw/newframes; fine seenlost2s release/still250 never fakealigned or coarse restart; standalone39/41 isolated passed
+bucket31: cancel/abort/IMU/nonfiniteleg/NACK/geometry stop, late turn notification cannot revive passed
+rank54: routehostage pendingaction/WAIT_HOSTAGE_RANK; routeball captures54 and preserves ball_rank into bucket; standalone40 unchanged passed
+ball54 route-only: unknown/late/mixed request/domain stop; real1..3 preserve overtwo bucketrequests/turn; wrap accepted parser; rankwait cancel/abort/IMU/NACK; standalone38/41 isolated passed
+VAT hostage owner:pending/taken/rankwait cancel/abort/IMU/NAN/NACK stop;take checksencoder249/250 once;failedresult stops;earlyrank+repeated01 cannot bypass owner result or repeatgrab passed
+VAT hostage loss:16/17 states/action3;sequence65534/65535/0 and tickwrap;empty/54/replay norefresh,1999/2000+249/250;pre-take recovery cancels,but committed coordinates do not;rankwait/DONE retainfallback andnever fakealignment;parserinvalidcy ignored/privategoalgeometry stops before timer passed
+VAT realparser: bounded3mm/250ms X20/Y30 steps, no midstep reversal, signedaxis odo+age exits, stop250/newimage, postY-yaw700/minW/finalgate/seqhistory,±10/fivefresh/still,strict standalone QR/ACK/direct39/stickyseen/cancel/IMU/NACK/ODO,route40/41 lockedQR after RX close,41shared180/newheading,route-onlysearch100/headingbridge/firstimagebrake/newXY/no-reblind/searchfaults passed; no physical acceptance
+route coarse: ball/hostage goal+30 stayscoarse,goal+29 latchesfine; stale/empty/oldrequest/class do not latch; FF and standalone isolation; rank1bucket far400 backward/owner200/noFF then abs(error)<30 fine20 passed
+route coarse signed: +/-30 staycoarse, +/-29 brake/stickyfine but not arrival; accepted sequence alone reverses ramp0/14/28, positive-onlyFF, negativeFF0, fresh/still final5frames passed
+bucket coarse: +/-30 remaincoarse, +/-29 stickyfine; rank1back/rank3forward/rank2coords, all noFF; fine usespixel sign and retains +/-10/fivefresh arrival passed
+route taskX: ball135/125..145 inclusive,124/146 microstep,old190 cannot align,new135 needs5 fresh; bucket125/115..135 inclusive,114/136 microstep,width136 accepts/135 rejects;hostage215/205..225 inclusive,204/226 microstep,width226 accepts/225 rejects; both pairedbucketrequests updategoal; standalone38..41 remain190,geometry/finalarrival use currentgoal passed
+bucket31: completed180+newACK starts2s; rank1back owner200 ramp/heading/noFF; abs(error)<30 stickyfine+empty brakes/yaw/newframes; fine seenlost2s release/still250 never fakealigned or coarse restart; standalone39/41 isolated passed
+bucket31: cancel/abort/IMU/nonfiniteleg/NACK/geometry stop, late turn notification cannot revive passed
+rank54: routehostage pendingaction/WAIT_HOSTAGE_RANK; routeball captures54 and preserves ball_rank into bucket; standalone40 unchanged passed
+ball54 route-only: unknown/late/mixed request/domain stop; real1..3 preserve overtwo bucketrequests/turn; wrap accepted parser; rankwait cancel/abort/IMU/NACK; standalone38/41 isolated passed
+VAT hostage owner:pending/taken/rankwait cancel/abort/IMU/NAN/NACK stop;take checksencoder249/250 once;failedresult stops;earlyrank+repeated01 cannot bypass owner result or repeatgrab passed
+VAT hostage loss:16/17 states/action3;sequence65534/65535/0 and tickwrap;empty/54/replay norefresh,1999/2000+249/250;pre-take recovery cancels,but committed coordinates do not;rankwait/DONE retainfallback andnever fakealignment;parserinvalidcy ignored/privategoalgeometry stops before timer passed
+VAT realparser: bounded3mm/250ms X20/Y30 steps, no midstep reversal, signedaxis odo+age exits, stop250/newimage, postY-yaw700/minW/finalgate/seqhistory,±10/fivefresh/still,strict standalone QR/ACK/direct39/stickyseen/cancel/IMU/NACK/ODO,route40/41 lockedQR after RX close,41shared180/newheading,route-onlysearch100/headingbridge/firstimagebrake/newXY/no-reblind/searchfaults passed; no physical acceptance
+defaultX: ball/bucket/hostage/41 ignore Y error and dormantY beyond180px; X180/200 inclusive,5 fresh,cy retained,no lateral/Yfix passed
+defaultX: only +/-X20/3mm or250ms cap,latched direction,250ms brake,newX/lostwait; Y variation creates no lateral or Y-specific yaw passed
+defaultX: ACK/request/class/fresh/duplicate/empty/seqwrap gates retained; actualcy outsideimage rejected,geometry change stops,cancel/NACK/abort cannot resume passed
+defaultX: standalone41 keeps ball5s/+180/newbucketrequest/newX/bucket5s; no arm or laser,no Y-specific correction passed
+defaultX route:matchingACK acc700 search0/14/28/clamp100,stickyfirstframe brake250/newX,X20microsteps/noY;explicit HOSTAGE takeonce/result thenDONE or rankWAIT/real54;privategain/postsearchyaw/freshX beforelift retained passed
+defaultX route: relative +/-30 remains signedcoarse, +/-29 latchesstickyfine20, arrival +/-10/5fresh; reverseacc700 restarts0/14/28, forwardFFonly, missingimageforward passed
+route coarse: ball/hostage goal+30 stayscoarse,goal+29 latchesfine; stale/empty/oldrequest/class do not latch; FF and standalone isolation; rank1bucket far400 backward/owner200/noFF then abs(error)<30 fine20 passed
+route taskX: ball135/125..145 inclusive,124/146 microstep,old190 cannot align,new135 needs5 fresh; bucket125/115..135 inclusive,114/136 microstep,width136 accepts/135 rejects;hostage215/205..225 inclusive,204/226 microstep,width226 accepts/225 rejects; both pairedbucketrequests updategoal; standalone38..41 remain190,geometry/finalarrival use currentgoal passed
+bucket31: completed180+newACK starts2s; rank1back owner200 ramp/heading/noFF; abs(error)<30 stickyfine+empty brakes/yaw/newframes; fine seenlost2s release/still250 never fakealigned or coarse restart; standalone39/41 isolated passed
+bucket31: cancel/abort/IMU/nonfiniteleg/NACK/geometry stop, late turn notification cannot revive passed
+rank54: routehostage pendingaction/WAIT_HOSTAGE_RANK; routeball captures54 and preserves ball_rank into bucket; standalone40 unchanged passed
+vision_align_x_only_test: defaultYoff host checks passed; no physical UART, camera, chassis or mechanism acceptance
+defaultX: ball/bucket/hostage/41 ignore Y error and dormantY beyond180px; X180/200 inclusive,5 fresh,cy retained,no lateral/Yfix passed
+defaultX: only +/-X20/3mm or250ms cap,latched direction,250ms brake,newX/lostwait; Y variation creates no lateral or Y-specific yaw passed
+defaultX: ACK/request/class/fresh/duplicate/empty/seqwrap gates retained; actualcy outsideimage rejected,geometry change stops,cancel/NACK/abort cannot resume passed
+defaultX: standalone41 keeps ball5s/+180/newbucketrequest/newX/bucket5s; no arm or laser,no Y-specific correction passed
+defaultX route:matchingACK acc700 search0/14/28/clamp100,stickyfirstframe brake250/newX,X20microsteps/noY;explicit HOSTAGE takeonce/result thenDONE or rankWAIT/real54;privategain/postsearchyaw/freshX beforelift retained passed
+defaultX route: relative +/-30 remains signedcoarse, +/-29 latchesstickyfine20, arrival +/-10/5fresh; reverseacc700 restarts0/14/28, forwardFFonly, missingimageforward passed
+route coarse: ball/hostage goal+30 stayscoarse,goal+29 latchesfine; stale/empty/oldrequest/class do not latch; FF and standalone isolation; rank1bucket far400 backward/owner200/noFF then abs(error)<30 fine20 passed
+route taskX: ball135/125..145 inclusive,124/146 microstep,old190 cannot align,new135 needs5 fresh; bucket125/115..135 inclusive,114/136 microstep,width136 accepts/135 rejects;hostage215/205..225 inclusive,204/226 microstep,width226 accepts/225 rejects; both pairedbucketrequests updategoal; standalone38..41 remain190,geometry/finalarrival use currentgoal passed
+bucket31: completed180+newACK starts2s; rank1back owner200 ramp/heading/noFF; abs(error)<30 stickyfine+empty brakes/yaw/newframes; fine seenlost2s release/still250 never fakealigned or coarse restart; standalone39/41 isolated passed
+bucket31: cancel/abort/IMU/nonfiniteleg/NACK/geometry stop, late turn notification cannot revive passed
+rank54: routehostage pendingaction/WAIT_HOSTAGE_RANK; routeball captures54 and preserves ball_rank into bucket; standalone40 unchanged passed
+vision_align_x_only_test: defaultYoff host checks passed; no physical UART, camera, chassis or mechanism acceptance
+XY Bluetooth: fresh QR on38/40/41 selection/rerun, empty/illegal/old QR blocked; firstg preserves selectionQR; request1/3 routing passed
+XY39 directbucket: no selectionQR, g task4/0 without QR, newACK/frame required, wrongclass/oldQR/oldrequest refused, g/a/0 stop and stopped/DONE newrequest reruns passed
+XY Bluetooth: no midstep reversal/drop chatter,3mm stop/fresh recheck,X20/Y30 coupling,postY originalyaw/nozero,31/35 isolation passed
+XY Bluetooth: noodo260ms poll-quantized cap,stop/no-newframe wait,stickyvalid+empty forbidsblind,ball280333 not arrival passed
+XY Bluetooth: locks and15 g/a/0 stops at actualALIGN/STEP/BRAKE/RECHECK/YAW states passed
+XY Bluetooth: immediateIMU/ODO/abort/NACK stop bypasses boundedstep,finiteX noinitialyaw passed
+XY Bluetooth:41 hold5/shared22+180/newrequest+heading/bucketYshortsteps-postyaw/hold5STOP,testid+owner/cancel retained passed
+XY Bluetooth:mode22DONE then badIMU bucketcapture rejects falseOK passed
+vision_align_bluetooth_test:boundedstep host checks passed; no physical camera/laser/arm/route acceptance
+31 recipe private1900 and3200 leave independent42 defaults2500/0/1900/f500, globalcc1700 and28/29 explicit-u contract unchanged passed
+31 full hostchain: defaultXonly,noYfix; R1=535/R2=630/contact_v40_tilt1.5_zeroWait300_guard300_hold100_twofresh_noDistance/predeployrackDIR0nl3200@5000+250ms/LEFT90/ballX/down32000@10000/grip1900hold2/up32000/holdgrip+180/noOffset/newBucketX/down20000/release1150/at1s-ready1500/total2s/up20000/immediate-rackbackDIR1nr3200@5000+250ms/+180/noOffset/directTarget;hostage-cx215-open1150/rack3200@5000/grip1900/wait250/retract3000@5000/settle250/held+final;116600STEP/verticalnet0/residualrack200/5servo commands passed
+target31 X350gate:duplicate/backwardseq/oldrequest/wrongcolor cannot latch; valid350 followed by empty/far400 beforepoll still locks fine30/noFF permanently passed
+31 tasks:48 mechanical +18 existing task/turn/fire g/a/0 cancellations;all8 partialSTEP jobs +settle/grip/release holds;TIM7stops,heldclaw/noautoopen-or-return,lateframes/noresume,42/f333 isolation passed
+31 first180:NO LEFT40; old pixels inert atPREP/RUN/BRAKE/overshoot/finalHOLD;400ms DONE starts NEWtask4 in samepair stage;oldreq and preACK pixels cannot move/release;15 g/a/0,5write locks and3IMU/abort/turn-timeout faults retain1900/rack passed
+31 return180:NO LEFT20;400ms hold/overshoot correction gates direct NEWtask2;15 g/a/0 stops atPREP/RUN/BRAKE/overshoot/finalHOLD;old+preACK pixels inert,no laser/arm/request before holdDONE;3IMU/abort/turn-timeout faults passed
+31 bucket:never-seen/wrong/old/replay cannot release;NEW seen then lost2000+wheelstill250 starts actual down20000 before1150;normal release2/up20000 immediate rack/no fakealignment;deadline g/a/0 priority passed
+31 bucket125 strict finegate:95/155 error30 remain coarseback200;96/154 error29 brake/recheck/newimage then latched fine20 even beyond gate,never arrival or arm passed
+31 release:actual1150 t0+999 stays1150,1000 exactly1500 once/phase12,1999 no up/2000 up;1500/2500 latepoll retains original2s origin without duplicateclaw or earlySTEP passed
+31 arm:both lowerings delayedowner500ms start full2s at actual grip1900/release1150;all6 ball/bucket STEP startfails and all8 partial-count faults STOP without laterclaw/return/turn,extraIRQ or autoresume passed
+31 arm:both lastIRQs complete1ms afterpollentry at brake/snapshot;grip1900/release1150 follow checked completion and cannot unsigned-underflow/skip full2s holds passed
+31 hostage return:latepoll anchors1900 command+full250;lastIRQ/2999+1 starts full250 settle before notify;8th clock-start/wrong-axis faults retain1900,no down/up/open/retry passed
+31 arm ownership:24 mode/tune/actuatorwrites locked across16phases(includingSQ_ARM_PREP);reports read-only,42slots untouched;5 bad-wireQR/9cached-invaliddigits/no-rack prevent arm jobs passed
+31 per-task X: ball135/bucket125/hostage215; ball124/146 not-arrived,125/145 inclusive fivefresh,former190 fineX20;31 lift-owned waits;independent38/39/40/41 remain190/noarm/41hold5s passed
+31 BALL/HOSTAGE:matchingACK cx400/goal+30 coarse200,firstgoal+29 brake/newX/permanentfineX20,cy error never createsYstep,lost-no-reblind/6 SEARCH g/a/0 cancellations passed
+31 BALL/HOSTAGE:both exact goal+/-30 stay signed coarse200; +/-29 brake/fresh-recheck, permanentfine20; forward-only task-specific FF and unchanged+/-10 arrival passed
+31 WAIT_TASK_ACK:auto500ms only,live want/active and cumulative QR+task rxB/ackN/oldAck/echoCmd; missingACK/oldACK/echo/preACKcoordinates cannot move or closeRX/DONE; matchingACK resumes ball/hostage200 or bucket wait2/continuous back200, diagnostics normalize without gate bypass passed
+31 SEARCH:real ykp3/ykp0 use route-privategain(global0.3 untouched),activewrite rejected,post-brake late0.5degyaw corrected400ms/nozero/newXY beforelift passed
+31 hostage:real54 rank0 waitsRX/noQR-as-rank,oldrequest refused;rank1/2/3 sameQR -> rankknown/no extra hold -> FWD1415/1315/1215v200/privateHOSTAGE_EXIT_RIGHT_FF/DONE;12 g/a/0 cancels atWAIT_RANK/PENDING_NEXT/finalPREP/RUN passed
+31 hostage215:oldcx180/fourfresh cannot open;rank0 confirmedpixels opens1150 then rack3200/grip1900/retract3000 once before metadata;25frames/oldrank/latevalidrank never rewrite;3 fifthframe-pending g/a/0 stops retain1500;newrequest confirmation resets passed
+31 hostage fallback: neverseen/preACK/wrongclass/oldrequest inert;sticky01 despite empty/54/replay;1999/2000+encoderstill250;actual3200/grip1900/retract3000 once,no fakegood/alignment;rank0 RX,real54rank2/noextraHold/final1315 heldgrip passed
+31 hostage recovery:1999 new01 restarts2s;braking and poll->take new01 cancels pendinggrab;g/a/0/IMU/abort/NACK deadline priority;seventhclock-startfault leaves1150/noSTEP/noauto-retry passed
+31 ball:real task1/54 rank3 captured before newbucket request,notQR color;normal01 alignment/lift stays gated passed
+route31_task_chain_test: host software checks only; no vehicle/camera/laser/arm physical or whole-event acceptance
+31 fast holds:distance/turn399 wait400 finish;43 699 wait700 finish;turn drift/wheel change restart400,retained inactive31 stays700 passed
+31 board:still250 then299 nozero/nooutput,300 baseline/v40;43 retains999/1000;wheel change invalidates and repeats both waits passed
+31 VAT:ball/hostage yaw399/400,43 699/700;initialonly400/700 setter rejects other values,real bucket request preserves400,new standalone resets700 passed
+31 target:four fresh nofire,fifth samepoll laser/brake/RXclose,1999 on2000 off;35/43 fiveframes stillwait999/1000 passed
+31 immediatefire:duplicate/cache/expired aim cannot supply fifth;expiry needs five new frames;g/a/0 beforefifth and lateframes never laser/resume passed
+31 samepoll finalatomic:empty/wrong/outbound/newinband/IMU/abort/NACK/stale injected after initialsnapshot cannot fireoldaim;latestfresh recovery or stop wins passed
+route31_fast_timing_test:host software only;no physical stop/route/laser acceptance
+31 fast holds:distance/turn399 wait400 finish;43 699 wait700 finish;turn drift/wheel change restart400,retained inactive31 stays700 passed
+31 board:still250 then299 nozero/nooutput,300 baseline/v40;43 retains999/1000;wheel change invalidates and repeats both waits passed
+31 VAT:ball/hostage yaw399/400,43 699/700;initialonly400/700 setter rejects other values,real bucket request preserves400,new standalone resets700 passed
+31 target:four fresh nofire,fifth samepoll laser/brake/RXclose,1999 on2000 off;35/43 fiveframes stillwait999/1000 passed
+31 immediatefire:duplicate/cache/expired aim cannot supply fifth;expiry needs five new frames;g/a/0 beforefifth and lateframes never laser/resume passed
+31 samepoll finalatomic:empty/wrong/outbound/newinband/IMU/abort/NACK/stale injected after initialsnapshot cannot fireoldaim;latestfresh recovery or stop wins passed
+route31_fast_timing_test:host software only;no physical stop/route/laser acceptance
+bucket31 host: X125 strict gate95/155 coarse,96/154 fine;rank1 alwaysback/rank3 alwaysforward whilefar/rank2 freshcx-or-wait; ACK2s,owner200 ramp/noFF;fresh300/301..1999 stops/2000 rank-resumes-ramp;strict abs(error)<30 sticky fine20;coarse loss no release/fine seenlost2s release/still250/recovery+take;seq+tickwrap/replay/empty/54/ACK/abort/IMU/geometry,standalone39/41 isolated passed; no hardware acceptance
+route43 step-only suite DEFERRED by user; not accepted as passing
+31 recipe private1900 and3200 leave independent42 defaults2500/0/1900/f500, globalcc1700 and28/29 explicit-u contract unchanged passed
+31 full hostchain: legacyXY; R1=535/R2=630/contact_v40_tilt1.5_zeroWait300_guard300_hold100_twofresh_noDistance/predeployrackDIR0nl3200@5000+250ms/LEFT90/ballX/down32000@10000/grip1900hold2/up32000/holdgrip+180/noOffset/newBucketX/down20000/release1150/at1s-ready1500/total2s/up20000/immediate-rackbackDIR1nr3200@5000+250ms/+180/noOffset/directTarget;hostage-cx215-open1150/rack3200@5000/grip1900/wait250/retract3000@5000/settle250/held+final;116600STEP/verticalnet0/residualrack200/5servo commands passed
+target31 X350gate:duplicate/backwardseq/oldrequest/wrongcolor cannot latch; valid350 followed by empty/far400 beforepoll still locks fine30/noFF permanently passed
+31 tasks:48 mechanical +18 existing task/turn/fire g/a/0 cancellations;all8 partialSTEP jobs +settle/grip/release holds;TIM7stops,heldclaw/noautoopen-or-return,lateframes/noresume,42/f333 isolation passed
+31 first180:NO LEFT40; old pixels inert atPREP/RUN/BRAKE/overshoot/finalHOLD;400ms DONE starts NEWtask4 in samepair stage;oldreq and preACK pixels cannot move/release;15 g/a/0,5write locks and3IMU/abort/turn-timeout faults retain1900/rack passed
+31 return180:NO LEFT20;400ms hold/overshoot correction gates direct NEWtask2;15 g/a/0 stops atPREP/RUN/BRAKE/overshoot/finalHOLD;old+preACK pixels inert,no laser/arm/request before holdDONE;3IMU/abort/turn-timeout faults passed
+31 bucket:never-seen/wrong/old/replay cannot release;NEW seen then lost2000+wheelstill250 starts actual down20000 before1150;normal release2/up20000 immediate rack/no fakealignment;deadline g/a/0 priority passed
+31 bucket125 strict finegate:95/155 error30 remain coarseback200;96/154 error29 brake/recheck/newimage then latched fine20 even beyond gate,never arrival or arm passed
+31 release:actual1150 t0+999 stays1150,1000 exactly1500 once/phase12,1999 no up/2000 up;1500/2500 latepoll retains original2s origin without duplicateclaw or earlySTEP passed
+31 arm:both lowerings delayedowner500ms start full2s at actual grip1900/release1150;all6 ball/bucket STEP startfails and all8 partial-count faults STOP without laterclaw/return/turn,extraIRQ or autoresume passed
+31 arm:both lastIRQs complete1ms afterpollentry at brake/snapshot;grip1900/release1150 follow checked completion and cannot unsigned-underflow/skip full2s holds passed
+31 hostage return:latepoll anchors1900 command+full250;lastIRQ/2999+1 starts full250 settle before notify;8th clock-start/wrong-axis faults retain1900,no down/up/open/retry passed
+31 arm ownership:24 mode/tune/actuatorwrites locked across16phases(includingSQ_ARM_PREP);reports read-only,42slots untouched;5 bad-wireQR/9cached-invaliddigits/no-rack prevent arm jobs passed
+31 per-task X: ball135/bucket125/hostage215; ball124/146 not-arrived,125/145 inclusive fivefresh,former190 fineX20;31 lift-owned waits;independent38/39/40/41 remain190/noarm/41hold5s passed
+31 BALL/HOSTAGE:matchingACK cx400/goal+30 coarse200,firstgoal+29 brake/newXY/permanentfineX20Y30/lost-no-reblind/6 SEARCH g/a/0 cancellations passed
+31 BALL/HOSTAGE:both exact goal+/-30 stay signed coarse200; +/-29 brake/fresh-recheck, permanentfine20; forward-only task-specific FF and unchanged+/-10 arrival passed
+31 WAIT_TASK_ACK:auto500ms only,live want/active and cumulative QR+task rxB/ackN/oldAck/echoCmd; missingACK/oldACK/echo/preACKcoordinates cannot move or closeRX/DONE; matchingACK resumes ball/hostage200 or bucket wait2/continuous back200, diagnostics normalize without gate bypass passed
+31 SEARCH:real ykp3/ykp0 use route-privategain(global0.3 untouched),activewrite rejected,post-brake late0.5degyaw corrected400ms/nozero/newXY beforelift passed
+31 hostage:real54 rank0 waitsRX/noQR-as-rank,oldrequest refused;rank1/2/3 sameQR -> rankknown/no extra hold -> FWD1415/1315/1215v200/privateHOSTAGE_EXIT_RIGHT_FF/DONE;12 g/a/0 cancels atWAIT_RANK/PENDING_NEXT/finalPREP/RUN passed
+31 hostage215:oldcx180/fourfresh cannot open;rank0 confirmedpixels opens1150 then rack3200/grip1900/retract3000 once before metadata;25frames/oldrank/latevalidrank never rewrite;3 fifthframe-pending g/a/0 stops retain1500;newrequest confirmation resets passed
+31 hostage fallback: neverseen/preACK/wrongclass/oldrequest inert;sticky01 despite empty/54/replay;1999/2000+encoderstill250;actual3200/grip1900/retract3000 once,no fakegood/alignment;rank0 RX,real54rank2/noextraHold/final1315 heldgrip passed
+31 hostage recovery:1999 new01 restarts2s;braking and poll->take new01 cancels pendinggrab;g/a/0/IMU/abort/NACK deadline priority;seventhclock-startfault leaves1150/noSTEP/noauto-retry passed
+31 ball:real task1/54 rank3 captured before newbucket request,notQR color;normal01 alignment/lift stays gated passed
+route31_task_chain_test: host software checks only; no vehicle/camera/laser/arm physical or whole-event acceptance
+31 fast holds:distance/turn399 wait400 finish;43 699 wait700 finish;turn drift/wheel change restart400,retained inactive31 stays700 passed
+31 board:still250 then299 nozero/nooutput,300 baseline/v40;43 retains999/1000;wheel change invalidates and repeats both waits passed
+31 VAT:ball/hostage yaw399/400,43 699/700;initialonly400/700 setter rejects other values,real bucket request preserves400,new standalone resets700 passed
+31 target:four fresh nofire,fifth samepoll laser/brake/RXclose,1999 on2000 off;35/43 fiveframes stillwait999/1000 passed
+31 immediatefire:duplicate/cache/expired aim cannot supply fifth;expiry needs five new frames;g/a/0 beforefifth and lateframes never laser/resume passed
+31 samepoll finalatomic:empty/wrong/outbound/newinband/IMU/abort/NACK/stale injected after initialsnapshot cannot fireoldaim;latestfresh recovery or stop wins passed
+route31_fast_timing_test:host software only;no physical stop/route/laser acceptance
+updated cross-exit legs: left -730/-100 then forward 830/100, abort blocks commands; unknown approach remains gated
+departure route: 4 QR endpoint cases + abort + zero gate + left90 success/fail/abort passed
+task-exit forward remainder: scan offset / overshoot / at goal / settle drift / abort / failure passed
+mission trial plan: recipe/three holds/0-180-360 projection/remaining/reset contract/new rescue corridor passed (host only)
+mission trial flow: real runner/ledger, BALL/HOSTAGE shared XY config and running lock, 27 QR task selections and 4 ordered target requests (bucket only after +180), cached/new QR valid wait and request failure, 3 arm holds, target stopped1s then laser2s/off before return, common-bucket split, signed net returns, capped road-end return, 72 stop injections, 2 return IMU failures and X/Y config gates passed (synthetic host only)
+vision ASCII parser: 9 frames checked, including overflow drop
+boot session: explicit enable preserves default standalone legacy replay
+boot session: HELLO/CONFIRM 500ms retries, rotated challenge, queued QR and late packets
+boot session: reboot/request1 rejects old READY, ACK, QR, OBJ and rank54 before/after READY
+boot session: nonce + request + ACK + active phase + legal QR remain separate gates
+boot session: selected objects, independent historical rank54, duplicate and phase gates preserved
+boot session: split/gapped frames, CRC, bad length/type, nesting and stream resynchronization
+boot session: RNG/nonce/mode/NACK failure closes authority; only explicit init restores legacy
+boot session: authenticated ACK does not relax exact inner type/length/CRC-free envelope format
+boot session: duplicate READY preserves state, begin clears cached authority without request wrap
+boot session: unsigned HAL tick wrap preserves exact 499/500ms HELLO/CONFIRM/business retry
+proto boot session regression: PASS (synthetic transport only)
+boot session: explicit enable preserves default standalone legacy replay
+boot session: HELLO/CONFIRM 500ms retries, rotated challenge, queued QR and late packets
+boot session: reboot/request1 rejects old READY, ACK, QR, OBJ and rank54 before/after READY
+boot session: nonce + request + ACK + active phase + legal QR remain separate gates
+boot session: selected objects, independent historical rank54, duplicate and phase gates preserved
+boot session: split/gapped frames, CRC, bad length/type, nesting and stream resynchronization
+boot session: RNG/nonce/mode/NACK failure closes authority; only explicit init restores legacy
+boot session: authenticated ACK does not relax exact inner type/length/CRC-free envelope format
+boot session: duplicate READY preserves state, begin clears cached authority without request wrap
+boot session: unsigned HAL tick wrap preserves exact 499/500ms HELLO/CONFIRM/business retry
+proto boot session regression: PASS (synthetic transport only)
+request-bound54 rank: validation/latch/prefix/wrap/01 coexistence/lifecycle/IRQ snapshot passed
+task selection: nine QR selectors plus bucket; queue/ACK/fresh gates; ten-class and best-score filtering passed
+task selection: all 27 QR tuples -> ball / bucket / target / hostage digit choices passed
+task selection: invalid inputs preserve active request/filter; exact 500ms retry and LE16 request passed
+task selection: stale/pre-ACK/CRC/NACK/mode/empty/IDLE gates; generic 0x60 calibration unchanged passed
+task selection: complete CRC-checked 0x63 echo diagnosed, never ACK/QR/coordinates passed
+task selection: pure mapping/ASCII rejection; pending QR notice; request exhaustion never wraps passed
+QR53: copied tuple/notice survives local end; late ACK/result ignored; new request and cancellation emit no camera stop passed
+vision task-selection protocol regression passed; camera support and physical UART remain unverified
+UART normal: three real RX callbacks rearm; Bluetooth parses only in DefaultTask passed
+UART errors: FE/NE/PE/ORE/mixed on all three ports; bad byte discarded; bits preserved; next good byte passed
+UART ORE: no double DR read when RXNE drained error; preserves following byte; still-set ORE drained once passed
+UART recovery: error rearm failure on all ports FE/ORE plus initial-arm failure recovered by real DefaultTask service passed
+UART BUSY/rearm: nonblocking active transfer not double-armed; normal callback rearm failure recovers passed
+uart_error_rearm_test: all host checks passed; physical QR cause is not established
+vision target slot: filter / QR separation / phase reset / local-close late-frame drop / abort / boot-QR-preserving reset passed
+vision stage wait: generic/4 selected tasks, atomic slot filter, local RX close without camera IDLE, invalid selector, failure and abort passed
+turn first-command direction: 3 cases at 180 + left90 + right90 passed
+alignment missing-frame timeout: 1 case passed
+grab XY: BALL/HOSTAGE thresholds/signs, X-Y-X disturbance, overshoot, four-wheel holds, freshness/empty/sequence gates, abort/IMU/configuration passed
+left-camera gate: uncalibrated pixel sign rejects alignment without drive
+left-camera axes: target X 11 boundaries + grab Y missing rejection + depth2 + return2 + bounded scan1 passed
+left-camera axes: target X 11 boundaries + grab Y missing rejection + depth2 + return2 + bounded scan1 passed
+test_ack_precedes_new_capture_and_idle_stops_processing (__main__.MainLoopTests.test_ack_precedes_new_capture_and_idle_stops_processing) ... ok
+test_automatic_load_failure_stays_qr_without_unbounded_retries (__main__.MainLoopTests.test_automatic_load_failure_stays_qr_without_unbounded_retries) ... ok
+test_default_idle_user_enters_qr_and_unconfirmed_object_mode_sends_no_coordinates (__main__.MainLoopTests.test_default_idle_user_enters_qr_and_unconfirmed_object_mode_sends_no_coordinates) ... ok
+test_dual_buffer_manual_modes_and_mcu_resume_prime_again (__main__.MainLoopTests.test_dual_buffer_manual_modes_and_mcu_resume_prime_again) ... ok
+test_dual_buffer_new_request_discards_previous_task_result (__main__.MainLoopTests.test_dual_buffer_new_request_discards_previous_task_result) ... ok
+test_dual_buffer_pairs_previous_input_and_missing_target_sends_empty (__main__.MainLoopTests.test_dual_buffer_pairs_previous_input_and_missing_target_sends_empty) ... ok
+test_dual_buffer_touch_hides_info_not_uart_target (__main__.MainLoopTests.test_dual_buffer_touch_hides_info_not_uart_target) ... ok
+test_failed_switch_pauses_results_and_reports_actual_mode (__main__.MainLoopTests.test_failed_switch_pauses_results_and_reports_actual_mode) ... ok
+test_four_tasks_single_target_and_missing_bucket_never_reuses_coordinates (__main__.MainLoopTests.test_four_tasks_single_target_and_missing_bucket_never_reuses_coordinates) ... ok
+test_incomplete_ack_blocks_capture_until_full_write (__main__.MainLoopTests.test_incomplete_ack_blocks_capture_until_full_write) ... ok
+test_invalid_or_conflicting_qr_does_not_auto_switch (__main__.MainLoopTests.test_invalid_or_conflicting_qr_does_not_auto_switch) ... ok
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=QR task=None digit=None class=None status=0
+[TASK] WAIT VALID TASK
+[CONTROL] request=2 actual_mode=OBJECT task=None digit=None class=None status=0
+[CONTROL] request=3 actual_mode=IDLE task=None digit=None class=None status=0
+[APP] stopped
+[APP] ready QR; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[TASK] code=331 ball=3 target=7 hostage=1 barrel=9
+[TASK] TASK:331 LOCKED
+[QR] payload=331 331 center=(25, 40)
+[MODE] QR auto OBJECT failed; old QR continues, USER/new request retries: synthetic load error
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[TASK] WAIT VALID TASK
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=1 digit=1 class=4 status=0
+[BALL] rank=1 class=4 target_rank=1
+[TASK] code=331 ball=3 target=7 hostage=1 barrel=9
+[TASK] TASK:331 LOCKED
+[QR] payload=331 331 center=(25, 40)
+[CONTROL] request=2 actual_mode=OBJECT task=1 digit=1 class=4 status=0
+[BALL] rank=1 class=4 target_rank=1
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=1 digit=1 class=4 status=0
+[BALL] rank=1 class=4 target_rank=1
+[CONTROL] request=2 actual_mode=OBJECT task=1 digit=2 class=5 status=0
+[BALL] rank=1 class=5 target_rank=1
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=4 digit=0 class=9 status=0
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=4 digit=0 class=9 status=0
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=QR task=None digit=None class=None status=0
+[TASK] WAIT VALID TASK
+[CONTROL] switch failed: synthetic load error
+[CONTROL] request=2 actual_mode=QR task=None digit=None class=None status=1
+[CONTROL] request=3 actual_mode=IDLE task=None digit=None class=None status=0
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=QR task=None digit=None class=None status=0
+[TASK] code=123 ball=4 target=8 hostage=0 barrel=9
+[TASK] TASK:123 LOCKED
+[QR] payload=123 123 center=(25, 40)
+[CONTROL] request=2 actual_mode=OBJECT task=1 digit=1 class=4 status=0
+[BALL] rank=1 class=3 target_rank=0
+[BALL] rank=2 class=4 target_rank=2
+[CONTROL] request=3 actual_mode=OBJECT task=4 digit=0 class=9 status=0
+[CONTROL] request=4 actual_mode=OBJECT task=2 digit=2 class=8 status=0
+[CONTROL] request=5 actual_mode=OBJECT task=3 digit=3 class=0 status=0
+[HOSTAGE] rank=1 class=0 target_rank=1
+[CONTROL] request=6 actual_mode=IDLE task=None digit=None class=None status=0
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=QR task=None digit=None class=None status=0
+[CONTROL] ACK write incomplete; business paused request=1
+[TASK] code=123 ball=4 target=8 hostage=0 barrel=9
+[TASK] TASK:123 LOCKED
+[QR] payload=123 123 center=(25, 40)
+[CONTROL] request=2 actual_mode=IDLE task=None digit=None class=None status=0
+[APP] stopped
+[APP] ready QR; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[TASK] WAIT VALID TASK
+[QR] payload=11 11 center=(25, 40)
+[TASK] QR CONFLICT
+[QR] payload=123 123 center=(25, 40)
+[QR] payload=321 321 center=(25, 40)
+[TASK] WAIT VALID TASK
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+test_long_press_wins_over_short_press_after_remote_control (__main__.MainLoopTests.test_long_press_wins_over_short_press_after_remote_control) ... ok
+test_manual_load_failure_keeps_locked_qr_and_does_not_retry_forever (__main__.MainLoopTests.test_manual_load_failure_keeps_locked_qr_and_does_not_retry_forever) ... ok
+test_manual_start_identifies_all_ten_classes_without_qr (__main__.MainLoopTests.test_manual_start_identifies_all_ten_classes_without_qr) ... ok
+test_mcu_takes_over_manual_all_classes_and_restores_task_defaults (__main__.MainLoopTests.test_mcu_takes_over_manual_all_classes_and_restores_task_defaults) ... ok
+test_missing_bucket_holds_display_but_uart_immediately_sends_empty_frame (__main__.MainLoopTests.test_missing_bucket_holds_display_but_uart_immediately_sends_empty_frame) ... ok
+test_qr_code_repeats_after_disappearance_retry_preserves_new_request_resets (__main__.MainLoopTests.test_qr_code_repeats_after_disappearance_retry_preserves_new_request_resets) ... ok
+test_qr_partial_write_delays_auto_switch_until_complete (__main__.MainLoopTests.test_qr_partial_write_delays_auto_switch_until_complete) ... ok
+test_remote_auto_preloads_objects_repeats_qr_until_new_task_ack (__main__.MainLoopTests.test_remote_auto_preloads_objects_repeats_qr_until_new_task_ack) ... ok
+test_remote_qr_then_request_enters_current_object_display (__main__.MainLoopTests.test_remote_qr_then_request_enters_current_object_display) ... ok
+test_remote_request_wins_over_pending_standalone_auto_switch (__main__.MainLoopTests.test_remote_request_wins_over_pending_standalone_auto_switch) ... ok
+test_remote_short_press_pauses_business_same_retry_fails_new_request_resumes (__main__.MainLoopTests.test_remote_short_press_pauses_business_same_retry_fails_new_request_resumes) ... ok
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=4 digit=0 class=9 status=0
+[KEY] manual exit; remote_owned=True; MCU stop unconfirmed
+[APP] stopped
+[APP] ready QR; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[TASK] code=331 ball=3 target=7 hostage=1 barrel=9
+[TASK] TASK:331 LOCKED
+[QR] payload=331 331 center=(25, 40)
+[MODE] switch failed; old mode continues: synthetic load error
+[QR] payload=331 331 center=(25, 40)
+[QR] payload=331 331 center=(25, 40)
+[APP] stopped
+[APP] ready OBJECT; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[APP] stopped
+[APP] ready OBJECT; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=1 digit=1 class=4 status=0
+[BALL] rank=1 class=3 target_rank=0
+[BALL] rank=2 class=4 target_rank=2
+[BALL] rank=3 class=5 target_rank=2
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=4 digit=0 class=9 status=0
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=QR task=None digit=None class=None status=0
+[TASK] code=123 ball=4 target=8 hostage=0 barrel=9
+[TASK] TASK:123 LOCKED
+[QR] payload=123 123 center=(25, 40)
+[MODE] QR task=123 auto OBJECT; waiting_object_request=True
+[CONTROL] request=2 actual_mode=QR task=None digit=None class=None status=0
+[TASK] code=222 ball=5 target=8 hostage=2 barrel=9
+[TASK] TASK:222 LOCKED
+[QR] payload=222 222 center=(25, 40)
+[MODE] QR task=222 auto OBJECT; waiting_object_request=True
+[CONTROL] request=3 actual_mode=IDLE task=None digit=None class=None status=0
+[APP] stopped
+[APP] ready QR; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[TASK] code=331 ball=3 target=7 hostage=1 barrel=9
+[TASK] TASK:331 LOCKED
+[QR] payload=331 331 center=(25, 40)
+[MODE] QR task=331 auto OBJECT; waiting_object_request=False
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=QR task=None digit=None class=None status=0
+[TASK] code=331 ball=3 target=7 hostage=1 barrel=9
+[TASK] TASK:331 LOCKED
+[QR] payload=331 331 center=(25, 40)
+[MODE] QR task=331 auto OBJECT; waiting_object_request=True
+[CONTROL] request=2 actual_mode=OBJECT task=1 digit=3 class=3 status=0
+[BALL] rank=1 class=3 target_rank=1
+[BALL] rank=2 class=4 target_rank=1
+[BALL] rank=3 class=5 target_rank=1
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=QR task=None digit=None class=None status=0
+[TASK] code=331 ball=3 target=7 hostage=1 barrel=9
+[TASK] TASK:331 LOCKED
+[QR] payload=331 331 center=(25, 40)
+[CONTROL] request=2 actual_mode=OBJECT task=1 digit=3 class=3 status=0
+[BALL] rank=1 class=3 target_rank=1
+[BALL] rank=2 class=4 target_rank=1
+[BALL] rank=3 class=5 target_rank=1
+[APP] stopped
+[APP] ready QR; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[TASK] code=331 ball=3 target=7 hostage=1 barrel=9
+[TASK] TASK:331 LOCKED
+[QR] payload=331 331 center=(25, 40)
+[CONTROL] request=1 actual_mode=QR task=None digit=None class=None status=0
+[TASK] code=123 ball=4 target=8 hostage=0 barrel=9
+[TASK] TASK:123 LOCKED
+[QR] payload=123 123 center=(25, 40)
+[MODE] QR task=123 auto OBJECT; waiting_object_request=True
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=QR task=None digit=None class=None status=0
+[TASK] code=331 ball=3 target=7 hostage=1 barrel=9
+[TASK] TASK:331 LOCKED
+[QR] payload=331 331 center=(25, 40)
+[TASK] WAIT VALID TASK
+[CONTROL] request=2 actual_mode=OBJECT task=4 digit=0 class=9 status=0
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+test_returning_bucket_replaces_held_box_and_uart_uses_new_coordinates (__main__.MainLoopTests.test_returning_bucket_replaces_held_box_and_uart_uses_new_coordinates) ... ok
+test_same_request_changed_content_and_bad_task_pause_until_fresh_request (__main__.MainLoopTests.test_same_request_changed_content_and_bad_task_pause_until_fresh_request) ... ok
+test_same_request_retry_keeps_held_box_but_new_request_discards_it (__main__.MainLoopTests.test_same_request_retry_keeps_held_box_but_new_request_discards_it) ... ok
+test_scanned_standalone_auto_object_only_returns_selected_and_barrel (__main__.MainLoopTests.test_scanned_standalone_auto_object_only_returns_selected_and_barrel) ... ok
+test_stale_qr_request_does_not_return_to_qr_or_restore_old_task (__main__.MainLoopTests.test_stale_qr_request_does_not_return_to_qr_or_restore_old_task) ... ok
+test_standalone_confirms_waits_for_short_press_then_shows_all_classes (__main__.MainLoopTests.test_standalone_confirms_waits_for_short_press_then_shows_all_classes) ... ok
+test_touch_other_and_target_toggle_info_without_changing_uart (__main__.MainLoopTests.test_touch_other_and_target_toggle_info_without_changing_uart) ... ok
+test_unscanned_qr_short_press_enters_all_objects_then_returns_to_qr (__main__.MainLoopTests.test_unscanned_qr_short_press_enters_all_objects_then_returns_to_qr) ... ok
+test_user_return_to_qr_clears_old_task_before_confirming_another (__main__.MainLoopTests.test_user_return_to_qr_clears_old_task_before_confirming_another) ... ok
+
+----------------------------------------------------------------------
+Ran 31 tests in 0.385s
+
+OK
+[CONTROL] request=1 actual_mode=OBJECT task=4 digit=0 class=9 status=0
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=QR task=None digit=None class=None status=0
+[TASK] WAIT VALID TASK
+[CONTROL] switch failed: invalid mode or reused request
+[CONTROL] request=1 actual_mode=QR task=4 digit=0 class=None status=1
+[CONTROL] switch failed: invalid task_id/qr_digit
+[CONTROL] request=2 actual_mode=QR task=4 digit=1 class=None status=1
+[CONTROL] request=3 actual_mode=OBJECT task=4 digit=0 class=9 status=0
+[CONTROL] request=4 actual_mode=IDLE task=None digit=None class=None status=0
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=4 digit=0 class=9 status=0
+[CONTROL] request=2 actual_mode=OBJECT task=1 digit=1 class=4 status=0
+[APP] stopped
+[APP] ready QR; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[TASK] code=331 ball=3 target=7 hostage=1 barrel=9
+[TASK] TASK:331 LOCKED
+[QR] payload=331 331 center=(25, 40)
+[MODE] QR task=331 auto OBJECT; waiting_object_request=False
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=QR task=None digit=None class=None status=0
+[TASK] code=123 ball=4 target=8 hostage=0 barrel=9
+[TASK] TASK:123 LOCKED
+[QR] payload=123 123 center=(25, 40)
+[CONTROL] request=2 actual_mode=OBJECT task=1 digit=1 class=4 status=0
+[BALL] rank=1 class=4 target_rank=1
+[CONTROL] stale request=1 current=2 rejected
+[CONTROL] request=3 actual_mode=IDLE task=None digit=None class=None status=0
+[APP] stopped
+[APP] ready QR; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[TASK] code=331 ball=3 target=7 hostage=1 barrel=9
+[TASK] TASK:331 LOCKED
+[QR] payload=331 331 center=(25, 40)
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=4 digit=0 class=9 status=0
+[APP] stopped
+[APP] ready QR; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[TASK] WAIT VALID TASK
+[APP] stopped
+[APP] ready QR; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[TASK] code=331 ball=3 target=7 hostage=1 barrel=9
+[TASK] TASK:331 LOCKED
+[QR] payload=331 331 center=(25, 40)
+[TASK] WAIT VALID TASK
+[TASK] code=123 ball=4 target=8 hostage=0 barrel=9
+[TASK] TASK:123 LOCKED
+[QR] payload=123 123 center=(25, 40)
+[APP] stopped
+test_dual_buffer_warmup_and_previous_request_detections_do_not_rank (__main__.BallOrderMainTests.test_dual_buffer_warmup_and_previous_request_detections_do_not_rank) ... ok
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=1 digit=1 class=4 status=0
+[BALL] rank=1 class=4 target_rank=1
+[CONTROL] request=2 actual_mode=OBJECT task=1 digit=1 class=4 status=0
+[BALL] rank=1 class=4 target_rank=1
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=1 digit=1 class=4 status=0
+[BALL] rank=1 class=3 target_rank=0
+[BALL] rank=2 class=4 target_rank=2
+[BALL] rank=3 class=5 target_rank=2
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=1 digit=1 class=4 status=0
+[BALL] rank=1 class=3 target_rank=0
+[BALL] rank=2 class=5 target_rank=0
+[BALL] rank=3 class=4 target_rank=3
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=1 digit=1 class=4 status=0
+[BALL] rank=1 class=4 target_rank=1
+[BALL] rank=2 class=3 target_rank=1
+[BALL] rank=3 class=5 target_rank=1
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=1 digit=1 class=4 status=0
+[BALL] rank=1 class=4 target_rank=1
+[BALL] rank=2 class=5 target_rank=1
+[BALL] rank=3 class=3 target_rank=1
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=1 digit=1 class=4 status=0
+[BALL] rank=1 class=5 target_rank=0
+[BALL] rank=2 class=3 target_rank=0
+[BALL] rank=3 class=4 target_rank=3
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=1 digit=1 class=4 status=0
+[BALL] rank=1 class=5 target_rank=0
+[BALL] rank=2 class=4 target_rank=2
+[BALL] rank=3 class=3 target_rank=2
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=1 digit=2 class=5 status=0
+[BALL] rank=1 class=3 target_rank=0
+[BALL] rank=2 class=4 target_rank=0
+[BALL] rank=3 class=5 target_rank=3
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=1 digit=2 class=5 status=0
+[BALL] rank=1 class=3 target_rank=0
+[BALL] rank=2 class=5 target_rank=2
+[BALL] rank=3 class=4 target_rank=2
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=1 digit=2 class=5 status=0
+[BALL] rank=1 class=4 target_rank=0
+[BALL] rank=2 class=3 target_rank=0
+[BALL] rank=3 class=5 target_rank=3
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=1 digit=2 class=5 status=0
+[BALL] rank=1 class=4 target_rank=0
+[BALL] rank=2 class=5 target_rank=2
+[BALL] rank=3 class=3 target_rank=2
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=1 digit=2 class=5 status=0
+[BALL] rank=1 class=5 target_rank=1
+[BALL] rank=2 class=3 target_rank=1
+[BALL] rank=3 class=4 target_rank=1
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+test_each_qr_color_and_six_orders_send_rank_not_color_position (__main__.BallOrderMainTests.test_each_qr_color_and_six_orders_send_rank_not_color_position) ... ok
+test_invalid_new_task_stops_rank_and_stale_task_does_not_reset_current_rank (__main__.BallOrderMainTests.test_invalid_new_task_stops_rank_and_stale_task_does_not_reset_current_rank) ... ok
+test_partial_ack_blocks_capture_ranking_and_failed_order_does_not_renumber (__main__.BallOrderMainTests.test_partial_ack_blocks_capture_ranking_and_failed_order_does_not_renumber) ... ok
+test_qr_handoff_general_diagnostic_manual_and_standalone_do_not_rank (__main__.BallOrderMainTests.test_qr_handoff_general_diagnostic_manual_and_standalone_do_not_rank) ... ok
+test_retry_keeps_new_request_resets_ball_then_hostage_and_bucket_change_group (__main__.BallOrderMainTests.test_retry_keeps_new_request_resets_ball_then_hostage_and_bucket_change_group) ... ok
+test_same_frame_sort_observes_all_balls_not_only_requested_one (__main__.BallOrderMainTests.test_same_frame_sort_observes_all_balls_not_only_requested_one) ... ok
+test_target_third_and_loss_keep_rank_but_not_old_coordinates (__main__.BallOrderMainTests.test_target_third_and_loss_keep_rank_but_not_old_coordinates) ... ok
+
+----------------------------------------------------------------------
+Ran 8 tests in 0.195s
+
+OK
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=1 digit=2 class=5 status=0
+[BALL] rank=1 class=5 target_rank=1
+[BALL] rank=2 class=4 target_rank=1
+[BALL] rank=3 class=3 target_rank=1
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=1 digit=3 class=3 status=0
+[BALL] rank=1 class=3 target_rank=1
+[BALL] rank=2 class=4 target_rank=1
+[BALL] rank=3 class=5 target_rank=1
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=1 digit=3 class=3 status=0
+[BALL] rank=1 class=3 target_rank=1
+[BALL] rank=2 class=5 target_rank=1
+[BALL] rank=3 class=4 target_rank=1
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=1 digit=3 class=3 status=0
+[BALL] rank=1 class=4 target_rank=0
+[BALL] rank=2 class=3 target_rank=2
+[BALL] rank=3 class=5 target_rank=2
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=1 digit=3 class=3 status=0
+[BALL] rank=1 class=4 target_rank=0
+[BALL] rank=2 class=5 target_rank=0
+[BALL] rank=3 class=3 target_rank=3
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=1 digit=3 class=3 status=0
+[BALL] rank=1 class=5 target_rank=0
+[BALL] rank=2 class=3 target_rank=2
+[BALL] rank=3 class=4 target_rank=2
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=1 digit=3 class=3 status=0
+[BALL] rank=1 class=5 target_rank=0
+[BALL] rank=2 class=4 target_rank=0
+[BALL] rank=3 class=3 target_rank=3
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=2 actual_mode=OBJECT task=1 digit=1 class=4 status=0
+[BALL] rank=1 class=3 target_rank=0
+[CONTROL] stale request=1 current=2 rejected
+[BALL] rank=2 class=4 target_rank=2
+[CONTROL] switch failed: invalid task_id/qr_digit
+[CONTROL] request=3 actual_mode=OBJECT task=1 digit=0 class=4 status=1
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=1 digit=1 class=4 status=0
+[CONTROL] ACK write incomplete; business paused request=1
+[BALL] rank=1 class=4 target_rank=1
+[BALL] rank=2 class=3 target_rank=1
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=None digit=None class=None status=0
+[APP] stopped
+[APP] ready QR; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[TASK] code=123 ball=4 target=8 hostage=0 barrel=9
+[TASK] TASK:123 LOCKED
+[QR] payload=123 123 center=(25, 40)
+[MODE] QR task=123 auto OBJECT; waiting_object_request=False
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=QR task=None digit=None class=None status=0
+[TASK] code=123 ball=4 target=8 hostage=0 barrel=9
+[TASK] TASK:123 LOCKED
+[QR] payload=123 123 center=(25, 40)
+[MODE] QR task=123 auto OBJECT; waiting_object_request=True
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=1 digit=1 class=4 status=0
+[BALL] rank=1 class=4 target_rank=1
+[TASK] WAIT VALID TASK
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=1 digit=1 class=4 status=0
+[BALL] rank=1 class=3 target_rank=0
+[BALL] rank=2 class=4 target_rank=2
+[CONTROL] request=2 actual_mode=OBJECT task=1 digit=1 class=4 status=0
+[BALL] rank=1 class=4 target_rank=1
+[CONTROL] request=3 actual_mode=OBJECT task=3 digit=2 class=2 status=0
+[HOSTAGE] rank=1 class=2 target_rank=1
+[CONTROL] request=4 actual_mode=OBJECT task=4 digit=0 class=9 status=0
+[CONTROL] request=5 actual_mode=IDLE task=None digit=None class=None status=0
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=1 digit=1 class=4 status=0
+[BALL] rank=1 class=3 target_rank=0
+[BALL] rank=2 class=5 target_rank=0
+[BALL] rank=3 class=4 target_rank=3
+[APP] stopped
+[APP] ready IDLE; model=model_9564.mud classes=10; UART controls recognition
+[UART] QR=0x53; OBJECT=0x01; BALL/HOSTAGE ORDER=0x54; task request=0x63
+[CLASS] 0 ��Բ���� (oblate)
+[CLASS] 1 Բ���� (cylinder)
+[CLASS] 2 Բ̨�� (truncated_cone)
+[CLASS] 3 ���� (blue_ball)
+[CLASS] 4 ���� (red_ball)
+[CLASS] 5 ���� (green_ball)
+[CLASS] 6 ����� (red_target)
+[CLASS] 7 ������ (blue_target)
+[CLASS] 8 �̰��� (green_target)
+[CLASS] 9 ��Ͱ (black_barrel)
+[CONTROL] request=1 actual_mode=OBJECT task=1 digit=1 class=4 status=0
+[BALL] rank=1 class=3 target_rank=0
+[BALL] rank=2 class=5 target_rank=0
+[BALL] rank=3 class=4 target_rank=3
+[APP] stopped
+test_actual_320_pixel_bounds_not_assumed_480 (__main__.BinaryReplayTests.test_actual_320_pixel_bounds_not_assumed_480) ... ok
+test_all_27_qr_codes_fragmented_and_concatenated (__main__.BinaryReplayTests.test_all_27_qr_codes_fragmented_and_concatenated) ... ok
+test_all_27_real_task_selections_to_controlled_c_parser (__main__.BinaryReplayTests.test_all_27_real_task_selections_to_controlled_c_parser) ... ok
+test_camera_apply_idempotent_stop_and_failure (__main__.BinaryReplayTests.test_camera_apply_idempotent_stop_and_failure) ... ok
+test_camera_command_parser_fragment_noise_and_crc (__main__.BinaryReplayTests.test_camera_command_parser_fragment_noise_and_crc) ... ok
+test_control_ack_then_fresh_qr_not_ack_alone (__main__.BinaryReplayTests.test_control_ack_then_fresh_qr_not_ack_alone) ... ok
+test_control_bad_crc_length_and_wrong_actual_mode (__main__.BinaryReplayTests.test_control_bad_crc_length_and_wrong_actual_mode) ... ok
+test_control_invalid_qr_is_fresh_but_not_task_success (__main__.BinaryReplayTests.test_control_invalid_qr_is_fresh_but_not_task_success) ... ok
+test_control_retry_exact_id_and_negative_ack (__main__.BinaryReplayTests.test_control_retry_exact_id_and_negative_ack) ... ok
+test_control_stale_legacy_wrong_kind_and_stop (__main__.BinaryReplayTests.test_control_stale_legacy_wrong_kind_and_stop) ... ok
+test_corrupt_counts_and_types_recover (__main__.BinaryReplayTests.test_corrupt_counts_and_types_recover) ... ok
+test_crc_corruption_noise_truncation_then_valid (__main__.BinaryReplayTests.test_crc_corruption_noise_truncation_then_valid) ... ok
+test_crc_known_vector_and_valid_crc_unknown_payload_not_accepted (__main__.BinaryReplayTests.test_crc_known_vector_and_valid_crc_unknown_payload_not_accepted) ... ok
+test_deterministic_noise_then_gap_recovers (__main__.BinaryReplayTests.test_deterministic_noise_then_gap_recovers) ... ok
+test_empty_object_packet_and_sequence_wrap (__main__.BinaryReplayTests.test_empty_object_packet_and_sequence_wrap) ... ok
+test_gap_reset_and_tick_wrap (__main__.BinaryReplayTests.test_gap_reset_and_tick_wrap) ... ok
+test_invalid_geometry_confidence_and_class_drop_whole_frame (__main__.BinaryReplayTests.test_invalid_geometry_confidence_and_class_drop_whole_frame) ... ok
+test_invalid_qr_payloads_never_dispatch (__main__.BinaryReplayTests.test_invalid_qr_payloads_never_dispatch) ... ok
+test_mixed_bucket_frame_best_detection_and_empty_followup (__main__.BinaryReplayTests.test_mixed_bucket_frame_best_detection_and_empty_followup) ... ok
+test_same_class_uses_best_not_last_and_duplicates_do_not_count_twice (__main__.BinaryReplayTests.test_same_class_uses_best_not_last_and_duplicates_do_not_count_twice) ... ok
+test_ten_class_mapping_actual_pixels_and_confidence (__main__.BinaryReplayTests.test_ten_class_mapping_actual_pixels_and_confidence) ... ok
+
+----------------------------------------------------------------------
+Ran 21 tests in 1.324s
+
+OK
+[TASK] code=111 ball=4 target=6 hostage=1 barrel=9
+[TASK] code=112 ball=4 target=6 hostage=2 barrel=9
+[TASK] code=113 ball=4 target=6 hostage=0 barrel=9
+[TASK] code=121 ball=4 target=8 hostage=1 barrel=9
+[TASK] code=122 ball=4 target=8 hostage=2 barrel=9
+[TASK] code=123 ball=4 target=8 hostage=0 barrel=9
+[TASK] code=131 ball=4 target=7 hostage=1 barrel=9
+[TASK] code=132 ball=4 target=7 hostage=2 barrel=9
+[TASK] code=133 ball=4 target=7 hostage=0 barrel=9
+[TASK] code=211 ball=5 target=6 hostage=1 barrel=9
+[TASK] code=212 ball=5 target=6 hostage=2 barrel=9
+[TASK] code=213 ball=5 target=6 hostage=0 barrel=9
+[TASK] code=221 ball=5 target=8 hostage=1 barrel=9
+[TASK] code=222 ball=5 target=8 hostage=2 barrel=9
+[TASK] code=223 ball=5 target=8 hostage=0 barrel=9
+[TASK] code=231 ball=5 target=7 hostage=1 barrel=9
+[TASK] code=232 ball=5 target=7 hostage=2 barrel=9
+[TASK] code=233 ball=5 target=7 hostage=0 barrel=9
+[TASK] code=311 ball=3 target=6 hostage=1 barrel=9
+[TASK] code=312 ball=3 target=6 hostage=2 barrel=9
+[TASK] code=313 ball=3 target=6 hostage=0 barrel=9
+[TASK] code=321 ball=3 target=8 hostage=1 barrel=9
+[TASK] code=322 ball=3 target=8 hostage=2 barrel=9
+[TASK] code=323 ball=3 target=8 hostage=0 barrel=9
+[TASK] code=331 ball=3 target=7 hostage=1 barrel=9
+[TASK] code=332 ball=3 target=7 hostage=2 barrel=9
+[TASK] code=333 ball=3 target=7 hostage=0 barrel=9
+[CONTROL] request=1 actual_mode=OBJECT task=None digit=None class=None status=0
+[CONTROL] request=2 actual_mode=OBJECT task=None digit=None class=None status=0
+[CONTROL] request=3 actual_mode=IDLE task=None digit=None class=None status=0
+[CONTROL] switch failed: synthetic model load failure
+[CONTROL] request=4 actual_mode=IDLE task=None digit=None class=None status=1
+test_all_27_qr53_choices_and_fragmented_delivery (__main__.CurrentVisionReplayTests.test_all_27_qr53_choices_and_fragmented_delivery) ... ok
+test_all_qr_choices_drive_real_camera_four_request_handshake (__main__.CurrentVisionReplayTests.test_all_qr_choices_drive_real_camera_four_request_handshake) ... ok
+test_crc_gap_duplicate_and_old_request_do_not_become_scan_success (__main__.CurrentVisionReplayTests.test_crc_gap_duplicate_and_old_request_do_not_become_scan_success) ... ok
+test_local_end_ignores_stream_without_sending_camera_stop (__main__.CurrentVisionReplayTests.test_local_end_ignores_stream_without_sending_camera_stop) ... ok
+test_qr_requires_matching_ack_and_three_actual_digits (__main__.CurrentVisionReplayTests.test_qr_requires_matching_ack_and_three_actual_digits) ... ok
+
+----------------------------------------------------------------------
+Ran 5 tests in 1.441s
+
+OK
+test_actual_dual_buffer_ignores_old_task_warmup (__main__.VisionRankReplayTests.test_actual_dual_buffer_ignores_old_task_warmup) ... ok
+test_all_shapes_six_temporal_orders_same_sequence_01_54 (__main__.VisionRankReplayTests.test_all_shapes_six_temporal_orders_same_sequence_01_54) ... ok
+test_ball_all_colors_six_temporal_orders_real_camera_and_parser (__main__.VisionRankReplayTests.test_ball_all_colors_six_temporal_orders_real_camera_and_parser) ... ok
+test_ball_real_producer_unknown_late_rank_wrap_and_request_mix (__main__.VisionRankReplayTests.test_ball_real_producer_unknown_late_rank_wrap_and_request_mix) ... ok
+test_documented_exact_wire_vectors_and_fragmented_delivery (__main__.VisionRankReplayTests.test_documented_exact_wire_vectors_and_fragmented_delivery) ... ok
+test_partial_ack_and_lost_rank_write_never_invent_missing_rank (__main__.VisionRankReplayTests.test_partial_ack_and_lost_rank_write_never_invent_missing_rank) ... ok
+test_real_producer_preack_stale_request_duplicate_and_wrap (__main__.VisionRankReplayTests.test_real_producer_preack_stale_request_duplicate_and_wrap) ... ok
+test_retry_preserves_prefix_new_request_resets_it (__main__.VisionRankReplayTests.test_retry_preserves_prefix_new_request_resets_it) ... ok
+test_same_frame_left_to_right_order_not_qr_or_target_class_order (__main__.VisionRankReplayTests.test_same_frame_left_to_right_order_not_qr_or_target_class_order) ... ok
+test_session_requires_ack_and_matching_rank_domain (__main__.VisionRankReplayTests.test_session_requires_ack_and_matching_rank_domain) ... ok
+test_target_lost_or_moved_does_not_change_latched_rank_or_emit_old_coords (__main__.VisionRankReplayTests.test_target_lost_or_moved_does_not_change_latched_rank_or_emit_old_coords) ... ok
+test_wrong_hostage54_refused_while_real_ball01_still_delivers (__main__.VisionRankReplayTests.test_wrong_hostage54_refused_while_real_ball01_still_delivers) ... ok
+
+----------------------------------------------------------------------
+Ran 12 tests in 1.515s
+
+OK
+test_boot_qr_request_follows_rx_setup_without_starting_motion (__main__.VisionDiagIntegrationContract.test_boot_qr_request_follows_rx_setup_without_starting_motion) ... ok
+test_frame_callback_call_graph_has_no_actions_or_tx (__main__.VisionDiagIntegrationContract.test_frame_callback_call_graph_has_no_actions_or_tx) ... ok
+test_frame_fanout_preserves_mission_consumer (__main__.VisionDiagIntegrationContract.test_frame_fanout_preserves_mission_consumer) ... ok
+test_pending_stop_is_processed_before_diagnostic_progress (__main__.VisionDiagIntegrationContract.test_pending_stop_is_processed_before_diagnostic_progress) ... ok
+test_scan_ok_notification_is_in_default_task_not_rx_isr (__main__.VisionDiagIntegrationContract.test_scan_ok_notification_is_in_default_task_not_rx_isr) ... ok
+
+----------------------------------------------------------------------
+Ran 5 tests in 0.046s
+
+OK
+start/abort source contract: 4 checks passed
+g-stop source contract: stop precedes mode/BOOT guards; abort is never cleared
+43 g-stop source contract: mission abort precedes step continuation; abort is never cleared
+departure source contracts: QR/left90/approach/cross order and r1/r2/r3 selection checked
+task approach source contract: full third road / left / forward / right90 / forward entry; zero distance gated
+EOD-to-ANTI source contract: forward basis and remaining-distance call; zero distance gated
+ANTI exit source contract: fore basis / task / forward remainder / right90 ordered and gated
+RESCUE route source contract: forward entry / new fore basis / task / forward home; no extra turn; zero distances gated
+route speed source contract: 8 forward + 1 lateral calls, 2 gates checked
+bench safety/default source contract: 3 checks passed

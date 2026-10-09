@@ -1,4 +1,5 @@
 # Host-only regression checks. They do not flash or exercise the robot.
+param([switch]$SkipRoute43)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $compiler = 'D:\mingw64\bin\gcc.exe'
@@ -55,11 +56,20 @@ try {
         throw 'Independent XY stack contract: DefaultTask needs at least 2 KB and matching IOC words'
     }
     Write-Output 'independent XY task stack contract: existing 2 KB DefaultTask and matching IOC configuration'
+    # The opt-in RNG domain must not silently become the legacy Q4 clock on
+    # Cube regeneration. This is a source contract, not hardware RNG testing.
+    $clockSource = Get-Content 'Src/main.c' -Raw -Encoding utf8
+    if ($clockSource -notmatch '#if\s+PROTO_BOOT_SESSION_ENABLE\s*[\s\S]*?RCC_OscInitStruct\.PLL\.PLLQ\s*=\s*7\s*;\s*#endif' -or
+        $clockSource -notmatch '#include\s+"proto\.h"') {
+        throw 'Boot session clock contract: conditional PLLQ7 and proto flag include missing'
+    }
+    Invoke-HostCase 'eod_boot_session_rng_test' @('tests/boot_session_rng_test.c') @('tests/rng_stubs', 'App')
+    Invoke-HostCase 'eod_boot_session_rng_optimized_test' @('tests/boot_session_rng_test.c') @('tests/rng_stubs', 'App') @('-O2')
     Invoke-HostPythonCase 'dedicated laser pin/init/fault contracts' 'tests/test_laser_tb_contract.py'
     Invoke-HostCase 'eod_laser_tb6612_test' @('tests/laser_tb6612_test.c') @('tests/laser_stubs', 'App')
-    Invoke-HostCase 'eod_arm_stepper_pin_test' @('tests/arm_stepper_pin_test.c') @('tests/laser_stubs', 'App')
-    # STEP/DIR remain open-drain with an initial high (Hi-Z); swapping both
-    # axes must not turn any wire into a push-pull output on regeneration.
+    Invoke-HostCase 'eod_arm_stepper_pin_test' @('tests/arm_stepper_pin_test.c') @('tests/laser_stubs', 'App', 'Inc')
+    # STEP/DIR remain open-drain with an initial high (Hi-Z); restoring the
+    # original wiring must not change electrical mode on regeneration.
     $armGpio = Get-Content 'Src/gpio.c' -Raw -Encoding utf8
     $armPinGroup = 'GPIO_PIN_9\s*\|\s*GPIO_PIN_10\s*\|\s*GPIO_PIN_11\s*\|\s*GPIO_PIN_12'
     if ($armGpio -notmatch "HAL_GPIO_WritePin\(GPIOA,\s*$armPinGroup\s*,\s*GPIO_PIN_SET\);" -or
@@ -75,7 +85,7 @@ try {
     }
     $armMainHeader = Get-Content 'Inc/main.h' -Raw -Encoding utf8
     $armTestSource = Get-Content 'tests/arm_stepper_pin_test.c' -Raw -Encoding utf8
-    $armPinLabels = @{ PA9 = 'ARM_AXIS0_DIR'; PA10 = 'ARM_AXIS0_STEP'; PA11 = 'ARM_AXIS1_DIR'; PA12 = 'ARM_AXIS1_STEP' }
+    $armPinLabels = @{ PA9 = 'ARM_AXIS0_STEP'; PA10 = 'ARM_AXIS0_DIR'; PA11 = 'ARM_AXIS1_STEP'; PA12 = 'ARM_AXIS1_DIR' }
     foreach ($armPin in $armPinLabels.Keys) {
         $armLabel = $armPinLabels[$armPin]
         $armPinNumber = $armPin.Substring(2)
@@ -97,6 +107,9 @@ try {
     Invoke-HostCase 'eod_mission_start_abort_test' @('tests/mission_start_abort_test.c') @('tests/stubs', 'App')
     # Real legacy test.c has an unrelated unused cmd_reset local; report it without changing that code.
     Invoke-HostCase 'eod_g_command_stop_test' @('tests/g_command_stop_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_route31_board_tilt_test' @('tests/route31_board_tilt_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_imu_tilt_snapshot_test' @('tests/imu_tilt_snapshot_test.c') @('tests/stubs', 'App') @('-lm')
+    Invoke-HostCase 'eod_grab42_sequence_test' @('tests/grab42_sequence_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     # Real IK/ctrl target plumbing: keep the legacy unused pose local warning visible.
     Invoke-HostCase 'eod_forward_ff_ik_test' @('tests/forward_ff_ik_test.c', 'App/motion.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_precise_velocity_test' @('tests/precise_velocity_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-lm')
@@ -106,6 +119,7 @@ try {
     Invoke-HostCase 'eod_speed_yaw_heading_test' @('tests/speed_yaw_heading_test.c', 'App/steps.c', 'App/motion.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_route_softstop_test' @('tests/route_softstop_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_route31_tuning_scope_test' @('tests/route31_tuning_scope_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_route31_straight_speed_test' @('tests/route31_straight_speed_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_route31_qr_gate_test' @('tests/route31_qr_gate_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_route34_no_qr_test' @('tests/route34_no_qr_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_bucket36_route_test' @('tests/bucket36_route_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
@@ -114,13 +128,31 @@ try {
     Invoke-HostCase 'eod_route31_bucket_integration_test' @('tests/route31_bucket_integration_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_target35_trial_test' @('tests/target35_trial_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_target35_parser_replay_test' @('tests/target35_parser_replay_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
-    Invoke-HostCase 'eod_vision_align_test_test' @('tests/vision_align_test_test.c', 'App/vision_align_test.c', 'App/proto.c') @('tests/stubs', 'App') @('-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
-    Invoke-HostCase 'eod_vision_align_fastmath_test' @('tests/vision_align_test_test.c', 'App/vision_align_test.c', 'App/proto.c') @('tests/stubs', 'App') @('-O2', '-ffast-math', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
-    Invoke-HostCase 'eod_vision_align_bluetooth_test' @('tests/vision_align_bluetooth_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    # Preserve the complete historical XY/post-Y correction suite while the
+    # candidate firmware intentionally defaults to X-only alignment.
+    Invoke-HostCase 'eod_vision_align_test_test' @('tests/vision_align_test_test.c', 'App/vision_align_test.c', 'App/proto.c') @('tests/stubs', 'App') @('-DVAT_Y_ALIGN_ENABLE=1', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_vision_align_fastmath_test' @('tests/vision_align_test_test.c', 'App/vision_align_test.c', 'App/proto.c') @('tests/stubs', 'App') @('-DVAT_Y_ALIGN_ENABLE=1', '-O2', '-ffast-math', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_vision_align_x_only_test' @('tests/vision_align_x_only_test.c', 'App/vision_align_test.c', 'App/proto.c') @('tests/stubs', 'App') @('-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_vision_align_x_only_fastmath_test' @('tests/vision_align_x_only_test.c', 'App/vision_align_test.c', 'App/proto.c') @('tests/stubs', 'App') @('-O2', '-ffast-math', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_vision_align_bluetooth_test' @('tests/vision_align_bluetooth_test.c') @('tests/stubs', 'App') @('-DVAT_Y_ALIGN_ENABLE=1', '-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_route31_task_chain_test' @('tests/route31_task_chain_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_route31_fast_timing_test' @('tests/route31_fast_timing_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_route31_fast_timing_fastmath_test' @('tests/route31_fast_timing_test.c') @('tests/stubs', 'App') @('-O2', '-ffast-math', '-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_route31_bucket_search_loss_test' @('tests/route31_bucket_search_loss_test.c', 'App/vision_align_test.c', 'App/proto.c') @('tests/stubs', 'App') @('-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    if ($SkipRoute43) {
+        Write-Output 'route43 step-only suite DEFERRED by user; not accepted as passing'
+    } else {
+        Invoke-HostCase 'eod_route43_step_test' @('tests/route43_step_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    }
+    Invoke-HostCase 'eod_route31_task_chain_xy_legacy_test' @('tests/route31_task_chain_test.c') @('tests/stubs', 'App') @('-DVAT_Y_ALIGN_ENABLE=1', '-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_route31_fast_timing_xy_legacy_test' @('tests/route31_fast_timing_test.c') @('tests/stubs', 'App') @('-DVAT_Y_ALIGN_ENABLE=1', '-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_mission_departure_route_test' @('tests/mission_departure_route_test.c') @('tests/stubs', 'App') @('-lm')
     Invoke-HostCase 'eod_mission_trial_plan_test' @('tests/mission_trial_plan_test.c', 'App/mission_trial_plan.c') @('App') @('-lm')
     Invoke-HostCase 'eod_mission_trial_flow_test' @('tests/mission_trial_flow_test.c', 'App/mission_trial.c', 'App/mission_trial_plan.c') @('tests/stubs', 'App') @('-lm')
     Invoke-HostCase 'eod_proto_frame_test' @('tests/proto_frame_test.c', 'App/proto.c') @('tests/stubs', 'App')
+    Invoke-HostCase 'eod_proto_boot_session_test' @('tests/proto_boot_session_test.c', 'App/proto.c') @('tests/stubs', 'App')
+    Invoke-HostCase 'eod_proto_boot_session_optimized_test' @('tests/proto_boot_session_test.c', 'App/proto.c') @('tests/stubs', 'App') @('-O2')
+    Invoke-HostCase 'eod_proto_rank_test' @('tests/proto_rank_test.c') @('tests/stubs', 'App')
     Invoke-HostCase 'eod_vision_task_select_test' @('tests/vision_task_select_test.c', 'App/proto.c') @('tests/stubs', 'App')
     Invoke-HostCase 'eod_uart_error_rearm_test' @('tests/uart_error_rearm_test.c') @('tests/uart_stubs', 'App') @('-ffunction-sections', '-fdata-sections', '-fno-asynchronous-unwind-tables', '-fno-unwind-tables', '-Wl,--gc-sections')
     Invoke-HostCase 'eod_vision_target_slot_test' @('tests/vision_target_slot_test.c') @('tests/stubs', 'App') @('-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
@@ -133,8 +165,10 @@ try {
         Invoke-HostCase "eod_align_left_axis_$pixelSign" @('tests/align_boundary_test.c') @('tests/stubs', 'App') @("-DVISION_CX_FWD_SIGN=$pixelSign", '-DSWEEP_FWD_MMS=100.0f', '-DSWEEP_BALL_DELTA_MM=10.0f', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     }
     Invoke-HostPythonCase 'vision camera main loop' 'tests/test_vision_control_main.py'
+    Invoke-HostPythonCase 'vision ball order main loop' 'tests/test_vision_ball_order_main.py'
     Invoke-HostPythonCase 'full binary packet replay' 'tests/test_vision_binary_replay.py'
     Invoke-HostPythonCase 'current QR53 and four selected tasks' 'tests/test_vision_qr53_replay.py'
+    Invoke-HostPythonCase 'request-bound target rank54 producer replay' 'tests/test_vision_rank_replay.py'
     Invoke-HostPythonCase 'receive-only vision IRQ/stop contract' 'tests/test_vision_diag_contract.py'
 
     $mission = Get-Content 'App/mission.c' -Raw -Encoding utf8
@@ -155,13 +189,21 @@ try {
         throw 'Start/abort source contract: latch abort before braking'
     }
     Write-Output 'start/abort source contract: 4 checks passed'
-    $gBody = [regex]::Match($test, 'if \(strcmp\(buf, "g"\) == 0\)\s*\{(?<body>.*?)\n    \}', 'Singleline').Groups['body'].Value
+    # Pin the formal dispatcher, not43's earlier stopped-step g branch.
+    $gBody = [regex]::Match($test, 'if \(strcmp\(buf, "g"\) == 0\)\s*\{\s*(?<body>const char \*missing;.*?)\n    \}', 'Singleline').Groups['body'].Value
     $gStop = $gBody.IndexOf('if (s_go || mission_state() != MS_BOOT) { cmd_abort(); return; }')
     if ($gStop -lt 0 -or $gStop -ge $gBody.IndexOf('if (s_msel != R_FREE)') -or
         $gStop -ge $gBody.IndexOf('if (!bench_ok())') -or $gBody.Contains('run_reset();')) {
         throw 'g-stop source contract: pending/running mission stop must precede bench selection/gate; never reset abort'
     }
     Write-Output 'g-stop source contract: stop precedes mode/BOOT guards; abort is never cleared'
+    $stepGBody = [regex]::Match($test, 'if \(s_seq_mode == ROUTE_STEP_MODE && s_seq_state != SQ_OFF\)\s*\{(?<body>.*?)\n    \}', 'Singleline').Groups['body'].Value
+    $stepGStop = $stepGBody.IndexOf('if (s_go || mission_state() != MS_BOOT) cmd_abort();')
+    if (-not $stepGBody -or $stepGStop -lt 0 -or
+        $stepGStop -ge $stepGBody.IndexOf('else route_seq_g();') -or $stepGBody.Contains('run_reset();')) {
+        throw '43 g-stop source contract: mission abort must precede stopped-step continuation; never reset abort'
+    }
+    Write-Output '43 g-stop source contract: mission abort precedes step continuation; abort is never cleared'
 
     # The checks above deliberately cover the complete start/abort dispatcher.
     # The legacy route contracts below start after the independent mode32 branch;

@@ -247,7 +247,8 @@ static int check_route_strafe_seed_report_and_manual_isolation(void)
 static int check_all_route_owners_precise_ff_at_all_speeds(void)
 {
     static const struct {unsigned owner,stage; int mode;} cases[] = {
-        {31u,0u,17},{31u,1u,16},{31u,6u,18},{31u,7u,16},{31u,9u,15},
+        {31u,0u,17},{31u,1u,16},{31u,6u,18},{31u,7u,16},{31u,ROUTE31_TARGET_CORNER_STAGE,15},
+        {31u,ROUTE31_HOSTAGE_EXIT_STAGE,15},
         {34u,0u,17},{34u,1u,16},{34u,10u,15},
         {36u,0u,17},{36u,1u,16},{36u,6u,18},{36u,9u,15},
         {37u,2u,16}
@@ -257,7 +258,16 @@ static int check_all_route_owners_precise_ff_at_all_speeds(void)
         for (unsigned k = 0u; k < sizeof speeds / sizeof speeds[0]; ++k) {
             reset_fixture(); ff_select_route(cases[n].owner);
             run_cmd("fff-0.02"); run_cmd("bff0.03"); run_cmd("lff0.02"); run_cmd("rff-0.03");
-            run_cmd("g"); s_seq_stage = (uint8_t)cases[n].stage; route_seq_prepare();
+            run_cmd("g");
+            if (cases[n].owner == 31u) {
+                s_seq_qr[0] = 1; s_seq_qr[1] = 2; s_seq_qr[2] = 3; /* R1's locked legal tuple. */
+                s_route31_hostage_rank = 2u; /* Explicit completed-task fixture state, NOT QR digit3. */
+            }
+            s_seq_stage = (uint8_t)cases[n].stage; route_seq_prepare();
+            if (cases[n].owner == 31u && cases[n].stage == ROUTE31_TARGET_CORNER_STAGE)
+                CHECK(route_seq_leg()->distance_mm == 420u && s_d == 420.0f);
+            if (cases[n].owner == 31u && cases[n].stage == ROUTE31_HOSTAGE_EXIT_STAGE)
+                CHECK(route_seq_leg()->distance_mm == 1315u && s_d == 1315.0f);
             CHECK(sequence_start_stage() == 0 && s_msel == cases[n].mode && route_seq_leg()->heading_hold);
             /* Caller-owned speed input tests the existing real start boundary;
              * the const route recipe is NOT edited and BLE cannot bypass its
@@ -267,6 +277,10 @@ static int check_all_route_owners_precise_ff_at_all_speeds(void)
             float speed = (float)speeds[k];
             float ratio = cases[n].mode == 15 ? -0.02f : cases[n].mode == 16 ? 0.03f :
                           cases[n].mode == 17 ? 0.02f : -0.03f;
+            if (cases[n].owner == 31u && cases[n].stage == ROUTE31_TARGET_CORNER_STAGE)
+                ratio = -ROUTE31_CORNER_RIGHT_FF_RATIO;
+            if (cases[n].owner == 31u && cases[n].stage == ROUTE31_HOSTAGE_EXIT_STAGE)
+                ratio = -ROUTE31_HOSTAGE_EXIT_RIGHT_FF_RATIO;
             CHECK(ff_near(s_dist_ff_ratio,ratio));
             if (cases[n].mode <= 16) {
                 CHECK(last_x == (cases[n].mode == 15 ? speed : -speed));
@@ -282,7 +296,7 @@ static int check_all_route_owners_precise_ff_at_all_speeds(void)
             CHECK(s_dist_ff_ratio == snapshot);
             run_cmd("g"); CHECK(last_x == 0.0f && last_y == 0.0f && last_w == 0.0f);
         }
-    puts("routeFFF: all4 route owners and their existing ordinary directions,77 direction/speed input cases includingv100/v300; FFF/BFF/LFF/RFF reach real precise4wheel IK, active snapshots locked passed");
+    puts("routeFFF: all4 route owners,91 existing plus7 final15 direction/speed input cases includingv100/v300;31dynamic12/final15 both fixedright4pct, other FFF/BFF/LFF/RFF unchanged; all reach real precise4wheel IK, active snapshots locked passed");
     return 0;
 }
 

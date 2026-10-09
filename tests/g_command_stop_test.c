@@ -10,26 +10,46 @@
  * fixture. Production Keil links it as a separate source file. */
 static int host_xy_filter(ProtoTask task, uint8_t digit, int *cls, int *label)
 {
-    if (task == PROTO_TASK_BUCKET && digit == 0u) { *cls = CLS_BUCKET; *label = -1; return 1; }
-    if (digit < 1u || digit > 3u) return 0;
-    if (task == PROTO_TASK_BALL) { *cls = CLS_BALL; *label = digit - 1; return 1; }
-    if (task == PROTO_TASK_HOSTAGE) { *cls = CLS_HOSTAGE; *label = digit + 2; return 1; }
-    return 0;
+    int c, l;
+    if (task == PROTO_TASK_BUCKET && digit == 0u) { c = CLS_BUCKET; l = -1; }
+    else {
+        if (digit < 1u || digit > 3u) return 0;
+        if (task == PROTO_TASK_BALL) { c = CLS_BALL; l = digit - 1; }
+        else if (task == PROTO_TASK_TARGET) { c = CLS_TARGET; l = digit - 1; }
+        else if (task == PROTO_TASK_HOSTAGE) { c = CLS_HOSTAGE; l = digit + 2; }
+        else return 0;
+    }
+    if (cls) *cls = c;
+    if (label) *label = l;
+    return 1;
 }
 #define proto_target_filter host_xy_filter
 #include "../App/vision_align_test.c"
 #undef proto_target_filter
 
 static uint32_t host_tick;
+/* Host-only timer model: requested pps rounded to a 1 us event period.
+ * This verifies IRQ/state-machine semantics, not actual TIM7 register timing. */
+static uint64_t host_timer_us, host_timer_next_us, host_timer_origin_us;
+static uint32_t host_timer_period_us;
+static uint16_t host_timer_pps;
+static int host_timer_active;
+static int host_timer_start_fail;
+static unsigned host_timer_start_calls, host_timer_stop_calls, host_timer_rephase_calls, host_uart_calls;
 static MissionState host_state;
 static int host_abort, start_calls, brake_calls, pulse_calls, gate_closed;
+static int host_jog_axis, host_jog_dir;
+static unsigned host_jog_pulses[2][2];
 static int host_imu_valid;
 static float host_yaw, host_absolute_yaw, last_x, last_y, last_w;
+static float host_pitch, host_roll;
+static uint32_t host_imu_age;
 static float host_heading_kp;
 static unsigned host_precise_calls, host_integer_calls;
 static float host_fore, host_lateral;
 static int32_t host_counts[4];
 static void (*host_counts_hook)(int motor);
+static void (*host_motion_brake_hook)(void);
 static int zero_calls, prepare_calls, servo_calls;
 static uint16_t host_servo;
 static char last_message[256];
@@ -54,6 +74,7 @@ static int (*host_target_hook)(ProtoTask task, uint8_t digit);
 static void (*host_qr_begin_hook)(void), (*host_qr_cancel_hook)(void);
 static void (*host_receive_end_hook)(void);
 static int (*host_qr_get_hook)(int32_t out[3]);
+static int (*host_rank_get_hook)(ProtoTargetRank *out);
 static void (*host_wire_diag_hook)(ProtoWireDiag *out);
 static char host_messages[8192];
 static MotionProfileTune host_motion_profile;
@@ -61,6 +82,7 @@ static MotionProfileTune host_motion_profile;
 uint32_t HAL_GetTick(void) { return host_tick; }
 void bp_debug_send(const char *s)
 {
+    host_uart_calls++;
     /* Production send() appends CRLF in a separate UART write. */
     if (strcmp(s, "\r\n") != 0)
         snprintf(last_message, sizeof last_message, "%s", s);
@@ -70,7 +92,11 @@ void bp_debug_send(const char *s)
 void bp_laser_set(int on) { laser_state = on; if (on) host_laser_on_calls++; }
 int32_t bp_enc_raw_total(int m) { (void)m; return 0; }
 void bp_enc_raw_reset_all(void) { }
-void motion_brake(void) { brake_calls++; last_x = last_y = last_w = 0.0f; }
+void motion_brake(void)
+{
+    brake_calls++; last_x = last_y = last_w = 0.0f;
+    if (host_motion_brake_hook) host_motion_brake_hook();
+}
 void motion_vel_set(float x, float y, float w)
 { host_integer_calls++; last_x = x; last_y = y; last_w = w; }
 void motion_vel_set_precise(float x, float y, float w)
@@ -108,17 +134,60 @@ int ctrl_tune_set(const CtrlTune *in) { (void)in; return 1; }
 void arm_claw_set_us(uint16_t us) { host_servo = us; servo_calls++; }
 uint16_t arm_claw_command_us(void) { return host_servo; }
 void arm_claw_open(void) { host_servo = 1000u; }
-void arm_claw_close(void) { host_servo = 1800u; }
-void arm_stepper_dir(int axis, int dir) { (void)axis; (void)dir; }
-void arm_stepper_step(int axis) { (void)axis; pulse_calls++; }
+void arm_claw_close(void) { host_servo = ARM_SERVO_GRIP_US; }
+void arm_stepper_dir(int axis, int dir) { host_jog_axis = axis; host_jog_dir = dir; }
+void arm_stepper_step(int axis)
+{
+    pulse_calls++;
+    if (axis >= 0 && axis < 2 && host_jog_dir >= 0 && host_jog_dir < 2)
+        host_jog_pulses[axis][host_jog_dir]++;
+}
+static void host_timer_sync_hal(void)
+{
+    uint32_t observed = (uint32_t)(host_timer_us / 1000u);
+    host_timer_us += (uint64_t)(uint32_t)(host_tick - observed) * 1000u;
+}
+int arm_stepper_clock_start(uint16_t pps)
+{
+    host_timer_start_calls++;
+    if (host_timer_start_fail || pps == 0u || pps > 20000u) {
+        host_timer_active = 0;
+        return 0;
+    }
+    host_timer_sync_hal();
+    host_timer_origin_us = host_timer_us;
+    host_timer_pps = pps;
+    host_timer_period_us = (1000000u + pps / 2u) / pps;
+    host_timer_next_us = host_timer_us + host_timer_period_us;
+    host_timer_active = 1;
+    return 1;
+}
+void arm_stepper_clock_stop(void)
+{
+    host_timer_active = 0;
+    host_timer_stop_calls++;
+}
+void arm_stepper_clock_rephase(void)
+{
+    host_timer_rephase_calls++;
+    if (host_timer_active) host_timer_next_us = host_timer_us + host_timer_period_us;
+}
 float imu_yaw_deg(void) { return 0.0f; }
 float imu_heading_deg(void) { return host_absolute_yaw; }
 float imu_leg_heading_deg(void) { return host_yaw; }
-float imu_pitch_deg(void) { return 0.0f; }
-float imu_roll_deg(void) { return 0.0f; }
+float imu_pitch_deg(void) { return host_pitch; }
+float imu_roll_deg(void) { return host_roll; }
 uint8_t imu_ok(void) { return (uint8_t)host_imu_valid; }
 uint8_t imu_zero_leg_heading(void) { zero_calls++; host_yaw = 0.0f; return (uint8_t)host_imu_valid; }
-uint32_t imu_last_valid_age_ms(void) { return 0u; }
+uint32_t imu_last_valid_age_ms(void) { return host_imu_age; }
+uint8_t imu_tilt_snapshot(float *pitch, float *roll, uint32_t *sample_ms)
+{
+    if (!host_imu_valid || host_imu_age >= 200u) return 0u;
+    if (pitch) *pitch = host_pitch;
+    if (roll) *roll = host_roll;
+    if (sample_ms) *sample_ms = host_tick - host_imu_age;
+    return 1u;
+}
 void run_abort(void) { host_abort = 1; step_vision_receive_end(); }
 int run_aborted(void) { return host_abort; }
 int step_prepare_leg(void) { prepare_calls++; return !host_abort && host_imu_valid; }
@@ -213,6 +282,12 @@ int proto_qr_get(int32_t out[3])
     if (out) memcpy(out, host_qr_tuple, sizeof host_qr_tuple);
     return 1;
 }
+int proto_target_rank_get(ProtoTargetRank *out)
+{
+    if (host_rank_get_hook) return host_rank_get_hook(out);
+    if (out) memset(out, 0, sizeof *out);
+    return 0; /* No fixture rank means unknown, never an invented road position. */
+}
 static void host_qr_accept(int a, int b, int c)
 {
     if (host_receive_closed || host_scene != SCENE_QR || host_scene_status != 1 || host_qr_valid ||
@@ -223,14 +298,21 @@ static void host_qr_accept(int a, int b, int c)
 static void reset_fixture(void)
 {
     host_tick = 100u; host_state = MS_BOOT;
+    host_timer_us = 100000u; host_timer_next_us = host_timer_origin_us = host_timer_us;
+    host_timer_period_us = 0u; host_timer_pps = 0u; host_timer_active = host_timer_start_fail = 0;
+    host_timer_start_calls = host_timer_stop_calls = host_timer_rephase_calls = host_uart_calls = 0u;
     host_abort = start_calls = brake_calls = pulse_calls = gate_closed = 0;
+    host_jog_axis = host_jog_dir = 0;
+    memset(host_jog_pulses, 0, sizeof host_jog_pulses);
     host_imu_valid = 1; host_yaw = host_absolute_yaw = last_x = last_y = last_w = 0.0f;
+    host_pitch = host_roll = 0.0f; host_imu_age = 0u;
     host_wire_diag_hook = NULL;
     host_heading_kp = 0.3f; host_precise_calls = host_integer_calls = 0u;
     host_fore = host_lateral = 0.0f; memset(host_counts, 0, sizeof host_counts);
     host_counts_hook = NULL;
+    host_motion_brake_hook = NULL;
     zero_calls = prepare_calls = servo_calls = 0;
-    host_servo = 1400u; last_message[0] = '\0';
+    host_servo = ARM_SERVO_START_US; last_message[0] = '\0';
     trial_start_calls = trial_report_calls = trial_gate_closed = trial_alignment_calls = 0;
     trial_alignment_cls = trial_alignment_cx = trial_alignment_sign = 0;
     trial_grab_y_calls = trial_grab_y_cls = trial_grab_y_cy = trial_grab_y_sign = 0;
@@ -246,6 +328,7 @@ static void reset_fixture(void)
     host_target_hook = NULL;
     host_receive_end_hook = NULL;
     host_qr_get_hook = NULL;
+    host_rank_get_hook = NULL;
     host_messages[0] = '\0';
     memset(&host_motion_profile, 0, sizeof host_motion_profile);
     (void)motion_profile_set(&host_motion_profile);
@@ -254,13 +337,50 @@ static void reset_fixture(void)
 
 #define CHECK(expr) do { if (!(expr)) { fprintf(stderr, "g test line %d: %s\n", __LINE__, #expr); return 1; } } while (0)
 
+static int jog_host_ticks(unsigned steps);
+static int jog_host_service_ms(unsigned ms);
+
+static int fixture_complete_route31_predeploy(void)
+{
+    if (s_seq_state != SQ_ARM_PREP) return 0;
+    CHECK(s_seq_mode == 31u && s_seq_stage == ROUTE31_PREDEPLOY_STAGE);
+    CHECK(s_route31_lift_phase == R31_RACK_EXTEND && host_timer_active);
+    CHECK(host_jog_axis == 0 && host_jog_dir == 0 && host_timer_pps == 5000u);
+    /* Independent3200 expectation pins the new31 recipe,
+     * rather than letting the host fixture silently copy a changed macro. */
+    CHECK(ROUTE31_RACK_EXTEND_STEPS == 3200u && s_jog_clock.remaining == 3200u);
+    int before = pulse_calls;
+    CHECK(jog_host_ticks(3199u) == 0 && s_jog_clock.remaining == 1u && host_timer_active);
+    test_poll();
+    CHECK(s_seq_state == SQ_ARM_PREP && s_route31_lift_phase == R31_RACK_EXTEND &&
+          pulse_calls == before + 3199 && !s_route31_rack_deployed);
+    CHECK(jog_host_ticks(1u) == 0);
+    test_poll();
+    CHECK(s_seq_state == SQ_ARM_PREP && s_route31_lift_phase == R31_RACK_EXTEND_WAIT &&
+          pulse_calls == before + 3200 && !host_timer_active &&
+          host_jog_pulses[0][0] == 3200u && !host_jog_pulses[0][1]);
+    CHECK(jog_host_service_ms(250u) == 0);
+    test_poll();
+    CHECK(s_seq_state == SQ_STILL && s_route31_rack_deployed && s_msel == 30 &&
+          s_route31_lift_phase == R31_LIFT_OFF && !servo_calls &&
+          last_x == 0.0f && last_y == 0.0f && last_w == 0.0f);
+    return 0;
+}
+
 static int sequence_start_stage(void)
 {
+    int board_contact = route31_owner() && s_seq_stage == 4u && !s_seq_contact_post;
+    int contact_nudge = route31_owner() && s_seq_stage == 4u && s_seq_contact_post;
+    CHECK(fixture_complete_route31_predeploy() == 0);
     CHECK(s_seq_state == SQ_STILL && last_w == 0.0f && last_x == 0.0f && last_y == 0.0f);
     host_tick += T_DIST_STILL_MS;
     test_poll();
+    if (contact_nudge) {
+        CHECK(s_seq_state == SQ_RUN && s_round == R_RUN && prepare_calls == 0);
+        return 0;
+    }
     CHECK(s_seq_state == SQ_WAIT && last_w == 0.0f && last_x == 0.0f && last_y == 0.0f);
-    host_tick += NAV_SETTLE_MS;
+    host_tick += board_contact ? ROUTE31_BOARD_CONTACT_ZERO_WAIT_MS : NAV_SETTLE_MS;
     test_poll();
     CHECK(s_seq_state == SQ_RUN && s_round == R_RUN && prepare_calls == 0);
     return 0;
@@ -293,13 +413,33 @@ static void fixture_complete_distance_alignment(void)
     }
 }
 
+static int fixture_trigger_board_contact(void)
+{
+    CHECK(route31_owner() && s_seq_stage == 4u && s_seq_state == SQ_RUN && s_round == R_RUN);
+    /* Contact ignores startup motion, then requires fresh observations over
+     * a sustained interval. Encoder distance never substitutes for tilt. */
+    host_pitch += ROUTE31_BOARD_CONTACT_TILT_DEG + 0.1f;
+    host_imu_age = 0u;
+    host_tick += ROUTE31_BOARD_CONTACT_START_GUARD_MS + 20u; test_poll();
+    CHECK(s_round == R_RUN);
+    for (unsigned elapsed = 0u; elapsed < ROUTE31_BOARD_CONTACT_CONFIRM_MS; elapsed += 20u) {
+        host_tick += 20u; test_poll();
+    }
+    CHECK(s_round == R_BRAKE && s_dist_reason == 1u);
+    return 0;
+}
+
 static int sequence_finish_stage(void)
 {
     CHECK(s_seq_state == SQ_RUN);
     if (dist_mode()) {
-        if (dist_lateral()) host_lateral = s_dist_odo0 + s_dist_target;
-        else host_fore = s_dist_odo0 + s_dist_target;
-        test_poll();
+        if (route31_owner() && s_seq_stage == 4u && !s_seq_contact_post) {
+            CHECK(fixture_trigger_board_contact() == 0);
+        } else {
+            if (dist_lateral()) host_lateral = s_dist_odo0 + s_dist_target;
+            else host_fore = s_dist_odo0 + s_dist_target;
+            test_poll();
+        }
         CHECK(s_round == R_BRAKE && s_dist_reason == 1u && s_seq_state == SQ_RUN);
         host_tick += T_DIST_STILL_MS;
         test_poll();
@@ -310,6 +450,13 @@ static int sequence_finish_stage(void)
         host_tick += T_TURN_SETTLE_MS; test_poll();
     }
     if (s_seq_state == SQ_QR_WAIT) CHECK(sequence_release_qr() == 0);
+    /* Ordinary mode31 stage drivers consume this logical contact unit's two
+     * fixed nudges. Mode43 still exposes each nudge behind its own fresh g. */
+    while (s_seq_mode == ROUTE_TEST_MODE && s_seq_stage == 4u && s_seq_contact_post &&
+           s_seq_state == SQ_STILL) {
+        CHECK(sequence_start_stage() == 0);
+        CHECK(sequence_finish_stage() == 0);
+    }
     return 0;
 }
 
@@ -389,15 +536,15 @@ static int check_route_cross_heading_restart(unsigned mode)
         CHECK(s_route_heading_kp == 1.2f && step_heading_kp_deg() == 0.3f);
         CHECK(sequence_finish_stage() == 0 && s_seq_stage == 4u);
         CHECK(sequence_start_stage() == 0);
-        CHECK(s_msel == 15 && s_dist_target == (mode == 31u ? 70.0f : 80.0f) && s_v == 20.0f && s_dist_heading_kp == 0.0f);
-        CHECK(last_x == 20.0f && last_y == 0.0f && s_dist_ff_ratio == 0.0f);
+        CHECK(s_msel == 15 && s_dist_target == (mode == 31u ? 0.0f : 80.0f) && s_v == (mode == 31u ? 40.0f : 20.0f) && s_dist_heading_kp == 0.0f);
+        CHECK(last_x == (mode == 31u ? 40.0f : 20.0f) && last_y == 0.0f && s_dist_ff_ratio == 0.0f);
         host_yaw = 6.0f; tick(); CHECK(last_w == 0.0f);
         host_yaw = -6.0f; tick(); CHECK(last_w == 0.0f);
         unsigned before_finish = (unsigned)zero_calls;
         CHECK(sequence_finish_stage() == 0);
         CHECK(s_seq_stage == 5u && s_seq_state == SQ_STILL &&
               last_x == 0.0f && last_y == 0.0f && last_w == 0.0f);
-        CHECK(zero_calls == (int)before_finish + 1); /* Existing distance-result reset. */
+        CHECK(zero_calls == (int)before_finish + (mode == 31u ? 0 : 1));
         unsigned before_node = (unsigned)zero_calls;
         host_yaw = run == 1u ? 7.0f : -7.0f; host_counts[0]++;
         host_tick += T_DIST_STILL_MS; test_poll();
@@ -414,10 +561,11 @@ static int check_route_cross_heading_restart(unsigned mode)
               last_x == 0.0f && last_y == 0.0f && last_w == 0.0f);
         host_tick++; test_poll();
         CHECK(s_seq_state == SQ_RUN && s_round == R_RUN && s_msel == 16);
-        CHECK(s_dist_target == -190.0f && s_v == 100.0f && s_dist_heading0 == 0.0f);
+        CHECK(s_dist_target == -190.0f && s_v == (mode == 31u ? 200.0f : 100.0f) && s_dist_heading0 == 0.0f);
         CHECK(s_dist_heading_kp == 1.2f && s_route_heading_kp == 1.2f &&
               step_heading_kp_deg() == 0.3f && host_yaw == 0.0f && last_w == 0.0f);
-        CHECK(s_dist_ff_ratio == 0.00625f && last_x == -100.0f && last_y == -0.625f);
+        CHECK(s_dist_ff_ratio == 0.00625f && last_x == (mode == 31u ? -200.0f : -100.0f) &&
+              last_y == (mode == 31u ? -1.25f : -0.625f));
         host_yaw = 3.0f; tick();
         CHECK(fabsf(last_w + 1.2f * 3.0f * 0.0174533f) < 0.000001f);
         host_yaw = -3.0f; tick();
@@ -430,16 +578,16 @@ static int check_route_cross_heading_restart(unsigned mode)
     CHECK(s_dist_heading_kp == 0.3f && s_route_heading_kp == 1.2f);
     run_cmd("g"); run_cmd("32");
     CHECK(dist_heading_kp_get(NULL) == 0.3f && step_heading_kp_deg() == 0.3f);
-    printf("route%u two-run post-cross: back650/v300 ->forward%u/v20 yaw/FF disabled; wheel-still/node zero/750ms wait ->fresh back190/v100 restoresykp + independentBFF; manual/32 unchanged passed\n", mode, mode == 31u ? 70u : 80u);
+    printf("route%u two-run post-cross: back650/v300 ->forward%s/v%u yaw/FF disabled; wheel-still/node zero/750ms wait ->fresh back190/v%u restoresykp + independentBFF; manual/32 unchanged passed\n", mode, mode == 31u ? "tilt_contact" : "80", mode == 31u ? 40u : 20u, mode == 31u ? 200u : 100u);
     return 0;
 }
 
 static int check_route_sequence(void)
 {
     /* Independent expectation, not copied from the live recipe at runtime. */
-    static const int expected_modes[12] = {17,16,20,16,15,16,18,16,30,15,20,15};
-    static const int expected_commands[12] = {-520,-650,90,-650,70,-190,730,-780,-90,2450,90,2125};
-    static const float expected_speeds[12] = {100,100,100,300,20,100,100,100,100,100,100,100};
+    static const int expected_modes[9] = {17,16,20,16,15,16,18,16,30};
+    static const int expected_commands[9] = {-535,-630,90,-650,0,-190,800,-760,-90};
+    static const float expected_speeds[9] = {250,200,100,300,40,200,250,200,100};
     static const char *const stop_keys[] = {"g", "a", "0"};
     reset_fixture();
     host_fore = 4321.0f; host_lateral = -1234.0f; host_yaw = 47.0f;
@@ -448,47 +596,61 @@ static int check_route_sequence(void)
     for (int i = 0; i < 5; i++) { host_tick += 100u; test_poll(); }
     CHECK(s_seq_state == SQ_READY && last_x == 0.0f && last_y == 0.0f && last_w == 0.0f);
     run_cmd("g"); CHECK(s_seq_run == 1u && s_seq_stage == 0u);
-    CHECK(ROUTE31_STAGES == 12u && route_seq_stage_count() == 12u && !route_seq_bucket_enabled());
-    for (int i = 0; i < 12; i++) {
+    CHECK(ROUTE31_STAGES == 16u && route_seq_stage_count() == 16u && !route_seq_bucket_enabled());
+    CHECK(ROUTE31_PAIR_STAGE == 9u && ROUTE31_RETURN180_STAGE == 10u && ROUTE31_TARGET_STAGE == 11u &&
+          ROUTE31_TARGET_CORNER_STAGE == 12u && ROUTE31_HOSTAGE_TURN_STAGE == 13u && ROUTE31_HOSTAGE_STAGE == 14u &&
+          ROUTE31_HOSTAGE_EXIT_STAGE == 15u);
+    for (int i = 0; i < 9; i++) {
         CHECK(s_seq_stage == i && sequence_start_stage() == 0);
-        CHECK(s_msel == expected_modes[i] && s_route_leg == i + 1 && s_active_test == (uint32_t)i + 1u);
+        CHECK(s_msel == expected_modes[i] && s_route_leg == i + 1 &&
+              s_active_test == (uint32_t)i + 1u + (i >= 5 ? 2u : 0u) + (i == 8 ? 1u : 0u));
         CHECK(s_route31_plan[i].heading_hold == (i == 3 || i == 4 ? 0u : 1u));
         if (dist_mode()) {
             CHECK(s_dist_target == (float)expected_commands[i] && s_v == expected_speeds[i]);
             CHECK(s_dist_ramp.acc == 700.0f && s_dist_ramp.dec == 350.0f && s_dist_precise == 1u);
-            CHECK(s_dist_ff_ratio == (i == 9 || i == 11 ? -0.00625f :
-                  i == 1 || i == 5 || i == 7 ? 0.00625f : 0.0f));
-            CHECK(s_dist_heading_kp == (i == 3 || i == 4 ? 0.0f : 0.3f));
+            CHECK(s_dist_ff_ratio == (i == 1 || i == 5 || i == 7 ? 0.00625f : 0.0f));
+            CHECK(s_dist_heading_kp == (i == 3 || i == 4 ? 0.0f : i == 6 ? 3.0f : 0.3f));
             CHECK(last_w == 0.0f);
-            if (dist_lateral()) CHECK(last_x == 0.0f && last_y == (s_msel == 18 ? 100.0f : -100.0f));
+            if (dist_lateral()) CHECK(last_x == 0.0f && last_y == (s_msel == 18 ? 250.0f : -250.0f));
             else CHECK(last_x == (s_msel == 16 ? -expected_speeds[i] : expected_speeds[i]) &&
                        last_y == -s_dist_ff_ratio * expected_speeds[i]);
         } else {
             CHECK(turn_target_deg() == (float)expected_commands[i] && last_x == 0.0f && last_y == 0.0f);
-            CHECK(last_w == (i == 8 ? -T_TURN_MAX_W : T_TURN_MAX_W));
+            CHECK(last_w == (i == 8 ? -2.0f*T_TURN_MAX_W : 2.0f*T_TURN_MAX_W));
         }
-        CHECK(start_calls == 0 && pulse_calls == 0 && servo_calls == 0 && !s_go);
+        CHECK(start_calls == 0 && pulse_calls == (i == 8 ? 3200 : 0) && servo_calls == 0 && !s_go);
         CHECK(sequence_finish_stage() == 0);
-        CHECK(i == 11 ? s_seq_state == SQ_DONE : s_seq_state == SQ_STILL);
-        CHECK(!host_target_calls && s_seq_state != SQ_BUCKET_ALIGN && s_seq_state != SQ_MANUAL_D_WAIT);
+        CHECK(s_seq_state == (i == 8 ? SQ_TASK : i == 7 ? SQ_ARM_PREP : SQ_STILL));
+        CHECK(host_target_calls == (i == 8 ? 1 : 0) && s_seq_state != SQ_BUCKET_ALIGN && s_seq_state != SQ_MANUAL_D_WAIT);
     }
-    CHECK(zero_calls == 21 && prepare_calls == 0); /* 12 node zeros + 9 distance-report resets */
+    CHECK(zero_calls == 15 && prepare_calls == 0); /* No report zero at board/contact nudges. */
+    CHECK(s_seq_stage == ROUTE31_PAIR_STAGE && vision_align_test_active() && s_vat.mode == 41u &&
+          s_vat.state == VAT_BRAKE && host_target_task == PROTO_TASK_BALL && host_target_digit == 1u);
+    CHECK(last_x == 0.0f && last_y == 0.0f && last_w == 0.0f && !laser_state && pulse_calls == 3200 && !host_timer_active && !servo_calls);
+    run_cmd("g"); CHECK(s_seq_state == SQ_STOPPED && !vision_align_test_active() && host_receive_closed);
+    /* Terminal router policy only; the dedicated real-wire task regression
+     * verifies reaching DONE through ball/bucket/target/hostage, not this stub. */
+    route_seq_end("DONE");
     CHECK(s_msel == 31 && s_round == R_DONE && strstr(last_message, "status=DONE") != NULL);
     for (int i = 0; i < 10; i++) { host_tick += 1000u; test_poll(); }
     run_cmd("g"); CHECK(s_seq_state == SQ_DONE && last_x == 0.0f && last_y == 0.0f && last_w == 0.0f);
     run_cmd("31"); run_cmd("g"); CHECK(s_seq_run == 2u && s_seq_state == SQ_STILL);
     run_cmd("g"); CHECK(s_seq_state == SQ_STOPPED);
 
-    /* All 12 motion-only nodes, every phase and stop key. */
-    for (int stage = 0; stage < 12; stage++) {
+    /* All nine prefix road nodes, every phase and stop key. Task phases have
+     * their own integration/stop regression instead of pretending to be roads. */
+    for (int stage = 0; stage < 9; stage++) {
         for (int key = 0; key < 3; key++) {
             for (int phase = 0; phase < 4; phase++) {
                 reset_fixture(); run_cmd("31"); run_cmd("g");
                 s_seq_stage = (uint8_t)stage; route_seq_prepare();
+                if (phase >= 1) CHECK(fixture_complete_route31_predeploy() == 0);
                 if (phase == 1) { host_tick += T_DIST_STILL_MS; test_poll(); CHECK(s_seq_state == SQ_WAIT); }
                 if (phase >= 2) CHECK(sequence_start_stage() == 0);
                 if (phase == 3) {
-                    if (dist_mode()) {
+                    if (route31_owner() && s_seq_stage == 4u) {
+                        CHECK(fixture_trigger_board_contact() == 0);
+                    } else if (dist_mode()) {
                         if (dist_lateral()) host_lateral = s_dist_odo0 + s_dist_target;
                         else host_fore = s_dist_odo0 + s_dist_target;
                     } else host_yaw = turn_target_deg();
@@ -499,7 +661,7 @@ static int check_route_sequence(void)
                 for (int j = 0; j < 4; j++) { host_tick += 1000u; test_poll(); }
                 run_cmd("g");
                 CHECK(s_seq_state == SQ_STOPPED && last_x == 0.0f && last_y == 0.0f && last_w == 0.0f &&
-                      !s_go && start_calls == 0 && pulse_calls == 0 && servo_calls == 0);
+                      !s_go && start_calls == 0 && pulse_calls == (stage == 8 && phase >= 1 ? 3200 : 0) && !host_timer_active && servo_calls == 0);
             }
         }
     }
@@ -518,13 +680,13 @@ static int check_route_sequence(void)
         if (phase == 3) { host_lateral = s_dist_odo0 + s_dist_target; test_poll(); }
         for (size_t k = 0; k < sizeof writes / sizeof writes[0]; k++) {
             run_cmd(writes[k]);
-            CHECK(strstr(last_message, "ERR ROUTE_SEQ_ACTIVE") != NULL && s_v == 100.0f &&
-                  s_d == 520.0f && s_seq_stage == 0u && s_msel == 17 && servo_calls == 0);
+            CHECK(strstr(last_message, "ERR ROUTE_SEQ_ACTIVE") != NULL && s_v == 250.0f &&
+                  s_d == 535.0f && s_seq_stage == 0u && s_msel == 17 && servo_calls == 0);
         }
         CHECK(route_seq_active()); run_cmd("g");
     }
     /* All failed sensor/turn statuses cancel rather than advancing a ready/done submode. */
-    for (int stage = 0; stage < 12; stage++) {
+    for (int stage = 0; stage < 9; stage++) {
         reset_fixture(); run_cmd("31"); run_cmd("g");
         s_seq_stage = (uint8_t)stage; route_seq_prepare();
         CHECK(sequence_start_stage() == 0);
@@ -551,7 +713,7 @@ static int check_route_sequence(void)
     reset_fixture(); run_cmd("31"); run_cmd("g"); CHECK(sequence_start_stage() == 0);
     dist_begin_finish(0u); host_tick += T_DIST_STILL_MS; test_poll();
     CHECK(s_seq_state == SQ_STOPPED && s_seq_stage == 0u);
-    puts("route31: exact12 motion-only traversal incl board70 and crossing/contact yaw/FF disabled; QRgate/right730/back780/left90 withoutbucket/manuald, two forwardFFF and three backwardBFF legs, post-yaw-before-next, terminal/no-restart,144 g/a/0 cancellations, locks and IMU/abort/turn failure passed");
+    puts("route31: nine-road prefix R2back630/board_tilt1.5_wait1s_guard300_confirm100_v40, crossing/contact yaw/FF disabled, QRgate/right800/back760/rackDIR0nl3200predeploy/left90 then actual ball/bucket41 task handoff; independent3200 recipe and3199-not-DONE boundary, no legacybucket/manuald, three backwardBFF legs, post-yaw-before-next, terminal router policy,108 road g/a/0 cancellations, locks and IMU/abort/turn failure passed");
     return 0;
 }
 
@@ -698,7 +860,7 @@ static int check_trial32_router(void)
         CHECK(last_x == 0.0f && last_y == 0.0f && last_w == 0.0f && pulse_calls == 0);
         run_cmd("bcx199"); run_cmd("vsg1"); run_cmd("bcy150"); run_cmd("hcy170"); run_cmd("ysg1");
         run_cmd("b1d800"); run_cmd("24"); run_cmd("co");
-        CHECK(trial_alignment_calls == 0 && trial_grab_y_calls == 0 && trial_distance_calls == 0 && s_msel == 32 && host_servo == 1400u);
+        CHECK(trial_alignment_calls == 0 && trial_grab_y_calls == 0 && trial_distance_calls == 0 && s_msel == 32 && host_servo == ARM_SERVO_START_US);
         run_cmd("trial");
         CHECK(trial_report_calls == 3); /* select, g automatic report, explicit report */
         laser_state = 1;
@@ -722,6 +884,564 @@ static void diagnostic_qr(int a, int b, int c)
     ProtoFrame frame = {0};
     frame.type = PF_QR; frame.a = a; frame.b = b; frame.c = c;
     test_vision_feed_frame(&frame);
+}
+
+static int jog_host_timer_event(void)
+{
+    CHECK(host_timer_active && host_timer_period_us != 0u);
+    int before = pulse_calls;
+    unsigned uart_before = host_uart_calls;
+    unsigned rephase_before = host_timer_rephase_calls;
+    host_timer_us = host_timer_next_us;
+    host_tick = (uint32_t)(host_timer_us / 1000u);
+    test_stepper_timer_irq();
+    CHECK(pulse_calls >= before && pulse_calls <= before + 1 && host_uart_calls == uart_before &&
+          host_timer_rephase_calls == rephase_before + (unsigned)(pulse_calls - before));
+    if (host_timer_active) host_timer_next_us = host_timer_us + host_timer_period_us;
+    return 0;
+}
+
+static int jog_host_service_ms(unsigned ms)
+{
+    host_timer_sync_hal();
+    uint64_t until = host_timer_us + (uint64_t)ms * 1000u;
+    while (host_timer_active && host_timer_next_us <= until)
+        CHECK(jog_host_timer_event() == 0);
+    host_timer_us = until;
+    host_tick = (uint32_t)(host_timer_us / 1000u);
+    tick();
+    return 0;
+}
+
+static uint32_t jog_host_expected_ms(unsigned steps)
+{
+    uint64_t gate_us = (host_timer_origin_us / 1000u + 2u) * 1000u;
+    uint64_t first_event = (gate_us - host_timer_origin_us + host_timer_period_us - 1u) / host_timer_period_us;
+    if (first_event == 0u) first_event = 1u;
+    uint64_t end_us = host_timer_origin_us + (first_event + steps - 1u) * host_timer_period_us;
+    return (uint32_t)((end_us / 1000u) - (host_timer_origin_us / 1000u));
+}
+
+/* Scheduled TIM7 events drive pulses independently of the command/report
+ * task. Multiple real timer events within one HAL millisecond are expected. */
+static int jog_host_ticks(unsigned steps)
+{
+    int target = pulse_calls + (int)steps;
+    unsigned budget = steps + T_JOG_MAX_PPS / 500u + 2u;
+    host_timer_sync_hal();
+    while (pulse_calls < target && budget--) {
+        CHECK(jog_host_timer_event() == 0);
+    }
+    CHECK(pulse_calls == target);
+    tick();
+    return 0;
+}
+
+static int check_jog_range_and_repeat(void)
+{
+    static const unsigned counts[] = { 1u, 500u, 1000u, 5000u, 5001u, 100000u };
+    static const char *const rejected[] = {
+        "nl100001", "nr100001", "n100001", "n-100001", "nl0", "nr0", "nl-1", "nr-1"
+    };
+    char mode_line[8], request_line[20], report_line[64];
+    CHECK(T_JOG_MAX_STEPS == 100000u);
+    CHECK(sizeof s_jog_request >= 4u && sizeof s_jog_done >= 4u && sizeof s_back >= 4u);
+    for (int mode = 24; mode <= 27; ++mode) {
+        snprintf(mode_line, sizeof mode_line, "%d", mode);
+        for (unsigned dir = 0u; dir < 2u; ++dir) {
+            for (unsigned k = 0u; k < sizeof counts / sizeof counts[0]; ++k) {
+                reset_fixture(); run_cmd(mode_line);
+                snprintf(request_line, sizeof request_line, "n%c%u", dir ? 'r' : 'l', counts[k]);
+                run_cmd(request_line);
+                CHECK(s_round == R_READY && pulse_calls == 0 &&
+                      s_jog_request == (dir ? (int32_t)counts[k] : -(int32_t)counts[k]));
+                snprintf(report_line, sizeof report_line, "steps=%u; g starts bounded", counts[k]);
+                CHECK(strstr(last_message, "OK JOG_N") != NULL && strstr(last_message, report_line) != NULL);
+                run_cmd("g");
+                CHECK(s_round == R_RUN && s_axis == ((mode - 24) & 1) &&
+                      host_jog_axis == s_axis && host_jog_dir == (int)dir && pulse_calls == 0);
+                snprintf(report_line, sizeof report_line, " n=%u ", counts[k]);
+                CHECK(strstr(last_message, report_line) != NULL &&
+                      strstr(last_message, "g_stops_no_return") != NULL);
+            }
+        }
+        reset_fixture(); run_cmd(mode_line); run_cmd("nl100000");
+        for (unsigned k = 0u; k < sizeof rejected / sizeof rejected[0]; ++k) {
+            run_cmd(rejected[k]);
+            CHECK(strstr(last_message, "ERR N_RANGE") != NULL &&
+                  s_round == R_READY && s_jog_request == -100000 && pulse_calls == 0);
+        }
+        run_cmd("n100000"); CHECK(s_jog_request == 100000);
+        run_cmd("n-100000"); CHECK(s_jog_request == -100000);
+    }
+
+    /* An uninterrupted auto-return clears progress, not the chosen parameter.
+     * A READY g repeats the exact direction/count with a fresh test number. */
+    for (int mode = 26; mode <= 27; ++mode) {
+        snprintf(mode_line, sizeof mode_line, "%d", mode);
+        for (unsigned dir = 0u; dir < 2u; ++dir) {
+            for (unsigned k = 0u; k < sizeof counts / sizeof counts[0]; ++k) {
+                unsigned n = counts[k];
+                int axis = (mode - 24) & 1;
+                int32_t request = dir ? (int32_t)n : -(int32_t)n;
+                reset_fixture(); run_cmd(mode_line);
+                snprintf(request_line, sizeof request_line, "n%c%u", dir ? 'r' : 'l', n);
+                run_cmd(request_line);
+                for (unsigned round = 1u; round <= 2u; ++round) {
+                    run_cmd("g");
+                    CHECK(s_round == R_RUN && s_active_test == round && s_axis == axis &&
+                          host_jog_axis == axis && host_jog_dir == (int)dir);
+                    CHECK(pulse_calls == (int)(2u * n * (round - 1u)));
+                    uint32_t out_start = host_tick;
+                    uint32_t expected_out_ms = jog_host_expected_ms(n);
+                    CHECK(jog_host_ticks(n) == 0);
+                    uint32_t out_ms = host_tick - out_start;
+                    CHECK(out_ms == expected_out_ms);
+                    CHECK(s_round == R_DONE && s_jog_done == n &&
+                          pulse_calls == (int)(n * (2u * round - 1u)) &&
+                          host_jog_pulses[axis][dir] == n * round &&
+                          strstr(last_message, "WAIT_2S_THEN_RETURN") != NULL);
+                    host_tick += T_JOG_RETURN_WAIT_MS - 1u; tick();
+                    CHECK(s_round == R_DONE && pulse_calls == (int)(n * (2u * round - 1u)));
+                    host_tick++; tick();
+                    CHECK(s_round == R_RET && host_jog_dir == (int)(dir ^ 1u) &&
+                          pulse_calls == (int)(n * (2u * round - 1u)));
+                    uint32_t back_start = host_tick;
+                    uint32_t expected_back_ms = jog_host_expected_ms(n);
+                    CHECK(jog_host_ticks(n) == 0);
+                    uint32_t back_ms = host_tick - back_start;
+                    CHECK(back_ms == expected_back_ms);
+                    CHECK(s_round == R_READY && s_jog_request == request &&
+                          s_jog_done == 0u && s_back == 0u && s_active_test == round &&
+                          pulse_calls == (int)(2u * n * round) &&
+                          host_jog_pulses[axis][dir ^ 1u] == n * round &&
+                          strstr(last_message, "status=RETURN_DONE") != NULL &&
+                          strstr(last_message, "estimate_only=1 repeat_g=1") != NULL);
+                    snprintf(report_line, sizeof report_line, "out=%u back=%u", n, n);
+                    CHECK(strstr(last_message, report_line) != NULL);
+                    snprintf(report_line, sizeof report_line, "out_ms=%lu back_ms=%lu",
+                             (unsigned long)out_ms, (unsigned long)back_ms);
+                    CHECK(strstr(last_message, report_line) != NULL && strstr(last_message, "pps=500") != NULL);
+                    CHECK(jog_host_service_ms(3000u) == 0);
+                    CHECK(s_round == R_READY && pulse_calls == (int)(2u * n * round));
+                }
+                run_cmd(mode_line);
+                CHECK(s_round == R_READY && s_jog_request == 0);
+                run_cmd("g");
+                CHECK(s_round == R_READY && pulse_calls == (int)(4u * n) &&
+                      strstr(last_message, "ERR SET_N") != NULL);
+            }
+        }
+    }
+
+    /* 24/25 retain DONE until g only clears the state; no auto-return. */
+    for (int mode = 24; mode <= 25; ++mode) {
+        snprintf(mode_line, sizeof mode_line, "%d", mode);
+        reset_fixture(); run_cmd(mode_line); run_cmd("nr1000"); run_cmd("g");
+        CHECK(jog_host_ticks(1000u) == 0);
+        CHECK(s_round == R_DONE && pulse_calls == 1000 &&
+              strstr(last_message, "DONE_NO_RETURN") != NULL);
+        CHECK(jog_host_service_ms(3000u) == 0);
+        CHECK(s_round == R_DONE && pulse_calls == 1000);
+        run_cmd("g");
+        CHECK(s_round == R_READY && pulse_calls == 1000 && s_active_test == 1u);
+        CHECK(jog_host_service_ms(3000u) == 0);
+        CHECK(s_round == R_READY && pulse_calls == 1000);
+    }
+    puts("bounded jog: 24..27 two-direction 1/500/1000/5000/5001/100000 limits, 26/27 READY-g repeat, 32-bit exact return count and unchanged 24/25 clear passed");
+    return 0;
+}
+
+static int check_jog_cancellation_phases(void)
+{
+    static const char *const stops[] = { "g", "a", "0" };
+    char mode_line[8], request_line[20];
+    for (int mode = 26; mode <= 27; ++mode) {
+        snprintf(mode_line, sizeof mode_line, "%d", mode);
+        for (unsigned dir = 0u; dir < 2u; ++dir) {
+            snprintf(request_line, sizeof request_line, "n%c500", dir ? 'r' : 'l');
+            for (unsigned phase = 0u; phase < 3u; ++phase) {
+                for (unsigned key = 0u; key < sizeof stops / sizeof stops[0]; ++key) {
+                    reset_fixture(); run_cmd(mode_line); run_cmd(request_line); run_cmd("g");
+                    CHECK(jog_host_ticks(phase == 0u ? 7u : 500u) == 0);
+                    if (phase == 1u) {
+                        host_tick += 1000u; tick();
+                        CHECK(s_round == R_DONE && pulse_calls == 500);
+                    } else if (phase == 2u) {
+                        host_tick += T_JOG_RETURN_WAIT_MS; tick();
+                        CHECK(s_round == R_RET && pulse_calls == 500);
+                        CHECK(jog_host_ticks(7u) == 0);
+                        CHECK(s_round == R_RET && pulse_calls == 507);
+                    } else CHECK(s_round == R_RUN && pulse_calls == 7);
+                    int stopped_pulses = pulse_calls;
+                    unsigned clock_stops = host_timer_stop_calls;
+                    run_cmd(stops[key]);
+                    CHECK(s_round == R_READY && s_jog_request == 0 &&
+                          pulse_calls == stopped_pulses && !host_abort && !host_timer_active &&
+                          host_timer_stop_calls > clock_stops);
+                    CHECK(jog_host_service_ms(5000u) == 0);
+                    CHECK(s_round == R_READY && pulse_calls == stopped_pulses);
+                    run_cmd("g");
+                    CHECK(s_round == R_READY && pulse_calls == stopped_pulses &&
+                          strstr(last_message, "ERR SET_N") != NULL && s_active_test == 1u);
+                }
+            }
+        }
+    }
+    puts("bounded jog cancel: 26/27 both directions g/a/0 in OUT/WAIT/RETURN clears request and never resumes passed");
+    return 0;
+}
+
+static int check_jog_frequency_command(void)
+{
+    static const unsigned rates[] = { 1u, 50u, 333u, 500u, 1000u, 2000u, 5000u, 10000u, 20000u };
+    static const char *const invalid[] = { "f0", "f20001", "f-1", "f", "f50x", "f50.5" };
+    char mode_line[8], rate_line[20], report_line[64];
+    CHECK(T_JOG_DEFAULT_PPS == 500u && T_JOG_MAX_PPS == 20000u);
+    reset_fixture(); CHECK(s_jog_pps == 500u);
+    run_cmd("f500"); CHECK(strstr(last_message, "ERR") != NULL);
+    for (int mode = 24; mode <= 27; ++mode) {
+        snprintf(mode_line, sizeof mode_line, "%d", mode);
+        for (unsigned k = 0u; k < sizeof rates / sizeof rates[0]; ++k) {
+            unsigned rate = rates[k];
+            unsigned count = rate == 20000u ? 100000u : 10u;
+            reset_fixture(); run_cmd(mode_line);
+            snprintf(rate_line, sizeof rate_line, "f%u", rate); run_cmd(rate_line);
+            CHECK(s_jog_pps == rate && s_round == R_READY && pulse_calls == 0 &&
+                  strstr(last_message, "ERR") == NULL);
+            snprintf(rate_line, sizeof rate_line, "nr%u", count); run_cmd(rate_line); run_cmd("g");
+            snprintf(report_line, sizeof report_line, "pps=%u", rate);
+            CHECK(strstr(last_message, report_line) != NULL && host_timer_pps == rate && host_timer_active);
+            uint32_t start = host_tick;
+            uint32_t elapsed = jog_host_expected_ms(count);
+            CHECK(jog_host_ticks(count) == 0);
+            CHECK(s_round == R_DONE && pulse_calls == (int)count && host_tick - start == elapsed &&
+                  s_jog_out_ms == elapsed && strstr(last_message, report_line) != NULL);
+            if (mode >= 26) {
+                CHECK(jog_host_service_ms(T_JOG_RETURN_WAIT_MS) == 0);
+                CHECK(s_round == R_RET && pulse_calls == (int)count && host_timer_active);
+                start = host_tick;
+                elapsed = jog_host_expected_ms(count);
+                CHECK(jog_host_ticks(count) == 0);
+                CHECK(s_round == R_READY && pulse_calls == (int)(2u * count) && host_tick - start == elapsed &&
+                      s_jog_back_ms == elapsed && s_jog_pps == rate && s_jog_request == (int32_t)count &&
+                      !host_timer_active);
+                CHECK(strstr(last_message, "estimate_only=1 repeat_g=1") != NULL &&
+                      strstr(last_message, report_line) != NULL);
+                run_cmd("g");
+                CHECK(s_round == R_RUN && s_active_test == 2u && host_timer_pps == rate &&
+                      s_jog_request == (int32_t)count && strstr(last_message, report_line) != NULL);
+                if (rate == 20000u) {
+                    /* The largest count repeats a COMPLETE high-rate pair,
+                     * not merely the second g's startup message. */
+                    CHECK(jog_host_ticks(count) == 0 && s_round == R_DONE && pulse_calls == (int)(3u * count));
+                    CHECK(jog_host_service_ms(T_JOG_RETURN_WAIT_MS) == 0 && s_round == R_RET);
+                    CHECK(jog_host_ticks(count) == 0 && s_round == R_READY &&
+                          pulse_calls == (int)(4u * count) && s_active_test == 2u &&
+                          s_jog_request == (int32_t)count && s_jog_pps == 20000u && !host_timer_active);
+                    run_cmd("g"); CHECK(s_round == R_RUN && s_active_test == 3u);
+                }
+                run_cmd("g"); CHECK(s_round == R_READY && s_jog_pps == rate && s_jog_request == 0);
+            } else {
+                run_cmd("g"); CHECK(s_round == R_READY && pulse_calls == (int)count && s_jog_pps == rate);
+            }
+        }
+    }
+
+    reset_fixture(); run_cmd("27"); run_cmd("f333");
+    for (unsigned i = 0u; i < sizeof invalid / sizeof invalid[0]; ++i) {
+        run_cmd(invalid[i]);
+        CHECK(strstr(last_message, "ERR") != NULL && s_jog_pps == 333u &&
+              s_round == R_READY && pulse_calls == 0);
+    }
+    run_cmd("v100");
+    CHECK(strstr(last_message, "JOG_USE_F_PPS") != NULL && s_jog_pps == 333u);
+    for (int mode = 24; mode <= 27; ++mode) {
+        snprintf(mode_line, sizeof mode_line, "%d", mode); run_cmd(mode_line);
+        CHECK(s_jog_pps == 333u && s_jog_request == 0 && pulse_calls == 0);
+    }
+    run_cmd("nl1"); run_cmd("g");
+    CHECK(host_timer_pps == 333u && strstr(last_message, "pps=333") != NULL);
+    run_cmd("g");
+    CHECK(s_round == R_READY && s_jog_pps == 333u && s_jog_request == 0);
+
+    for (int mode = 26; mode <= 27; ++mode) {
+        snprintf(mode_line, sizeof mode_line, "%d", mode);
+        for (unsigned phase = 0u; phase < 3u; ++phase) {
+            reset_fixture(); run_cmd(mode_line); run_cmd("f333"); run_cmd("nl20"); run_cmd("g");
+            CHECK(jog_host_ticks(phase == 0u ? 7u : 20u) == 0);
+            if (phase == 1u) CHECK(s_round == R_DONE);
+            else if (phase == 2u) {
+                CHECK(jog_host_service_ms(T_JOG_RETURN_WAIT_MS) == 0);
+                CHECK(s_round == R_RET && jog_host_ticks(7u) == 0);
+            } else CHECK(s_round == R_RUN);
+            int before = pulse_calls;
+            run_cmd("f50");
+            CHECK(strstr(last_message, "ERR") != NULL && s_jog_pps == 333u &&
+                  host_timer_pps == 333u && pulse_calls == before);
+            run_cmd("v100");
+            CHECK(strstr(last_message, "JOG_USE_F_PPS") != NULL && s_jog_pps == 333u);
+            run_cmd("g"); CHECK(jog_host_service_ms(1000u) == 0);
+            CHECK(s_round == R_READY && pulse_calls == before);
+        }
+    }
+    puts("jog frequency: default500, f1/50/333/500/1000/2000/5000/10000/20000, range20001 rejection, active locks, v-use-f, mode/repeat retention and virtual TIM7 timing passed");
+    return 0;
+}
+
+static int check_jog_clock_isolation(void)
+{
+    reset_fixture(); CHECK(jog_host_service_ms(1000u) == 0);
+    CHECK(pulse_calls == 0 && s_round == R_READY && s_jog_clock.remaining == 0u &&
+          !host_timer_active && host_timer_start_calls == 0u);
+    run_cmd("27"); CHECK(jog_host_service_ms(100u) == 0);
+    run_cmd("nr100"); CHECK(jog_host_service_ms(100u) == 0);
+    CHECK(pulse_calls == 0 && s_round == R_READY);
+    run_cmd("f20000"); run_cmd("g");
+    CHECK(host_timer_active && host_timer_period_us == 50u && pulse_calls == 0);
+    CHECK(jog_host_service_ms(1u) == 0);
+    CHECK(pulse_calls == 0); /* All first-millisecond IRQs respect DIR setup. */
+    for (unsigned i = 0u; i < 20u; ++i) CHECK(jog_host_timer_event() == 0);
+    CHECK(pulse_calls == 1 && s_round == R_RUN);
+    uint32_t shared_ms = host_tick;
+    for (unsigned i = 0u; i < 10u; ++i) CHECK(jog_host_timer_event() == 0);
+    CHECK(pulse_calls == 11 && host_tick == shared_ms); /* Distinct IRQs in one HAL ms are valid. */
+    for (unsigned i = 0u; i < 100u; ++i) tick();
+    CHECK(pulse_calls == 11 && s_jog_done == 11u); /* DefaultTask never creates STEP. */
+    unsigned stops_before = host_timer_stop_calls;
+    run_cmd("g");
+    CHECK(!host_timer_active && host_timer_stop_calls > stops_before && s_jog_request == 0);
+    test_stepper_timer_irq(); /* Even an already-pending stale IRQ is inert after cancellation. */
+    CHECK(jog_host_service_ms(1000u) == 0 && pulse_calls == 11);
+
+    /* A delayed DefaultTask callback does not emit pulses. A pending TIM7
+     * interrupt handles at most one event; it does not replay missed periods. */
+    reset_fixture(); run_cmd("25"); run_cmd("f500"); run_cmd("nr10"); run_cmd("g");
+    host_tick += 1000u;
+    for (unsigned i = 0u; i < 100u; ++i) tick();
+    CHECK(pulse_calls == 0 && s_jog_clock.remaining == 10u && s_round == R_RUN);
+    host_timer_sync_hal();
+    unsigned uart_before = host_uart_calls;
+    unsigned rephase_before = host_timer_rephase_calls;
+    test_stepper_timer_irq();
+    CHECK(pulse_calls == 1 && s_jog_clock.remaining == 9u && host_uart_calls == uart_before &&
+          host_timer_rephase_calls == rephase_before + 1u &&
+          host_timer_next_us == host_timer_us + host_timer_period_us);
+    CHECK(jog_host_timer_event() == 0 && pulse_calls == 2 &&
+          host_timer_next_us == host_timer_us + host_timer_period_us);
+    run_cmd("a"); CHECK(jog_host_service_ms(1000u) == 0 && pulse_calls == 2);
+
+    /* Finishing while the UART/report task is delayed cannot add any STEP. */
+    reset_fixture(); run_cmd("25"); run_cmd("f1000"); run_cmd("nr3"); run_cmd("g");
+    for (unsigned i = 0u; i < 4u; ++i) CHECK(jog_host_timer_event() == 0);
+    CHECK(pulse_calls == 3 && s_round == R_RUN && s_jog_clock.completed == 3u &&
+          s_jog_clock.remaining == 0u && s_jog_done == 0u && !host_timer_active);
+    host_tick += 3000u; host_timer_sync_hal(); test_stepper_timer_irq();
+    CHECK(pulse_calls == 3 && s_round == R_RUN);
+    tick();
+    CHECK(s_round == R_DONE && pulse_calls == 3 && s_jog_done == 3u && s_jog_out_ms == 4u &&
+          strstr(last_message, "out_ms=4") != NULL);
+    CHECK(jog_host_service_ms(1000u) == 0 && s_round == R_DONE && pulse_calls == 3);
+
+    /* Waiting starts at the last pulse, not at a delayed DONE message. */
+    reset_fixture(); run_cmd("27"); run_cmd("f1000"); run_cmd("nr3"); run_cmd("g");
+    for (unsigned i = 0u; i < 4u; ++i) CHECK(jog_host_timer_event() == 0);
+    host_tick += 3000u; host_timer_sync_hal();
+    CHECK(pulse_calls == 3 && s_round == R_RUN);
+    tick(); CHECK(s_round == R_DONE && pulse_calls == 3 && s_jog_out_ms == 4u);
+    tick(); CHECK(s_round == R_RET && pulse_calls == 3 && host_timer_active);
+    CHECK(jog_host_timer_event() == 0 && pulse_calls == 3);
+    CHECK(jog_host_timer_event() == 0 && pulse_calls == 4);
+    run_cmd("0"); CHECK(jog_host_service_ms(1000u) == 0 && pulse_calls == 4 && s_jog_request == 0);
+
+    /* Millisecond wrap uses unsigned elapsed arithmetic without a pulse burst. */
+    reset_fixture(); run_cmd("27"); run_cmd("f1000"); run_cmd("nr3");
+    host_tick = UINT32_MAX - 1u; run_cmd("g");
+    CHECK(jog_host_timer_event() == 0 && pulse_calls == 0);
+    CHECK(jog_host_timer_event() == 0 && host_tick == 0u && pulse_calls == 1);
+    CHECK(jog_host_ticks(2u) == 0);
+    CHECK(s_round == R_DONE && pulse_calls == 3 && s_jog_out_ms == 4u);
+    run_cmd("g");
+
+    /* Clock failure cannot leave a job running forever or initiate a return. */
+    reset_fixture(); run_cmd("27"); run_cmd("f20000"); run_cmd("nr1000");
+    host_timer_start_fail = 1; run_cmd("g");
+    CHECK(s_round == R_READY && !host_timer_active && s_jog_clock.remaining == 0u &&
+          pulse_calls == 0 && s_jog_request == 0 && strstr(last_message, "ERR JOG_CLOCK_NOT_STARTED") != NULL);
+    CHECK(jog_host_service_ms(3000u) == 0 && pulse_calls == 0 && s_round == R_READY);
+    unsigned starts_before = host_timer_start_calls;
+    run_cmd("g");
+    CHECK(strstr(last_message, "ERR SET_N") != NULL && s_round == R_READY &&
+          pulse_calls == 0 && host_timer_start_calls == starts_before);
+    host_timer_start_fail = 0; run_cmd("nr3"); run_cmd("g");
+    CHECK(jog_host_ticks(3u) == 0 && s_round == R_DONE && pulse_calls == 3);
+    host_timer_start_fail = 1;
+    CHECK(jog_host_service_ms(T_JOG_RETURN_WAIT_MS) == 0);
+    CHECK(s_round == R_READY && !host_timer_active && s_jog_clock.remaining == 0u && pulse_calls == 3 &&
+          s_jog_request == 0 && strstr(last_message, "ERR JOG_RETURN_CLOCK_NOT_STARTED") != NULL);
+    CHECK(jog_host_service_ms(3000u) == 0 && pulse_calls == 3);
+    starts_before = host_timer_start_calls; run_cmd("g");
+    CHECK(strstr(last_message, "ERR SET_N") != NULL && s_round == R_READY &&
+          pulse_calls == 3 && host_timer_start_calls == starts_before);
+    puts("jog TIM7 engine: boot inert, 2ms DIR gate, high-rate same-HAL-ms IRQs, one STEP/no UART per IRQ, delayed report isolation, clock failure and uint32 wrap passed");
+    return 0;
+}
+
+static int check_jog_no_return_cancellation(void)
+{
+    static const char *const stops[] = { "g", "a", "0" };
+    char mode_line[8], request_line[16];
+    for (int mode = 24; mode <= 25; ++mode) {
+        snprintf(mode_line, sizeof mode_line, "%d", mode);
+        for (unsigned dir = 0u; dir < 2u; ++dir) {
+            snprintf(request_line, sizeof request_line, "n%c500", dir ? 'r' : 'l');
+            for (unsigned phase = 0u; phase < 2u; ++phase) {
+                for (unsigned key = 0u; key < sizeof stops / sizeof stops[0]; ++key) {
+                    reset_fixture(); run_cmd(mode_line); run_cmd("f1000"); run_cmd(request_line); run_cmd("g");
+                    CHECK(jog_host_ticks(phase ? 500u : 7u) == 0);
+                    int before = pulse_calls;
+                    unsigned clock_stops = host_timer_stop_calls;
+                    run_cmd(stops[key]);
+                    CHECK(s_jog_clock.remaining == 0u && pulse_calls == before &&
+                          s_round == (key == 0u && phase == 0u ? R_DONE : R_READY) &&
+                          !host_timer_active && host_timer_stop_calls > clock_stops);
+                    CHECK(jog_host_service_ms(3000u) == 0);
+                    CHECK(pulse_calls == before && !host_abort && s_jog_pps == 1000u);
+                    if (s_round == R_DONE) {
+                        run_cmd("g"); CHECK(jog_host_service_ms(100u) == 0);
+                        CHECK(s_round == R_READY && pulse_calls == before);
+                    }
+                }
+            }
+        }
+    }
+    puts("jog 24/25: both directions OUT/DONE g/a/0 stop the TIM7 clock without extra STEP or auto-return passed");
+    return 0;
+}
+
+static int check_servo_full_range_router(void)
+{
+    static const unsigned valid[] = { 500u, 501u, 1000u, 1400u, 1800u, 2499u, 2500u };
+    static const char *const invalid_suffix[] = {
+        "499", "2501", "-1", "-500", "", "500x", "500.5", "2147483648"
+    };
+    static const char *const stops[] = { "g", "a", "0" };
+    static const char *const active_writes[] = {
+        "su500", "su2500", "u500", "u2500", "co", "cc", "24", "29"
+    };
+    char command[32], selection[8];
+
+    /* Immediate su is independent of the mode28/29 target slot. Rejected
+     * inputs neither clamp-and-move nor disturb a previously valid command. */
+    reset_fixture();
+    CHECK(ARM_SERVO_START_US == 1150u && host_servo == ARM_SERVO_START_US && servo_calls == 0);
+    for (unsigned k = 0u; k < sizeof valid / sizeof valid[0]; ++k) {
+        int calls = servo_calls;
+        snprintf(command, sizeof command, "su%u", valid[k]); run_cmd(command);
+        CHECK(host_servo == valid[k] && servo_calls == calls + 1 &&
+              s_servo_target_us == 0u && strstr(last_message, "OK SERVO us=") != NULL);
+    }
+    for (unsigned k = 0u; k < sizeof invalid_suffix / sizeof invalid_suffix[0]; ++k) {
+        int calls = servo_calls;
+        snprintf(command, sizeof command, "su%s", invalid_suffix[k]); run_cmd(command);
+        CHECK(host_servo == 2500u && servo_calls == calls && s_servo_target_us == 0u &&
+              strstr(last_message, "ERR SERVO_RANGE") != NULL);
+    }
+    run_cmd("co"); CHECK(host_servo == 1000u);
+    run_cmd("cc"); CHECK(ARM_SERVO_GRIP_US == 1700u && host_servo == ARM_SERVO_GRIP_US);
+
+    /* u is only a READY parameter write in either servo mode; it is never
+     * an actuator write until g. Both new software endpoints are exercised. */
+    for (int mode = 28; mode <= 29; ++mode) {
+        snprintf(selection, sizeof selection, "%d", mode);
+        reset_fixture(); run_cmd(selection); run_cmd("g");
+        CHECK(s_round == R_READY && servo_calls == 0 &&
+              strstr(last_message, "ERR SET_U first") != NULL);
+        for (unsigned k = 0u; k < sizeof valid / sizeof valid[0]; ++k) {
+            snprintf(command, sizeof command, "u%u", valid[k]); run_cmd(command);
+            CHECK(s_round == R_READY && s_servo_target_us == valid[k] &&
+                  host_servo == ARM_SERVO_START_US && servo_calls == 0 &&
+                  strstr(last_message, "OK SERVO_TARGET") != NULL);
+        }
+        for (unsigned k = 0u; k < sizeof invalid_suffix / sizeof invalid_suffix[0]; ++k) {
+            snprintf(command, sizeof command, "u%s", invalid_suffix[k]); run_cmd(command);
+            CHECK(s_servo_target_us == 2500u && host_servo == ARM_SERVO_START_US && servo_calls == 0 &&
+                  s_round == R_READY && strstr(last_message, "ERR U_RANGE") != NULL);
+        }
+        run_cmd("g");
+        CHECK(host_servo == 2500u && servo_calls == 1 && s_round == R_DONE &&
+              s_servo_origin_us == ARM_SERVO_START_US && s_active_test == 1u);
+        run_cmd("g"); CHECK(s_round == R_READY && host_servo == 2500u && servo_calls == 1);
+        run_cmd(selection); CHECK(s_servo_target_us == 0u && servo_calls == 1);
+        run_cmd("g"); CHECK(s_round == R_READY && servo_calls == 1);
+    }
+    reset_fixture(); run_cmd("u500");
+    CHECK(s_msel == R_FREE && host_servo == ARM_SERVO_START_US && servo_calls == 0 &&
+          strstr(last_message, "ERR U_SELECT_MODE28_OR29") != NULL);
+    for (int mode = 24; mode <= 27; ++mode) {
+        snprintf(selection, sizeof selection, "%d", mode);
+        reset_fixture(); run_cmd(selection); run_cmd("u2500");
+        CHECK(s_servo_target_us == 0u && host_servo == ARM_SERVO_START_US && servo_calls == 0 &&
+              strstr(last_message, "ERR U_SELECT_MODE28_OR29") != NULL);
+    }
+
+    /* 28 returns to the actual command preceding each g, including endpoints,
+     * exactly after the scheduled two-second hold. READY g repeats its slot. */
+    for (unsigned endpoint = 0u; endpoint < 2u; ++endpoint) {
+        unsigned origin = endpoint ? 500u : 2500u;
+        unsigned target = endpoint ? 2500u : 500u;
+        reset_fixture(); run_cmd("28");
+        snprintf(command, sizeof command, "su%u", origin); run_cmd(command);
+        snprintf(command, sizeof command, "u%u", target); run_cmd(command);
+        CHECK(host_servo == origin && servo_calls == 1);
+        run_cmd("g"); CHECK(host_servo == target && servo_calls == 2 && s_round == R_DONE);
+        host_tick += T_SERVO_RETURN_WAIT_MS - 1u; tick();
+        CHECK(host_servo == target && servo_calls == 2 && s_round == R_DONE);
+        host_tick++; tick();
+        CHECK(host_servo == origin && servo_calls == 3 && s_round == R_READY &&
+              s_servo_target_us == target && strstr(last_message, "RETURN_COMMAND_SENT") != NULL);
+        run_cmd("g"); CHECK(host_servo == target && servo_calls == 4 && s_active_test == 2u);
+        host_tick += T_SERVO_RETURN_WAIT_MS; tick();
+        CHECK(host_servo == origin && servo_calls == 5 && s_round == R_READY);
+    }
+
+    /* 29 has no timed return. All stop keys keep the current pulse rather
+     * than command the origin, and suppress mode28's pending automatic move. */
+    for (int mode = 28; mode <= 29; ++mode) {
+        snprintf(selection, sizeof selection, "%d", mode);
+        for (unsigned key = 0u; key < sizeof stops / sizeof stops[0]; ++key) {
+            reset_fixture(); run_cmd(selection); run_cmd("u500"); run_cmd("g");
+            CHECK(s_round == R_DONE && host_servo == 500u && servo_calls == 1);
+            host_tick += mode == 28 ? T_SERVO_RETURN_WAIT_MS - 1u : 10000u; tick();
+            CHECK(s_round == R_DONE && host_servo == 500u && servo_calls == 1);
+            run_cmd(stops[key]);
+            CHECK(s_round == R_READY && s_servo_hold_t0 == 0u && host_servo == 500u &&
+                  servo_calls == 1 && strstr(last_message, "return_cancelled=1") != NULL);
+            host_tick += 10000u; tick();
+            CHECK(s_round == R_READY && host_servo == 500u && servo_calls == 1 && !host_abort);
+        }
+    }
+
+    /* Active servo return/hold cannot be overwritten by su/u/co/cc or mode
+     * selection. Wheel motion and a non-BOOT mission reject servo writes too. */
+    for (int mode = 28; mode <= 29; ++mode) {
+        snprintf(selection, sizeof selection, "%d", mode);
+        reset_fixture(); run_cmd(selection); run_cmd("u2500"); run_cmd("g");
+        for (unsigned k = 0u; k < sizeof active_writes / sizeof active_writes[0]; ++k) {
+            run_cmd(active_writes[k]);
+            CHECK(s_msel == mode && s_round == R_DONE && s_servo_target_us == 2500u &&
+                  host_servo == 2500u && servo_calls == 1 && strstr(last_message, "ERR") != NULL);
+        }
+        run_cmd("g"); CHECK(s_round == R_READY && host_servo == 2500u && servo_calls == 1);
+    }
+    reset_fixture(); run_cmd("15"); run_cmd("v100"); run_cmd("d100"); run_cmd("g");
+    run_cmd("su500"); run_cmd("u2500");
+    CHECK(s_round == R_RUN && s_msel == 15 && servo_calls == 0 && host_servo == ARM_SERVO_START_US);
+    reset_fixture(); run_cmd("28"); host_state = MS_EOD;
+    run_cmd("su500"); run_cmd("u2500"); run_cmd("co"); run_cmd("cc");
+    CHECK(s_servo_target_us == 0u && host_servo == ARM_SERVO_START_US && servo_calls == 0);
+    puts("servo router: 500..2500 bounds, invalid/no-output, u READY-only/g start, exact 28 return and 29 hold, g/a/0 cancel, active/mission locks passed");
+    return 0;
 }
 
 static int check_vision33_router(void)
@@ -765,7 +1485,7 @@ static int check_vision33_router(void)
     for (unsigned i = 0; i < sizeof writes / sizeof writes[0]; i++) {
         run_cmd(writes[i]);
         CHECK(s_msel == 33 && s_round == R_RUN && strstr(last_message, "VISION_DIAG_ACTIVE") != NULL);
-        CHECK(host_servo == 1400u && pulse_calls == 0 && servo_calls == 0 &&
+        CHECK(host_servo == ARM_SERVO_START_US && pulse_calls == 0 && servo_calls == 0 &&
               last_x == 0.0f && last_y == 0.0f && last_w == 0.0f && !laser_state);
     }
     CHECK(zero_calls == 0 && prepare_calls == 0 && start_calls == 0 && trial_start_calls == 0);
@@ -910,7 +1630,7 @@ int main(void)
     CHECK(s_round == R_READY && last_w == 0.0f);
     reset_fixture(); run_cmd("30"); run_cmd("g"); tick(); run_cmd("0");
     CHECK(s_round == R_READY && last_w == 0.0f);
-    reset_fixture(); run_cmd("42"); CHECK(s_msel == R_FREE && strstr(last_message, "MODE_RANGE") != NULL);
+    reset_fixture(); run_cmd("44"); CHECK(s_msel == R_FREE && strstr(last_message, "MODE_RANGE") != NULL);
     for (int mode = 20; mode <= 22; mode += 2) {
         reset_fixture(); s_msel = mode; run_cmd("g"); tick();
         CHECK(s_round == R_RUN && last_w == T_TURN_MAX_W);
@@ -960,6 +1680,12 @@ int main(void)
     CHECK(check_route_cross_heading_restart(34u) == 0);
     CHECK(check_trial32_router() == 0);
     CHECK(check_vision33_router() == 0);
+    CHECK(check_jog_range_and_repeat() == 0);
+    CHECK(check_jog_cancellation_phases() == 0);
+    CHECK(check_jog_frequency_command() == 0);
+    CHECK(check_jog_clock_isolation() == 0);
+    CHECK(check_jog_no_return_cancellation() == 0);
+    CHECK(check_servo_full_range_router() == 0);
     puts("real g router: pending/running/terminal mission stop, a alias, closed gate, CRLF/idle framing, wheel/distance/turn/IMU/jog/servo/return passed");
     return 0;
 }

@@ -10,8 +10,18 @@
 #define T_IDLE_MS    20u
 #define T_V_MAX      600
 #define T_D_MAX      20000
-#define T_MODE_MAX   41
-#define T_JOG_MAX_STEPS 50u
+#define T_MODE_MAX   43
+#define T_GRAB_MODE  42
+/* Independent grab bench: counts are STEP pulses, not sensed positions. */
+#define T_GRAB_EXTEND_DEFAULT_STEPS 2500u /* User measured nl2500 -> forward90mm. */
+#define T_GRAB_DOWN_DEFAULT_STEPS   0u
+#define T_GRAB_GRIP_DEFAULT_US    1900u /* Independent42 ball/hostage bench; not legacy mission/cc close. */
+#define T_GRAB_SETTLE_MS            250u
+#define T_GRAB_HOLD_MS              2000u
+#define T_GRAB_SERVO_RESET_MS       2000u
+#define T_JOG_MAX_STEPS 100000u /* Finite bench pulse count; not millimetres or a calibrated travel limit. */
+#define T_JOG_DEFAULT_PPS 500u  /* Bench STEP frequency only; not chassis v or calibrated cm/s. */
+#define T_JOG_MAX_PPS 20000u    /* TIM7-paced bench range; not a verified motor/driver speed limit. */
 #define T_JOG_RETURN_WAIT_MS 2000u
 #define T_SERVO_RETURN_WAIT_MS 2000u
 #define T_DIST_STILL_MS 250u

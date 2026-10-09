@@ -21,5 +21,8 @@ float   imu_pitch_deg(void);         /* 俯仰 ±180 */
 float   imu_roll_deg(void);          /* 横滚 ±180 */
 uint8_t imu_ok(void);                /* 1 = 最近解析出有效姿态(链路活+帧校验过) */
 uint32_t imu_last_valid_age_ms(void);/* 距最近有效姿态帧 ms；从未收到返回 UINT32_MAX */
+/* Atomic same-frame tilt pair + receive timestamp; 0 if stale/unavailable.
+ * This neither resets the sensor nor exposes acceleration. */
+uint8_t imu_tilt_snapshot(float *pitch_deg, float *roll_deg, uint32_t *sample_ms);
 
 #endif /* APP_IMU_H */

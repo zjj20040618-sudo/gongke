@@ -213,7 +213,7 @@ static int check_shared_tuning_and_legacy_isolation(void)
     run_cmd("30"); CHECK(turn_target_deg() == -92.0f);
     CHECK(wire_boot() == 0); run_cmd("34");
     CHECK(s_route_heading_kp == 0.3f && s_route_forward_ff_ratio == -0.00625f);
-    run_cmd("42"); CHECK(s_msel == 34 && strstr(last_message, "MODE_RANGE") != NULL);
+    run_cmd("44"); CHECK(s_msel == 34 && strstr(last_message, "MODE_RANGE") != NULL);
     puts("route34 tuning: shared31 RAM ykp/fff, explicit MODE34 report,31 reopens QR; manual/32/global/90/180 unchanged and power-on defaults passed");
     return 0;
 }

@@ -27,6 +27,8 @@
 /* USER CODE BEGIN Includes */
 #include "robot.h"
 #include "board_pins.h"
+#include "arm.h"
+#include "proto.h" /* Opt-in boot-session RNG clock contract. */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -152,6 +154,12 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLN = 336;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
   RCC_OscInitStruct.PLL.PLLQ = 4;
+#if PROTO_BOOT_SESSION_ENABLE
+  /* PLL48CLK=48MHz for RNG; SYSCLK/APB/motor timers remain unchanged.
+   * Keep this override after Cube regeneration. Nonce code fails closed
+   * if the live clock tree does not match. Default legacy build uses Q4. */
+  RCC_OscInitStruct.PLL.PLLQ = 7;
+#endif
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -205,10 +213,13 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
-  /* 无论错误发生在初始化还是运行期，先关闭电机总使能与激光。 */
+  /* 无论错误发生在初始化还是运行期，关闭底盘、激光与步进时钟。 */
+  __disable_irq();
+  arm_stepper_clock_stop();
+  ARM_AXIS0_STEP_GPIO_Port->BSRR = ARM_AXIS0_STEP_Pin;
+  ARM_AXIS1_STEP_GPIO_Port->BSRR = ARM_AXIS1_STEP_Pin;
   GPIOC->BSRR = (uint32_t)GPIO_PIN_8 << 16u;
   bp_laser_emergency_off();
-  __disable_irq();
   while (1)
   {
   }

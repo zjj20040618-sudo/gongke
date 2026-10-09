@@ -13,6 +13,7 @@
 #define proto_qr_cancel real_proto_qr_cancel
 #define proto_receive_end real_proto_receive_end
 #define proto_qr_get real_proto_qr_get
+#define proto_target_rank_get real_proto_target_rank_get
 #include "../App/proto.c"
 #undef proto_stats_get
 #undef proto_wire_diag_get
@@ -23,6 +24,7 @@
 #undef proto_qr_cancel
 #undef proto_receive_end
 #undef proto_qr_get
+#undef proto_target_rank_get
 
 static unsigned wire_commands, notice_calls, wire_bad;
 static uint16_t wire_request;
@@ -32,7 +34,7 @@ static int32_t noticed_qr[3];
 static int stopped(void)
 {
     return last_x == 0.0f && last_y == 0.0f && last_w == 0.0f &&
-           !laser_state && !pulse_calls && !servo_calls && !s_go;
+           !laser_state && !host_timer_active && !servo_calls && !s_go;
 }
 
 static void wire_tx(const uint8_t *packet, uint16_t length)
@@ -179,6 +181,7 @@ static int wire_boot(void)
     host_qr_begin_hook = wire_begin_hook; host_qr_cancel_hook = wire_cancel_hook;
     host_receive_end_hook = wire_receive_end_hook;
     host_qr_get_hook = real_proto_qr_get;
+    host_rank_get_hook = real_proto_target_rank_get;
     wire_commands = notice_calls = wire_bad = 0u; wire_request = 0u;
     wire_mode = wire_opcode = wire_task = wire_digit = 0u;
     memset(noticed_qr, 0, sizeof noticed_qr);
@@ -212,7 +215,7 @@ static int check_r1_yaw_hold_before_qr_release(void)
     uint16_t request = wire_request;
     run_cmd("31"); wire_sync();
     CHECK(s_seq_state == SQ_READY && stopped() && wire_request == request);
-    CHECK(route_seq_leg()->distance_mm == 520u && route_seq_leg()->speed_mms == 100.0f);
+    CHECK(route_seq_leg()->distance_mm == 535u && route_seq_leg()->speed_mms == 250.0f);
     CHECK(s_route_test_plan[0].distance_mm == 530u && s_bucket36_plan[0].distance_mm == 530u);
     wire_ack(request, 1u, 0u);
     uint8_t qr53[12] = {0x62u, (uint8_t)request, (uint8_t)(request >> 8), 7u, 0u,
@@ -222,7 +225,7 @@ static int check_r1_yaw_hold_before_qr_release(void)
     CHECK(!zero_calls && !s_active_test && wire_commands == 1u);
     run_cmd("g");
     CHECK(s_seq_state == SQ_STILL && stopped() && proto_qr_get(NULL) && wire_request == request);
-    CHECK(sequence_start_stage() == 0 && s_seq_stage == 0u && s_dist_target == -520.0f && s_v == 100.0f);
+    CHECK(sequence_start_stage() == 0 && s_seq_stage == 0u && s_dist_target == -535.0f && s_v == 250.0f);
     CHECK(s_dist_align_enabled && s_seq_state == SQ_RUN && proto_qr_get(NULL) && wire_commands == 1u);
     host_lateral = s_dist_odo0 + s_dist_target; host_yaw = 3.0f; wire_poll();
     CHECK(s_round == R_BRAKE && s_seq_state == SQ_RUN && s_seq_stage == 0u && stopped());
@@ -231,9 +234,20 @@ static int check_r1_yaw_hold_before_qr_release(void)
     host_tick += 20u; wire_poll();
     CHECK(s_round == R_ALIGN && last_w < 0.0f && last_x == 0.0f && last_y == 0.0f);
     CHECK(s_seq_stage == 0u && proto_qr_get(NULL) && wire_commands == 1u);
+    /*31 uses continuous original-heading correction without a zero crossing
+     * or pulse/gap requirement. Exact0.4 is outside its strict band. A
+     * same-side0.3 residual and true zero both brake and enter the still hold,
+     * but neither a legal QR nor the first in-band sample bypasses400ms. */
+    host_yaw = s_dist_heading0 + 0.4f; wire_poll();
+    CHECK(s_round == R_ALIGN && !s_dist_align_hold && s_seq_stage == 0u &&
+          last_w <= -0.18f && proto_qr_get(NULL));
+    host_yaw = s_dist_heading0 + 0.3f; wire_poll();
+    CHECK(s_round == R_ALIGN && s_dist_align_hold && s_seq_stage == 0u &&
+          stopped() && proto_qr_get(NULL));
     host_yaw = s_dist_heading0; wire_poll();
-    CHECK(s_round == R_ALIGN && stopped() && s_seq_stage == 0u);
-    host_tick += T_DIST_ALIGN_STABLE_MS - 1u; wire_poll();
+    CHECK(s_round == R_ALIGN && s_dist_align_hold && s_seq_stage == 0u &&
+          stopped() && proto_qr_get(NULL));
+    host_tick += ROUTE31_STABLE_MS - 1u; wire_poll();
     CHECK(s_round == R_ALIGN && s_seq_state == SQ_RUN && s_seq_stage == 0u && proto_qr_get(NULL));
     host_tick += 1u; wire_poll();
     CHECK(s_seq_state == SQ_QR_WAIT && s_seq_stage == 0u && stopped() && proto_qr_get(NULL));
@@ -241,7 +255,7 @@ static int check_r1_yaw_hold_before_qr_release(void)
     CHECK(s_seq_state == SQ_STILL && s_seq_stage == 1u && s_msel == 16 && stopped());
     CHECK(s_seq_qr[0] == 1 && s_seq_qr[1] == 2 && s_seq_qr[2] == 3);
     CHECK(wire_commands == 1u && wire_request == request && host_receive_closed && !s_receiving);
-    puts("route31 R1-only520/v100: select starts QR53 without motion; g preserves earlyQR; full original-yaw correction and700ms still hold precede QR release/R2; shared34/36 recipes stay530 passed");
+    puts("route31 R1-only535/v250: select starts QR53 without motion; g preserves earlyQR; exact0.4 corrects continuously, same-side0.3/exact0 brake with no crossing requirement; full400ms hold precedes QR release/R2; shared34/36 recipes stay530 passed");
     return 0;
 }
 static int check_early_and_r1_cache(void)
@@ -431,17 +445,17 @@ static int check_notice_transition_race(void)
 }
 static int check_complete_recipe_without_bucket(void)
 {
-    static const int modes[12] = {17,16,20,16,15,16,18,16,30,15,20,15};
-    static const int commands[12] = {-520,-650,90,-650,70,-190,730,-780,-90,2450,90,2125};
-    static const float speeds[12] = {100,100,100,300,20,100,100,100,100,100,100,100};
-    CHECK(ROUTE31_STAGES == 12u);
+    static const int modes[9] = {17,16,20,16,15,16,18,16,30};
+    static const int commands[9] = {-535,-630,90,-650,0,-190,800,-760,-90};
+    static const float speeds[9] = {250,200,100,300,40,200,250,200,100};
+    CHECK(ROUTE31_STAGES == 16u);
     CHECK(begin_qr_wait() == 0);
-    CHECK(s_dist_target == -520.0f && s_v == 100.0f && !host_target_calls);
+    CHECK(s_dist_target == -535.0f && s_v == 250.0f && !host_target_calls);
     uint16_t qr_request = wire_request;
     wire_ack(qr_request, 1u, 0u); wire_qr(qr_request, 1u, "213", 0, 0);
     CHECK(s_seq_stage == 1u && s_seq_state == SQ_STILL && stopped());
     unsigned qr_commands = wire_commands; /* R1 may have retried the same unACKed QR request. */
-    for (unsigned stage = 1u; stage < ROUTE31_STAGES; ++stage) {
+    for (unsigned stage = 1u; stage < 9u; ++stage) {
         CHECK(s_seq_stage == stage && s_seq_mode == 31);
         CHECK(route_seq_leg() == &s_route31_plan[stage]);
         CHECK(s_route31_plan[stage].mode == modes[stage]);
@@ -450,22 +464,24 @@ static int check_complete_recipe_without_bucket(void)
         CHECK(sequence_start_stage() == 0 && s_msel == modes[stage]);
         if (dist_mode()) {
             CHECK(s_dist_target == commands[stage] && s_v == speeds[stage] && s_dist_precise);
-            CHECK(s_dist_heading_kp == (stage == 3u || stage == 4u ? 0.0f : 0.3f));
+            CHECK(s_dist_heading_kp == (stage == 3u || stage == 4u ? 0.0f : stage == 6u ? 3.0f : 0.3f));
             CHECK(s_dist_ramp.acc == 700.0f && s_dist_ramp.dec == 350.0f);
-            CHECK(s_dist_ff_ratio == (stage == 9u || stage == 11u ? -0.00625f :
-                  stage == 1u || stage == 5u || stage == 7u ? 0.00625f : 0.0f));
+            CHECK(s_dist_ff_ratio == (stage == 1u || stage == 5u || stage == 7u ? 0.00625f : 0.0f));
         } else CHECK(turn_target_deg() == commands[stage]);
         CHECK(sequence_finish_stage() == 0); wire_sync();
-        CHECK(s_seq_state == (stage == 11u ? SQ_DONE : SQ_STILL));
+        CHECK(s_seq_state == (stage == 8u ? SQ_TASK : stage == 7u ? SQ_ARM_PREP : SQ_STILL));
         CHECK(s_seq_state != SQ_BUCKET_ALIGN && s_seq_state != SQ_MANUAL_D_WAIT);
-        CHECK(wire_commands == qr_commands && wire_request == qr_request && !wire_bad && notice_calls == 1u);
+        if (stage < 8u) CHECK(wire_commands == qr_commands && wire_request == qr_request);
+        CHECK(!wire_bad && notice_calls == 1u);
         CHECK(s_seq_qr[0] == 2 && s_seq_qr[1] == 1 && s_seq_qr[2] == 3);
-        CHECK(stopped() && !s_go);
+        CHECK((stage == 7u || stopped()) && last_x == 0.0f && last_y == 0.0f && last_w == 0.0f && !s_go);
     }
-    CHECK(s_msel == 31 && s_round == R_DONE && !s_receiving && !s_due && !host_target_calls);
+    CHECK(s_msel == 31 && s_round == R_RUN && s_receiving && host_target_calls == 1);
+    CHECK(host_target_task == PROTO_TASK_BALL && host_target_digit == 2u && s_seq_stage == ROUTE31_PAIR_STAGE);
+    CHECK(wire_opcode == 0x63u && wire_task == 1u && wire_digit == 2u && wire_request > qr_request);
     run_cmd("g"); host_tick += 10000u; wire_poll();
-    CHECK(s_seq_state == SQ_DONE && stopped() && wire_commands == qr_commands);
-    puts("route31: legal R1 QR -> exact12 crossing-v300/board70/right730/back780/left90 route; no bucket4/0 request or manuald gate; independent normal FF, post-yaw-before-next and terminal no-resume passed");
+    CHECK(s_seq_state == SQ_STOPPED && stopped() && !s_receiving);
+    puts("route31: legal R1 QR -> nine R2back630/crossing-v300/tilt-contact-v40/right800/back760/left90 road actions -> selected ball from R1 tuple; no old bucket detour/manuald; cancellation closes task passed");
     return 0;
 }
 static int check_route_bucket_manual_stop(unsigned mode)

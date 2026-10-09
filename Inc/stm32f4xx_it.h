@@ -58,6 +58,8 @@ void UART4_IRQHandler(void);
 void TIM6_DAC_IRQHandler(void);
 /* USER CODE BEGIN EFP */
 
+void TIM7_IRQHandler(void);
+
 /* USER CODE END EFP */
 
 #ifdef __cplusplus

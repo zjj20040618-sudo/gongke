@@ -1,4 +1,4 @@
-/* Real mode31 twelve-node motion-only route and retained mode34 bucket route,
+/* Real mode31 nine-node road prefix and retained mode34 bucket route,
  * plus real QR53/63/61/62 parsing. Filename is the historical runner entry.
  * Host stubs only: no device is flashed, moved, or physically accepted. */
 #define BUCKET36_FIXTURE_MAIN integrated_bucket_fixture_main
@@ -27,7 +27,7 @@ static int integrated_boot(unsigned mode, int ready_qr)
     host_target_hook = real_proto_send_target;
     run_cmd(mode == 31u ? "31" : "34"); wire_sync();
     CHECK(s_msel == (int)mode && s_seq_mode == mode && s_seq_state == SQ_READY && stopped());
-    CHECK(route_seq_stage_count() == (mode == 31u ? 12u : 15u) && !host_target_calls);
+    CHECK(route_seq_stage_count() == (mode == 31u ? 16u : 15u) && !host_target_calls);
     if (mode == 31u) {
         CHECK(s_receiving && !proto_qr_get(NULL));
         if (ready_qr) {
@@ -94,58 +94,66 @@ static int integrated_aim_current(void)
     return 0;
 }
 
-static int check_route31_qr53_twelve_motion_nodes(void)
+static int check_route31_qr53_road_prefix_to_ball(void)
 {
-    static const int modes[12] = {17,16,20,16,15,16,18,16,30,15,20,15};
-    static const int commands[12] = {-520,-650,90,-650,70,-190,730,-780,-90,2450,90,2125};
-    static const float speeds[12] = {100,100,100,300,20,100,100,100,100,100,100,100};
+    static const int modes[9] = {17,16,20,16,15,16,18,16,30};
+    static const int commands[9] = {-535,-630,90,-650,0,-190,800,-760,-90};
+    static const float speeds[9] = {250,200,100,300,40,200,250,200,100};
     CHECK(integrated_boot(31u, 1) == 0);
     CHECK(s_seq_state == SQ_READY && stopped() && notice_calls == 1u && proto_qr_get(NULL));
     uint16_t qr_request = wire_request;
     unsigned qr_commands = wire_commands;
     run_cmd("g");
-    for (unsigned stage = 0u; stage < 12u; ++stage) {
-        CHECK(s_seq_stage == stage && s_seq_state == SQ_STILL && sequence_start_stage() == 0);
+    for (unsigned stage = 0u; stage < 9u; ++stage) {
+        CHECK(s_seq_stage == stage && s_seq_state == (stage == 8u ? SQ_ARM_PREP : SQ_STILL) && sequence_start_stage() == 0);
         CHECK(route_seq_leg() == &s_route31_plan[stage] && s_msel == modes[stage] && s_seq_mode == 31u);
         CHECK(!route_seq_bucket_enabled() && !host_target_calls && !bucket_wire_calls);
         if (dist_mode()) {
             CHECK(s_dist_target == commands[stage] && s_v == speeds[stage] && s_dist_precise);
             CHECK(s_dist_align_enabled == (stage == 3u || stage == 4u ? 0u : 1u));
-            CHECK(s_dist_heading_kp == (stage == 3u || stage == 4u ? 0.0f : 0.3f));
-            CHECK(s_dist_ff_ratio == (stage == 9u || stage == 11u ? -0.00625f :
-                  stage == 1u || stage == 5u || stage == 7u ? 0.00625f : 0.0f));
-            CHECK(dist_lateral() ? last_y * commands[stage] > 0.0f : last_x * commands[stage] > 0.0f);
+            CHECK(s_dist_heading_kp == (stage == 3u || stage == 4u ? 0.0f : stage == 6u ? 3.0f : 0.3f));
+            CHECK(s_dist_ff_ratio == (stage == 1u || stage == 5u || stage == 7u ? 0.00625f : 0.0f));
+            CHECK(stage == 4u ? last_x == 40.0f && last_y == 0.0f :
+                  dist_lateral() ? last_y * commands[stage] > 0.0f : last_x * commands[stage] > 0.0f);
         } else {
             CHECK(turn_target_deg() == commands[stage]);
             CHECK(last_w * commands[stage] > 0.0f);
         }
         CHECK(sequence_finish_stage() == 0); wire_sync();
-        CHECK(s_seq_state == (stage == 11u ? SQ_DONE : SQ_STILL) && stopped());
+        CHECK(s_seq_state == (stage == 8u ? SQ_TASK : stage == 7u ? SQ_ARM_PREP : SQ_STILL));
+        CHECK(last_x == 0.0f && last_y == 0.0f && last_w == 0.0f);
+        if (stage != 7u) CHECK(stopped());
         CHECK(s_seq_state != SQ_BUCKET_ALIGN && s_seq_state != SQ_MANUAL_D_WAIT);
-        CHECK(!host_target_calls && !bucket_wire_calls && wire_request == qr_request && wire_commands == qr_commands);
-        CHECK(!laser_state && !host_laser_on_calls && !pulse_calls && !servo_calls && !s_go);
+        if (stage < 8u)
+            CHECK(!host_target_calls && !bucket_wire_calls && wire_request == qr_request && wire_commands == qr_commands);
+        CHECK(!laser_state && !host_laser_on_calls && pulse_calls == (stage == 8u ? 3200 : 0) && !servo_calls && !s_go);
     }
     CHECK(s_seq_qr[0] == 3 && s_seq_qr[1] == 3 && s_seq_qr[2] == 1 && notice_calls == 1u);
-    CHECK(!s_receiving && !s_due && !s_bucket36_back_mm && s_seq_stage == 11u && s_msel == 31);
+    CHECK(s_receiving && !s_bucket36_back_mm && s_seq_stage == 9u && s_msel == 31);
+    CHECK(host_target_calls == 1 && bucket_wire_calls == 1u && host_target_task == PROTO_TASK_BALL && host_target_digit == 3u);
+    CHECK(!proto_qr_get(NULL)); /* route factory uses the validated R1 snapshot */
     run_cmd("g"); run_cmd("d500"); host_tick += 60000u; wire_poll();
-    CHECK(s_seq_state == SQ_DONE && stopped() && !bucket_wire_calls && wire_commands == qr_commands);
-    puts("integrated31 realQR53: early legal331 remains through g/R1; exact12 nodes inclboard70/right730/back780/left90; originalheading correction ordinarylegs; no bucketrequest, manuald gate, arm orlaser; terminal noresume passed");
+    CHECK(s_seq_state == SQ_STOPPED && stopped() && !s_receiving);
+    puts("integrated31 realQR53: early331 stays through roadprefix, R2back630/tilt-contact-v40/right800/back760/left90; after nine road actions ball request starts from latched QR, no old2450/2125 road-only tail passed");
     return 0;
 }
 
 static int check_route31_all_motion_node_cancellations(void)
 {
     static const char *const keys[] = {"g", "a", "0"};
-    for (unsigned stage = 0u; stage < 12u; ++stage)
+    for (unsigned stage = 0u; stage < 9u; ++stage)
         for (unsigned phase = 0u; phase < 4u; ++phase)
             for (unsigned key = 0u; key < 3u; ++key) {
                 CHECK(integrated_boot(31u, 1) == 0); run_cmd("g");
                 s_seq_stage = (uint8_t)stage; route_seq_prepare();
+                if (phase >= 1u) CHECK(fixture_complete_route31_predeploy() == 0);
                 if (phase == 1u) {
                     host_tick += T_DIST_STILL_MS; wire_poll(); CHECK(s_seq_state == SQ_WAIT);
                 } else if (phase >= 2u) CHECK(sequence_start_stage() == 0);
                 if (phase == 3u) {
-                    if (dist_mode()) {
+                    if (route31_owner() && s_seq_stage == 4u) {
+                        CHECK(fixture_trigger_board_contact() == 0);
+                    } else if (dist_mode()) {
                         if (dist_lateral()) host_lateral = s_dist_odo0 + s_dist_target;
                         else host_fore = s_dist_odo0 + s_dist_target;
                     } else host_yaw = turn_target_deg();
@@ -162,14 +170,14 @@ static int check_route31_all_motion_node_cancellations(void)
                 CHECK(s_seq_state == SQ_STOPPED && s_seq_run == run && stopped());
                 CHECK(wire_commands == commands && !host_target_calls && !bucket_wire_calls);
             }
-    puts("integrated31 cancellation:144 g/a/0 across12 motionnodes x4phases; no bucketrequest/manualwait, lateQR/object cannot drive orresume passed");
+    puts("integrated31 cancellation:108 g/a/0 across9 roadprefix nodes x4phases; lateQR/object cannot drive orresume passed");
     return 0;
 }
 
 static int check_route31_turn_target_scope(void)
 {
     CHECK(integrated_boot(31u, 1) == 0); run_cmd("g");
-    static const unsigned stages[] = {2u, 8u, 10u};
+    static const unsigned stages[] = {2u, 8u, 13u};
     for (unsigned n = 0u; n < 3u; ++n) {
         s_seq_stage = (uint8_t)stages[n]; route_seq_prepare();
         CHECK(sequence_start_stage() == 0);
@@ -259,7 +267,7 @@ static int check_real_qr_gate_and_request_separation(void)
     wire_ack(integrated_qr_request, 2u, 0u); bucket_object(integrated_qr_request, 4u, 9, 506u, 640u, 0);
     integrated_qr53(integrated_qr_request, 7u, "123", 0);
     CHECK(s_seq_state == SQ_STOPPED && stopped() && !s_receiving && bucket_wire_calls == requests);
-    puts("integrated31 QR53: R1 waits indefinitely until matching61 + legal complete331; preACK/wrongrequest/badCRC/illegal rejected; afterright730 no bucket63 or WAIT_D; locallyclosed oldQR/bucket packets cannot drive; cancel drains late packets without STOP/IDLE passed");
+    puts("integrated31 QR53: R1 waits indefinitely until matching61 + legal complete331; preACK/wrongrequest/badCRC/illegal rejected; afterright800 no bucket63 or WAIT_D; locallyclosed oldQR/bucket packets cannot drive; cancel drains late packets without STOP/IDLE passed");
     return 0;
 }
 
@@ -410,7 +418,7 @@ static int check_all_fifteen_stage_cancellations(void)
 int main(void)
 {
     CHECK(check_mode31_34_integrated_recipe_isolation() == 0);
-    CHECK(check_route31_qr53_twelve_motion_nodes() == 0);
+    CHECK(check_route31_qr53_road_prefix_to_ball() == 0);
     CHECK(check_route31_all_motion_node_cancellations() == 0);
     CHECK(check_route31_turn_target_scope() == 0);
     CHECK(check_fifteen_nodes_and_manual_distance() == 0);

@@ -162,7 +162,7 @@ static int check_turn_and_route_isolation(void)
     reset_fixture(); select_speed(17, 100); set_gain(5.0f);
     host_messages[0] = '\0';
     run_cmd("31"); run_cmd("g"); CHECK(sequence_start_stage() == 0);
-    CHECK(s_msel == 17 && s_v == 100.0f && s_dist_heading_profile == 0);
+    CHECK(s_msel == 17 && s_v == 250.0f && s_dist_heading_profile == 0);
     CHECK(s_dist_heading_kp == 0.3f && host_precise_calls > 0u && host_integer_calls == 0u);
     CHECK(strstr(host_messages, "ykp=0.300 source=ROUTE31") != NULL);
     host_yaw = 3.0f; tick();

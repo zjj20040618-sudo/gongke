@@ -144,6 +144,21 @@ float imu_leg_heading_deg(void) { return s_heading_cont - s_leg_heading_zero; }
 float imu_pitch_deg(void) { return s_pitch; }
 float imu_roll_deg(void)  { return s_roll; }
 
+uint8_t imu_tilt_snapshot(float *pitch_deg, float *roll_deg, uint32_t *sample_ms)
+{
+    uint32_t pm = __get_PRIMASK();
+    uint8_t ok;
+    __disable_irq();
+    ok = s_valid && (uint32_t)(HAL_GetTick() - s_valid_ms) < IMU_LINK_TIMEOUT_MS;
+    if (ok) {
+        if (pitch_deg) *pitch_deg = s_pitch;
+        if (roll_deg) *roll_deg = s_roll;
+        if (sample_ms) *sample_ms = s_valid_ms;
+    }
+    __set_PRIMASK(pm);
+    return ok;
+}
+
 /* 数据可用?最近解析出过有效姿态且在超时窗内回 1(链路活 + 帧校验过才算) */
 uint8_t imu_ok(void)
 {

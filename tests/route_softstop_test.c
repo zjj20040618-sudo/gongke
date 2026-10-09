@@ -78,12 +78,16 @@ static int start_stage(unsigned stage, const MotionProfileTune *global)
     reset_fixture();
     CHECK(motion_profile_set(global));
     run_cmd("31"); run_cmd("g");
+    if (stage == ROUTE31_TARGET_CORNER_STAGE || stage == ROUTE31_HOSTAGE_EXIT_STAGE) {
+        s_seq_qr[0] = 1; s_seq_qr[1] = 2; s_seq_qr[2] = 3;
+        s_route31_hostage_rank = 2u; /* Already validated task result fixture; not QR shape3. */
+    }
     if (stage) { s_seq_stage = (uint8_t)stage; route_seq_prepare(); }
     CHECK(sequence_start_stage() == 0);
     CHECK(s_seq_state == SQ_RUN && s_dist_precise == 1u);
     CHECK(s_dist_ramp.acc == 700.0f && s_dist_ramp.dec == 350.0f);
     CHECK(s_dist_heading_profile == 0u &&
-          s_dist_heading_kp == (stage == 3u || stage == 4u ? 0.0f : 0.3f) && host_heading_kp == 0.3f);
+          s_dist_heading_kp == (stage == 3u || stage == 4u ? 0.0f : stage == 6u ? 3.0f : 0.3f) && host_heading_kp == 0.3f);
     CHECK(s_route_heading_kp == 0.3f);
     CHECK(global_matches(global));
     CHECK(strstr(host_messages, "ROUTE_PROFILE mode=31 source=LOCAL acc=700 dec=350") != NULL);
@@ -93,14 +97,20 @@ static int start_stage(unsigned stage, const MotionProfileTune *global)
 static int check_local_profile_and_distance(void)
 {
     static const MotionProfileTune globals[] = { { 0.0f, 0.0f }, { 42.0f, 84.0f } };
-    static const unsigned stages[] = { 0u, 1u, 3u, 4u, 5u, 7u };
-    static const float targets[] = { -520.0f, -650.0f, -650.0f, 70.0f, -190.0f, -780.0f };
-    static const float speeds[] = { 100.0f, 100.0f, 300.0f, 20.0f, 100.0f, 100.0f };
+    /* Contact has no encoder endpoint. Its v40 ramp and sensor-triggered
+     * braking are checked separately by route31_board_tilt_test. */
+    static const unsigned stages[] = { 0u, 1u, 3u, 5u, 7u, ROUTE31_HOSTAGE_EXIT_STAGE };
+    static const float targets[] = { -535.0f, -630.0f, -650.0f, -190.0f, -760.0f, 1315.0f };
+    static const float speeds[] = { 250.0f, 200.0f, 300.0f, 200.0f, 200.0f, 200.0f };
     for (unsigned p = 0; p < sizeof globals / sizeof globals[0]; ++p) {
         for (unsigned s = 0; s < sizeof stages / sizeof stages[0]; ++s) {
             float previous, axis;
             CHECK(start_stage(stages[s], &globals[p]) == 0);
             CHECK(s_dist_target == targets[s] && s_v == speeds[s]);
+            if (stages[s] == ROUTE31_HOSTAGE_EXIT_STAGE) {
+                CHECK(s_dist_ff_ratio == -ROUTE31_HOSTAGE_EXIT_RIGHT_FF_RATIO);
+                CHECK(last_x > 0.0f && close_to(last_y, last_x * ROUTE31_HOSTAGE_EXIT_RIGHT_FF_RATIO));
+            }
             axis = captured_axis();
             CHECK(close_to(fabsf(axis), 14.0f) && axis * s_dist_target > 0.0f);
             CHECK(host_precise_calls > 0u && host_integer_calls == 0u);
@@ -123,6 +133,8 @@ static int check_local_profile_and_distance(void)
                 CHECK(fabsf(captured_axis()) <= previous + 0.0001f);
             }
             CHECK(close_to(fabsf(captured_axis()), fminf(s_v, sqrtf(2.0f * 350.0f * 5.0f))));
+            if (stages[s] == ROUTE31_HOSTAGE_EXIT_STAGE)
+                CHECK(last_x > 0.0f && close_to(last_y, last_x * ROUTE31_HOSTAGE_EXIT_RIGHT_FF_RATIO));
             CHECK(global_matches(&globals[p]));
 
             /* Only reverse crossing/forward board contact ignore yaw while slowing down.
@@ -161,7 +173,14 @@ static int check_local_profile_and_distance(void)
             host_tick += T_DIST_STILL_MS; test_poll();
             fixture_complete_distance_alignment();
             if (s_seq_state == SQ_QR_WAIT) CHECK(sequence_release_qr() == 0);
-            CHECK(s_seq_stage == stages[s] + 1u && s_seq_state == SQ_STILL);
+            if (stages[s] == ROUTE31_HOSTAGE_EXIT_STAGE)
+                CHECK(s_seq_stage == stages[s] && s_seq_state == SQ_DONE);
+            else if (stages[s] == 7u)
+                CHECK(s_seq_stage == stages[s] + 1u && s_seq_state == SQ_ARM_PREP &&
+                      s_route31_lift_phase == R31_RACK_EXTEND && host_timer_active &&
+                      last_x == 0.0f && last_y == 0.0f && last_w == 0.0f);
+            else
+                CHECK(s_seq_stage == stages[s] + 1u && s_seq_state == SQ_STILL);
             CHECK(global_matches(&globals[p]));
         }
     }
@@ -175,8 +194,10 @@ static int check_immediate_cancellation(void)
     for (unsigned key = 0; key < sizeof keys / sizeof keys[0]; ++key) {
         CHECK(start_stage(0u, &global) == 0);
         for (unsigned i = 0; i < 8u; ++i) poll_20ms();
+        float before = fabsf(captured_axis());
         put_remaining(5.0f); poll_20ms();
-        CHECK(s_round == R_RUN && fabsf(captured_axis()) < 100.0f);
+        CHECK(s_round == R_RUN && before > 0.0f &&
+              close_to(before - fabsf(captured_axis()), 7.0f)); /*350mm/s2 x20ms. */
         run_cmd(keys[key]);
         CHECK(s_seq_state == SQ_STOPPED && s_seq_stage == 0u && s_msel == 31);
         CHECK(last_x == 0.0f && last_y == 0.0f && last_w == 0.0f);
@@ -196,7 +217,7 @@ static int check_lateral_reverse_and_ff_wheel_dispatch(void)
     const MotionProfileTune global = { 0.0f, 0.0f };
     float baseline[4];
     CHECK(start_stage(0u, &global) == 0);
-    CHECK(s_msel == 17 && s_dist_target == -520.0f && s_v == 100.0f);
+    CHECK(s_msel == 17 && s_dist_target == -535.0f && s_v == 250.0f);
     CHECK(last_x == 0.0f && last_y < 0.0f && last_w == 0.0f && s_dist_ff_ratio == 0.0f);
     delivered_mask = 0u;
     real_motion_vel_set_precise(last_x, last_y, last_w);
@@ -221,7 +242,7 @@ static int check_lateral_reverse_and_ff_wheel_dispatch(void)
     CHECK(close_to(delivered_rpm[0], -delivered_rpm[1]));
     run_cmd("g");
     CHECK(start_stage(5u, &global) == 0);
-    CHECK(s_msel == 16 && s_dist_target == -190.0f && s_v == 100.0f);
+    CHECK(s_msel == 16 && s_dist_target == -190.0f && s_v == 200.0f);
     CHECK(last_x < 0.0f && last_y < 0.0f && last_w == 0.0f && s_dist_ff_ratio == 0.00625f);
     CHECK(close_to(last_y, -0.00625f * fabsf(last_x)));
     delivered_mask = 0u;
@@ -229,9 +250,10 @@ static int check_lateral_reverse_and_ff_wheel_dispatch(void)
     CHECK(delivered_mask == 15u);
     for (int motor = 0; motor < 4; ++motor) CHECK(delivered_rpm[motor] < 0.0f);
     run_cmd("g");
-    CHECK(start_stage(9u, &global) == 0);
-    CHECK(s_dist_ff_ratio == -0.00625f && last_x > 0.0f && last_y > 0.0f && last_w == 0.0f);
-    CHECK(close_to(last_y, last_x * 0.00625f));
+    CHECK(start_stage(ROUTE31_TARGET_CORNER_STAGE, &global) == 0);
+    CHECK(s_dist_target == 420.0f);
+    CHECK(s_dist_ff_ratio == -ROUTE31_CORNER_RIGHT_FF_RATIO && last_x > 0.0f && last_y > 0.0f && last_w == 0.0f);
+    CHECK(close_to(last_y, last_x * ROUTE31_CORNER_RIGHT_FF_RATIO));
     real_motion_ik_precise(last_x, 0.0f, 0.0f, baseline);
     delivered_mask = 0u;
     real_motion_vel_set_precise(last_x, last_y, last_w);
@@ -241,7 +263,7 @@ static int check_lateral_reverse_and_ff_wheel_dispatch(void)
     CHECK(delivered_rpm[1] > baseline[1] && delivered_rpm[3] > baseline[3]);
     CHECK(close_to(delivered_rpm[0], delivered_rpm[2]) && close_to(delivered_rpm[1], delivered_rpm[3]));
     run_cmd("g");
-    puts("real precise IK: route31 left520/manual right35 signed lateral targets; reverse190 negative axis with separateleftBFF; defaultfrontFFFnegative ->positive lateral and four changed forwardRPM targets passed");
+    puts("real precise IK: route31 left535/manual right35 signed lateral targets; reverse190 negative axis with separateleftBFF; stage12 green420 right4pct ->positive lateral and four changed forwardRPM targets passed");
     return 0;
 }
 
@@ -268,6 +290,6 @@ int main(void)
     CHECK(check_immediate_cancellation() == 0);
     CHECK(check_lateral_reverse_and_ff_wheel_dispatch() == 0);
     CHECK(check_manual_profile_preservation() == 0);
-    puts("route31 real soft-stop: local700/350/global isolation, exactsix legs, crossing/contact yaw/FF disabled including deceleration, back190 restoresykp0.3 + BFF; post-yaw-before-next, fractional endpoint, g/a/0/IMU cancellation and manualprofile preservation passed");
+    puts("route31 real soft-stop: local700/350/global isolation, six distance legs including rank2 final1315, crossing yaw/FF disabled including deceleration, sensor-contact checked separately, back190 restoresykp0.3 + BFF; post-yaw-before-next/terminal, fractional endpoint, g/a/0/IMU cancellation and manualprofile preservation passed");
     return 0;
 }

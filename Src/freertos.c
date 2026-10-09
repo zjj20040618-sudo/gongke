@@ -27,6 +27,7 @@
 /* USER CODE BEGIN Includes */
 #include "robot.h"
 #include "board_pins.h"
+#include "arm.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -254,9 +255,12 @@ void StartTask05(void *argument)
 
 static void rtos_emergency_stop(void)
 {
+  taskDISABLE_INTERRUPTS();
+  arm_stepper_clock_stop();
+  ARM_AXIS0_STEP_GPIO_Port->BSRR = ARM_AXIS0_STEP_Pin;
+  ARM_AXIS1_STEP_GPIO_Port->BSRR = ARM_AXIS1_STEP_Pin;
   GPIOC->BSRR = (uint32_t)GPIO_PIN_8 << 16u;
   bp_laser_emergency_off();
-  taskDISABLE_INTERRUPTS();
   for (;;) { }
 }
 

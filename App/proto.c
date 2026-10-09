@@ -29,11 +29,34 @@ static int32_t s_qr_notice_tuple[3]; /* Survives automatic IDLE/OBJECT transitio
 static volatile ProtoTargetRank s_rank;
 static volatile uint8_t s_rank_valid;
 static uint32_t s_send_tick;
+static volatile ProtoSessionDiag s_session;
+static volatile uint8_t s_session_due;
+static volatile uint32_t s_session_send_tick;
 
 static int token_int(const char *tok, int *out);
 static int parse_scene(const char *tok);
 static void dispatch(char *line);
 static void binary_feed(uint8_t ch);
+static int session_ready(void)
+{
+    return !s_session.enabled || s_session.state == PROTO_SESSION_READY;
+}
+static int nonce_nonzero(const uint8_t *p)
+{
+    uint8_t value = 0u;
+    for (unsigned i = 0u; i < PROTO_SESSION_NONCE_LEN; ++i) value |= p[i];
+    return value != 0u;
+}
+static int nonce_equal(const uint8_t *p, const volatile uint8_t *nonce)
+{
+    for (unsigned i = 0u; i < PROTO_SESSION_NONCE_LEN; ++i)
+        if (p[i] != nonce[i]) return 0;
+    return 1;
+}
+static void nonce_copy(uint8_t *out, const volatile uint8_t *nonce)
+{
+    for (unsigned i = 0u; i < PROTO_SESSION_NONCE_LEN; ++i) out[i] = nonce[i];
+}
 static void rank_reset(void)
 {
     uint32_t pm = __get_PRIMASK();
@@ -46,6 +69,8 @@ static void rank_reset(void)
  * proto_set_on_frame 注册整帧回调(=steps 暂存)。 */
 void proto_init(void)
 {
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();
     blen = dropping = 0;
     s_binary = 0u; s_binary_len = 0u; s_binary_have_seq = 0u;
     s_request = 0u; s_controlled = s_mode = s_ack = s_fresh = s_failed = s_due = 0u;
@@ -55,15 +80,68 @@ void proto_init(void)
     memset(s_qr_notice_tuple, 0, sizeof s_qr_notice_tuple);
     memset((void *)&s_stats, 0, sizeof s_stats);
     memset((void *)&s_wire, 0, sizeof s_wire);
+    memset((void *)&s_session, 0, sizeof s_session);
+    s_session_due = 0u; s_session_send_tick = 0u;
     rank_reset();
+    __set_PRIMASK(pm);
+}
+/* Caller masks IRQs. A transport change cannot inherit a previous QR, rank,
+ * callback readiness or ACK; queued request fields are not an authorization. */
+static void session_clear_authority(void)
+{
+    s_ack = s_fresh = s_qr_valid = s_qr_notice_pending = 0u;
+    s_binary_have_seq = 0u;
+    memset(s_qr_tuple, 0, sizeof s_qr_tuple);
+    memset(s_qr_notice_tuple, 0, sizeof s_qr_notice_tuple);
+    rank_reset();
+}
+void proto_session_fail(void)
+{
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    s_session.enabled = 1u; s_session.state = PROTO_SESSION_FAILED;
+    s_session_due = 0u; s_due = 0u; s_failed = 1u;
+    session_clear_authority();
+    __set_PRIMASK(pm);
+}
+int proto_session_begin(const uint8_t client[PROTO_SESSION_NONCE_LEN])
+{
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    if (!s_binary || !client || !nonce_nonzero(client)) {
+        proto_session_fail(); __set_PRIMASK(pm); return 0;
+    }
+    s_session.enabled = 1u; s_session.state = PROTO_SESSION_HELLO;
+    for (unsigned i = 0u; i < PROTO_SESSION_NONCE_LEN; ++i) {
+        s_session.client[i] = client[i]; s_session.server[i] = 0u;
+    }
+    s_session_due = 1u; s_session_send_tick = 0u;
+    session_clear_authority();
+    /* Request exhaustion still cannot be repaired by changing the transport. */
+    s_failed = (uint8_t)(s_request == 65535u);
+    s_due = (uint8_t)(s_controlled && s_receiving && !s_failed);
+    blen = dropping = 0; s_binary_len = 0u;
+    __set_PRIMASK(pm); return 1;
+}
+void proto_session_diag_get(ProtoSessionDiag *out)
+{
+    uint32_t pm;
+    if (!out) return;
+    pm = __get_PRIMASK(); __disable_irq();
+    *out = s_session;
+    __set_PRIMASK(pm);
 }
 void proto_set_binary_mode(int enabled)
 {
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    if (!enabled && s_session.enabled) proto_session_fail();
     s_binary = enabled ? 1u : 0u;
     s_receiving = 0u;
     blen = dropping = 0; s_binary_len = 0u; s_binary_have_seq = 0u;
     s_qr_valid = s_qr_notice_pending = 0u; memset(s_qr_tuple, 0, sizeof s_qr_tuple);
     rank_reset();
+    __set_PRIMASK(pm);
 }
 void proto_set_tx(void (*tx)(const char *s))          { s_tx = tx; }
 void proto_set_binary_tx(void (*tx)(const uint8_t *, uint16_t)) { s_binary_tx = tx; }
@@ -74,6 +152,7 @@ void proto_feed_byte(uint8_t ch)
 {
     s_wire.rx_bytes++;
     if (s_binary) { binary_feed(ch); return; }
+    if (s_session.enabled) { s_session.bare++; s_stats.rejected++; return; }
     if (ch == '\r') return;                  /* 忽略帧内 \r，仅 \n 作尾 */
     if (ch == '\n') {
         if (!dropping) {
@@ -171,8 +250,9 @@ void proto_wire_diag_get(ProtoWireDiag *out)
     pm = __get_PRIMASK(); __disable_irq();
     *out = s_wire;
     out->request = s_request; out->mode = s_mode;
-    out->controlled = s_controlled; out->ack = s_ack;
-    out->fresh = s_fresh; out->failed = s_failed;
+    out->controlled = s_controlled; out->ack = (uint8_t)(s_ack && session_ready());
+    out->fresh = (uint8_t)(s_fresh && session_ready());
+    out->failed = (uint8_t)(s_failed || (s_session.enabled && s_session.state == PROTO_SESSION_FAILED));
     out->receiving = s_receiving;
     out->task = s_task; out->selection = s_selection;
     __set_PRIMASK(pm);
@@ -183,7 +263,7 @@ int proto_target_rank_get(ProtoTargetRank *out)
     uint32_t pm = __get_PRIMASK();
     int ready;
     __disable_irq();
-    ready = s_binary && s_controlled && s_receiving && s_ack && !s_failed &&
+    ready = s_binary && session_ready() && s_controlled && s_receiving && s_ack && !s_failed &&
             s_mode == 2u && s_rank_valid && s_rank.request == s_request &&
             s_rank.task == s_task && s_rank.digit == s_selection &&
             (s_task == PROTO_TASK_HOSTAGE || s_task == PROTO_TASK_BALL);
@@ -425,6 +505,103 @@ static int control_dispatch(const uint8_t *p, unsigned length)
     return binary_dispatch(p);
 }
 
+/*66 carries a legacy CONTROL body, never another transport/AA55/CRC packet.
+ * Check every length before the legacy decoder can read any inner field. */
+static int session_inner_valid(const uint8_t *p, unsigned length)
+{
+    unsigned n;
+    const uint8_t *body;
+    if (length < 4u) return 0;
+    if (p[0] == 0x60u) return length == 4u;
+    if (p[0] == 0x63u || p[0] == 0x61u) return length == 5u;
+    if (p[0] != 0x62u || length < 9u) return 0;
+    n = read_le16(p + 3); body = p + 5;
+    if (n + 5u != length || n < 4u) return 0;
+    if (body[0] == 0x53u)
+        return (body[3] == 0u && n == 4u) || (body[3] == 1u && n == 7u);
+    if (body[0] == 0x51u)
+        return (body[3] == 0u && n == 4u) ||
+               (body[3] == 1u && n >= 5u && n == 13u + body[4]);
+    if (body[0] == 0x54u) return n == 9u;
+    if (body[0] == 0x01u)
+        return body[3] <= PROTO_BINARY_MAX_OBJECTS && n == 14u + 11u * body[3];
+    return 0;
+}
+
+/* Called with IRQs masked. Structurally valid but unauthorized traffic has
+ * its own counter and is consumed whole, not rescanned as an embedded packet. */
+static int session_reject(volatile uint32_t *counter, unsigned length)
+{
+    ++*counter; s_stats.rejected++;
+    binary_reject_evidence(length + 4u);
+    return 1;
+}
+
+static int transport_dispatch(const uint8_t *p, unsigned length)
+{
+    uint32_t pm;
+    int result;
+    const uint8_t type = p[0];
+    if (!s_session.enabled) {
+        if (type >= 0x64u && type <= 0x68u) return 0;
+        return control_dispatch(p, length); /* Default legacy path unchanged. */
+    }
+    pm = __get_PRIMASK(); __disable_irq();
+    s_wire.last_type = type;
+    if (type == 0x64u || type == 0x67u) {
+        s_wire.command_echo++; result = 0; /* No RX-side transmit or authority. */
+    } else if (type == 0x65u) {
+        if (length != 18u || p[1] != PROTO_SESSION_VERSION || !nonce_nonzero(p + 10)) {
+            s_session.bad++; result = 0;
+        } else if (!nonce_equal(p + 2, s_session.client) ||
+                   (s_session.state != PROTO_SESSION_HELLO && s_session.state != PROTO_SESSION_CONFIRM)) {
+            result = session_reject(&s_session.mismatch, length);
+        } else {
+            /* Same challenge requeues the SAME confirmation. A new challenge
+             * replaces only pending server identity, never a READY session. */
+            for (unsigned i = 0u; i < PROTO_SESSION_NONCE_LEN; ++i) s_session.server[i] = p[10u + i];
+            s_session.state = PROTO_SESSION_CONFIRM; s_session_due = 1u;
+            result = 1;
+        }
+    } else if (type == 0x68u) {
+        if (length != 19u || p[1] != PROTO_SESSION_VERSION || p[18] > 1u) {
+            s_session.bad++; result = 0;
+        } else if (!nonce_equal(p + 2, s_session.client) || !nonce_equal(p + 10, s_session.server) ||
+                   !nonce_nonzero(p + 10)) {
+            result = session_reject(&s_session.mismatch, length);
+        } else if (s_session.state == PROTO_SESSION_READY && p[18] == 0u) {
+            result = 1; /* Duplicate READY cannot clear ACK/QR/seq/rank/queue. */
+        } else if (s_session.state != PROTO_SESSION_CONFIRM) {
+            result = session_reject(&s_session.mismatch, length);
+        } else if (p[18] != 0u) {
+            proto_session_fail(); result = 1;
+        } else {
+            s_session.state = PROTO_SESSION_READY; s_session_due = 0u;
+            if (s_controlled && s_receiving && !s_failed && !s_ack) s_due = 1u;
+            result = 1; /* Transport READY is NOT a task ACK/fresh result. */
+        }
+    } else if (type == 0x66u) {
+        const unsigned n = length >= 19u ? read_le16(p + 17) : 0u;
+        if (length < 23u || n + 19u != length || !session_inner_valid(p + 19, n)) {
+            s_session.bad++; result = 0;
+        } else if (s_session.state != PROTO_SESSION_READY) {
+            result = session_reject(&s_session.pre_ready, length);
+        } else if (!nonce_equal(p + 1, s_session.client) || !nonce_equal(p + 9, s_session.server)) {
+            result = session_reject(&s_session.mismatch, length);
+        } else {
+            result = control_dispatch(p + 19, n);
+            if (!result && p[19] != 0x60u && p[19] != 0x63u) s_session.bad++;
+        }
+    } else {
+        /* Even a matching bare61/62 or legal legacy QR/object must not pass
+         * after opt-in, including NONE/FAILED and before the transport ACK. */
+        result = session_reject(&s_session.bare, length);
+        if (type == 0x60u || type == 0x63u) s_wire.command_echo++;
+    }
+    __set_PRIMASK(pm);
+    return result;
+}
+
 static void binary_drop(unsigned length)
 {
     s_binary_len -= length;
@@ -451,6 +628,18 @@ static void binary_feed(uint8_t ch)
         if (type == 0x60u) length = 8u; /* capture valid echo, never accept it */
         else if (type == 0x63u) length = 9u;
         else if (type == 0x61u) length = 9u;
+        else if (type == 0x64u) length = 14u;
+        else if (type == 0x65u || type == 0x67u) length = 22u;
+        else if (type == 0x68u) length = 23u;
+        else if (type == 0x66u) {
+            if (s_binary_len < 21u) return;
+            length = 23u + read_le16(s_binary_buf + 19);
+            if (length > PROTO_BINARY_MAX_LEN || length < 27u) {
+                if (s_session.enabled) s_session.bad++;
+                s_wire.bad_length++; binary_reject_evidence(length);
+                s_stats.binary_bad++; s_stats.rejected++; binary_drop(1u); continue;
+            }
+        }
         else if (type == 0x62u) {
             if (s_binary_len < 7u) return;
             length = 9u + read_le16(s_binary_buf + 5);
@@ -475,13 +664,14 @@ static void binary_feed(uint8_t ch)
         if (s_binary_len < length) return;
         s_stats.lines++;
         if (binary_crc(s_binary_buf + 2, length - 4u) != read_le16(s_binary_buf + length - 2u)) {
+            if (s_session.enabled && type >= 0x64u && type <= 0x68u) s_session.bad++;
             binary_reject_evidence(length);
             s_stats.crc_bad++; s_stats.rejected++;
             binary_drop(1u); /* keep subsequent headers after corrupt length/CRC */
             continue;
         }
-        if (!control_dispatch(s_binary_buf + 2, length - 4u)) {
-            if (type != 0x60u && type != 0x63u) s_wire.invalid_payload++;
+        if (!transport_dispatch(s_binary_buf + 2, length - 4u)) {
+            if (type != 0x60u && type != 0x63u && type != 0x64u && type != 0x67u) s_wire.invalid_payload++;
             binary_reject_evidence(length);
             s_stats.binary_bad++; s_stats.rejected++;
         }
@@ -511,6 +701,7 @@ static int token_int(const char *tok, int *out)
 /* 发 "SET,scene" 给视觉:切当前任务的上报场景(mission 每区开头调) */
 void proto_send_scene(ProtoScene sc)
 {
+    if (!s_binary && s_session.enabled) { proto_session_fail(); return; }
     if (s_binary) {
         uint32_t pm = __get_PRIMASK();
         __disable_irq();
@@ -629,7 +820,7 @@ int proto_qr_get(int32_t out[3])
     uint32_t pm = __get_PRIMASK();
     int ready;
     __disable_irq();
-    ready = s_binary && s_controlled && s_receiving && s_mode == 1u && s_ack && s_fresh
+    ready = s_binary && session_ready() && s_controlled && s_receiving && s_mode == 1u && s_ack && s_fresh
             && !s_failed && s_qr_valid;
     if (ready && out) {
         out[0] = s_qr_tuple[0]; out[1] = s_qr_tuple[1]; out[2] = s_qr_tuple[2];
@@ -643,7 +834,7 @@ int proto_qr_take_notice(int32_t out[3])
     uint32_t pm = __get_PRIMASK();
     int ready;
     __disable_irq();
-    ready = s_qr_notice_pending;
+    ready = s_qr_notice_pending && session_ready();
     if (ready) {
         if (out) memcpy(out, s_qr_notice_tuple, sizeof s_qr_notice_tuple);
         s_qr_notice_pending = 0u;
@@ -657,34 +848,70 @@ int proto_scene_status(void)
     uint32_t pm = __get_PRIMASK();
     int status;
     __disable_irq();
-    status = s_failed ? -1 : (s_receiving && s_ack && (s_mode == 0u || s_fresh)) ? 1 : 0;
+    status = s_failed || (s_session.enabled && s_session.state == PROTO_SESSION_FAILED) ? -1 :
+             session_ready() && s_receiving && s_ack && (s_mode == 0u || s_fresh) ? 1 : 0;
     __set_PRIMASK(pm);
     return status;
 }
 
 void proto_service(void)
 {
-    uint8_t packet[9] = {0xAAu, 0x55u, 0x60u, 0u, 0u, 0u, 0u, 0u, 0u};
-    unsigned length = 8u;
+    /* Largest outgoing packet is66 wrapping the five-byte63 body:28 bytes.
+     * Snapshot ALL identity/state/selection under one IRQ boundary. A challenge
+     * arriving while CRC/TX runs can only make this coherent snapshot stale;
+     * double-nonce matching prevents it from acquiring the new authority. */
+    uint8_t packet[28] = {0xAAu, 0x55u};
+    unsigned length, body_offset = 2u, inner_length;
     uint16_t crc;
+    void (*tx)(const uint8_t *, uint16_t);
     uint32_t pm = __get_PRIMASK(), now = HAL_GetTick();
     __disable_irq();
-    if (!s_binary || !s_controlled || !s_receiving || s_failed || s_ack || !s_binary_tx
-        || (!s_due && (uint32_t)(now - s_send_tick) < 500u)) {
+    tx = s_binary_tx;
+    if (!s_binary || !tx) {
         __set_PRIMASK(pm); return;
     }
-    packet[3] = (uint8_t)s_request; packet[4] = (uint8_t)(s_request >> 8);
-    if (s_task) {
-        packet[2] = 0x63u; packet[5] = s_task; packet[6] = s_selection;
-        length = 9u;
-    } else packet[5] = s_mode;
-    s_due = 0u; s_send_tick = now;
-    s_wire.tx_attempts++; /* callback invoked below; not proof of physical TX */
+    if (s_session.enabled && s_session.state != PROTO_SESSION_READY) {
+        if ((s_session.state != PROTO_SESSION_HELLO && s_session.state != PROTO_SESSION_CONFIRM) ||
+            (!s_session_due && (uint32_t)(now - s_session_send_tick) < PROTO_SESSION_RETRY_MS)) {
+            __set_PRIMASK(pm); return;
+        }
+        packet[2] = s_session.state == PROTO_SESSION_HELLO ? 0x64u : 0x67u;
+        packet[3] = PROTO_SESSION_VERSION;
+        nonce_copy(packet + 4, s_session.client);
+        length = 14u;
+        if (s_session.state == PROTO_SESSION_CONFIRM) {
+            nonce_copy(packet + 12, s_session.server); length = 22u;
+        }
+        s_session_due = 0u; s_session_send_tick = now;
+        s_session.tx++;
+    } else {
+        if (!s_controlled || !s_receiving || s_failed || s_ack ||
+            (!s_due && (uint32_t)(now - s_send_tick) < 500u)) {
+            __set_PRIMASK(pm); return;
+        }
+        inner_length = s_task ? 5u : 4u;
+        if (s_session.enabled) {
+            packet[2] = 0x66u;
+            nonce_copy(packet + 3, s_session.client);
+            nonce_copy(packet + 11, s_session.server);
+            packet[19] = (uint8_t)inner_length; packet[20] = 0u;
+            body_offset = 21u;
+            s_session.tx++;
+        }
+        packet[body_offset] = s_task ? 0x63u : 0x60u;
+        packet[body_offset + 1u] = (uint8_t)s_request;
+        packet[body_offset + 2u] = (uint8_t)(s_request >> 8);
+        packet[body_offset + 3u] = s_task ? s_task : s_mode;
+        if (s_task) packet[body_offset + 4u] = s_selection;
+        length = body_offset + inner_length + 2u;
+        s_due = 0u; s_send_tick = now;
+        s_wire.tx_attempts++; /* Attempt is not proof of physical delivery. */
+    }
     __set_PRIMASK(pm);
     crc = binary_crc(packet + 2, length - 4u);
     packet[length - 2u] = (uint8_t)crc; packet[length - 1u] = (uint8_t)(crc >> 8);
-    s_binary_tx(packet, (uint16_t)length);
+    tx(packet, (uint16_t)length); /* DefaultTask only; never the RX ISR. */
 }
 
 /* 发 PING 给视觉探活(链路测试用) */
-void proto_send_ping(void) { if (!s_binary && s_tx) s_tx("PING\r\n"); }
+void proto_send_ping(void) { if (!s_binary && !s_session.enabled && s_tx) s_tx("PING\r\n"); }
