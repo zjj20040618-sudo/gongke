@@ -13,6 +13,7 @@ exclude:
 files:
   - app.png
   - app.yaml
+  - boot_session.py
   - config.py
   - control_session.py
   - display_cache.py
