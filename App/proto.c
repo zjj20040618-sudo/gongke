@@ -26,12 +26,21 @@ static volatile int s_target_cls, s_target_label;
 static volatile uint8_t s_qr_valid, s_qr_notice_pending;
 static int32_t s_qr_tuple[3]; /* First legal QR of the current controlled request. */
 static int32_t s_qr_notice_tuple[3]; /* Survives automatic IDLE/OBJECT transition. */
+static volatile ProtoTargetRank s_rank;
+static volatile uint8_t s_rank_valid;
 static uint32_t s_send_tick;
 
 static int token_int(const char *tok, int *out);
 static int parse_scene(const char *tok);
 static void dispatch(char *line);
 static void binary_feed(uint8_t ch);
+static void rank_reset(void)
+{
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    s_rank_valid = 0u; memset((void *)&s_rank, 0, sizeof s_rank);
+    __set_PRIMASK(pm);
+}
 
 /* robot_init 挂接三连:proto_init 清收帧缓冲;proto_set_tx 注册发送口(=USART2 轮询发);
  * proto_set_on_frame 注册整帧回调(=steps 暂存)。 */
@@ -46,6 +55,7 @@ void proto_init(void)
     memset(s_qr_notice_tuple, 0, sizeof s_qr_notice_tuple);
     memset((void *)&s_stats, 0, sizeof s_stats);
     memset((void *)&s_wire, 0, sizeof s_wire);
+    rank_reset();
 }
 void proto_set_binary_mode(int enabled)
 {
@@ -53,6 +63,7 @@ void proto_set_binary_mode(int enabled)
     s_receiving = 0u;
     blen = dropping = 0; s_binary_len = 0u; s_binary_have_seq = 0u;
     s_qr_valid = s_qr_notice_pending = 0u; memset(s_qr_tuple, 0, sizeof s_qr_tuple);
+    rank_reset();
 }
 void proto_set_tx(void (*tx)(const char *s))          { s_tx = tx; }
 void proto_set_binary_tx(void (*tx)(const uint8_t *, uint16_t)) { s_binary_tx = tx; }
@@ -167,6 +178,23 @@ void proto_wire_diag_get(ProtoWireDiag *out)
     __set_PRIMASK(pm);
 }
 
+int proto_target_rank_get(ProtoTargetRank *out)
+{
+    uint32_t pm = __get_PRIMASK();
+    int ready;
+    __disable_irq();
+    ready = s_binary && s_controlled && s_receiving && s_ack && !s_failed &&
+            s_mode == 2u && s_rank_valid && s_rank.request == s_request &&
+            s_rank.task == s_task && s_rank.digit == s_selection &&
+            (s_task == PROTO_TASK_HOSTAGE || s_task == PROTO_TASK_BALL);
+    if (out) {
+        if (ready) *out = s_rank;
+        else memset(out, 0, sizeof *out);
+    }
+    __set_PRIMASK(pm);
+    return ready;
+}
+
 /* Cache a bounded prefix in RX context; formatting/TX belongs to DefaultTask.
  * length may be the expected size of a malformed frame. Only available bytes
  * are copied. No pointer to the parser's mutable buffer escapes the ISR. */
@@ -213,6 +241,52 @@ static int binary_class(uint8_t model_class, int *cls, int *label)
         case 9: *cls = CLS_BUCKET; *label = 0; return 1;
         default: return 0;
     }
+}
+
+/* Only62/request-bound54 reaches here, after current ACK/window validation.
+ * Maintain a separate sequence domain from01, which intentionally uses the
+ * SAME sequence on camera. Never set s_fresh or call a coordinate consumer. */
+static int rank_dispatch(const uint8_t *p, unsigned length)
+{
+    ProtoTargetRank next;
+    int cls, label, selected_cls, selected_label;
+    if (length != 9u || (s_task != PROTO_TASK_HOSTAGE && s_task != PROTO_TASK_BALL) ||
+        !proto_target_filter((ProtoTask)s_task, s_selection, &selected_cls, &selected_label)) return 0;
+    memset(&next, 0, sizeof next);
+    next.task = s_task; next.digit = s_selection; next.request = s_request;
+    next.sequence = read_le16(p + 1); next.target_model = p[3];
+    next.rank = p[4]; next.seen_count = p[5];
+    memcpy(next.slots, p + 6, sizeof next.slots);
+    if (!binary_class(next.target_model, &cls, &label) || cls != selected_cls ||
+        label != selected_label || next.rank > 3u || next.seen_count > 3u) return 0;
+    int target_at = -1;
+    for (unsigned i = 0u; i < 3u; ++i) {
+        if (i >= next.seen_count) { if (next.slots[i] != 0xFFu) return 0; continue; }
+        if (!binary_class(next.slots[i], &cls, &label) || cls != selected_cls) return 0;
+        for (unsigned j = 0u; j < i; ++j) if (next.slots[i] == next.slots[j]) return 0;
+        if (next.slots[i] == next.target_model) target_at = (int)i;
+    }
+    if (next.rank == 0u ? target_at >= 0 :
+        (next.rank > next.seen_count || target_at != (int)next.rank - 1)) return 0;
+    if (s_rank_valid) {
+        uint16_t delta = (uint16_t)(next.sequence - s_rank.sequence);
+        if (delta == 0u) {
+            if (next.rank != s_rank.rank || next.seen_count != s_rank.seen_count ||
+                memcmp(next.slots, (const void *)s_rank.slots, sizeof next.slots) != 0) {
+                s_wire.rank_conflict++; return 0;
+            }
+            s_wire.rank_duplicate++; return 1;
+        }
+        if (delta >= 0x8000u) { s_wire.rank_stale++; s_stats.rejected++; return 1; }
+        if (next.seen_count < s_rank.seen_count || (s_rank.rank && next.rank != s_rank.rank)) {
+            s_wire.rank_conflict++; return 0;
+        }
+        for (unsigned i = 0u; i < s_rank.seen_count; ++i)
+            if (next.slots[i] != s_rank.slots[i]) { s_wire.rank_conflict++; return 0; }
+    }
+    /* Getter/phase changes mask IRQs; RX update is bounded and never calls TX. */
+    s_rank = next; s_rank_valid = 1u; s_wire.rank_packets++;
+    return 1;
 }
 
 /* Validate the complete CRC-checked packet before any business callback. */
@@ -303,7 +377,7 @@ static int control_dispatch(const uint8_t *p, unsigned length)
         if (!s_receiving) { s_wire.outside_phase++; return 1; }
         if (p[4] != 0u || p[3] != s_mode) {
             s_wire.ack_failed++;
-            s_failed = 1u; s_ack = 0u; s_qr_notice_pending = 0u; return 1;
+            s_failed = 1u; s_ack = 0u; s_qr_notice_pending = 0u; rank_reset(); return 1;
         }
         s_ack = 1u;
         return 1;
@@ -332,6 +406,8 @@ static int control_dispatch(const uint8_t *p, unsigned length)
             if (body[3] == 0u && n == 4u) { s_fresh = 1u; return 1; }
             if (body[3] != 1u || n != 7u) return 0;
             s_fresh = 1u;
+        } else if (s_mode == 2u && body[0] == 0x54u) {
+            return rank_dispatch(body, n); /* Does not authorize coordinate freshness. */
         } else if (s_mode == 2u && body[0] == 0x01u) {
             if (body[3] > PROTO_BINARY_MAX_OBJECTS || n != 14u + 11u * body[3]) return 0;
         } else return 0;
@@ -443,6 +519,7 @@ void proto_send_scene(ProtoScene sc)
         s_mode = sc == SCENE_IDLE ? 0u : sc == SCENE_QR ? 1u : 2u;
         s_task = s_selection = 0u; s_target_cls = s_target_label = -1;
         s_ack = s_fresh = 0u; s_binary_have_seq = 0u;
+        rank_reset();
         s_qr_valid = 0u; memset(s_qr_tuple, 0, sizeof s_qr_tuple);
         /* A fresh QR round cancels any previous notice. Automatic IDLE/OBJECT
          * transitions preserve it: an RX IRQ may arrive after the task's
@@ -496,6 +573,7 @@ int proto_send_target(ProtoTask task, uint8_t digit)
     pm = __get_PRIMASK(); __disable_irq();
     if (s_request == 65535u) {
         s_failed = 1u; s_due = 0u;
+        rank_reset();
         __set_PRIMASK(pm); return 0;
     }
     s_controlled = 1u; s_mode = 2u; s_receiving = 1u;
@@ -503,6 +581,7 @@ int proto_send_target(ProtoTask task, uint8_t digit)
     s_target_cls = cls; s_target_label = label;
     s_request++; s_ack = s_fresh = s_failed = 0u; s_due = 1u;
     s_binary_have_seq = 0u;
+    rank_reset();
     /* The mission owns its locked QR tuple. Clear only parser readiness;
      * preserve the DefaultTask's pending one-shot QR success notice. */
     s_qr_valid = 0u; memset(s_qr_tuple, 0, sizeof s_qr_tuple);
@@ -529,6 +608,7 @@ void proto_receive_end(void)
     s_due = s_ack = s_fresh = 0u;
     s_qr_valid = 0u;
     memset(s_qr_tuple, 0, sizeof s_qr_tuple);
+    rank_reset();
     /* Keep the parser draining input. The next phase creates a new request,
      * so a late tail from this phase cannot become a new target coordinate. */
     __set_PRIMASK(pm);

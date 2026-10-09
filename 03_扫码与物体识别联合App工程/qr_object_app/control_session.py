@@ -97,9 +97,11 @@ class ControlSession:
         if packet is None or len(packet) < 3:
             return None
         if packet[2] == 0x54:
-            # 顺序仅属于明确的63人质任务；不在扫码预加载、手动或通用诊断时报。
-            if (not self.remote_owned or self.task_id != 3 or self.modes.mode != "OBJECT"
-                    or self.qr_handoff):
+            # 54仅属于明确的63球/人质任务；同格式不能串用类别组或目标。
+            class_ids = (3, 4, 5) if self.task_id == 1 else (0, 1, 2)
+            if (not self.remote_owned or self.task_id not in (1, 3) or self.modes.mode != "OBJECT"
+                    or self.qr_handoff or len(packet) != 13 or packet[5] != self.target_class_id
+                    or packet[5] not in class_ids):
                 return None
         elif packet[2] != expected_type:
             return None

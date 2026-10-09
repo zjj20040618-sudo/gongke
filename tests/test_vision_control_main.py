@@ -10,7 +10,8 @@ from unittest.mock import patch
 APP = Path(__file__).resolve().parents[1] / "03_扫码与物体识别联合App工程/qr_object_app"
 sys.path.insert(0, str(APP))
 import config
-from protocol import build_control_packet, build_task_packet, build_ack_packet, bind_result, build_qr_packet, build_object_packet
+from protocol import (build_control_packet, build_task_packet, build_ack_packet, bind_result,
+                      build_qr_packet, build_object_packet, build_ball_order_packet)
 
 
 class MainLoopTests(unittest.TestCase):
@@ -281,7 +282,8 @@ class MainLoopTests(unittest.TestCase):
         self.assertEqual(captures, ["QR", "OBJECT"])
         self.assertIn(bind_result(build_qr_packet(0, "331"), 1), sent)
         self.assertEqual(displayed, [[3]])
-        self.assertEqual(sent[-1], bind_result(build_object_packet(1, [objects[3]], 640, 480, 0, 7, 0), 2))
+        self.assertEqual(sent[-2], bind_result(build_object_packet(1, [objects[3]], 640, 480, 0, 7, 0), 2))
+        self.assertEqual(sent[-1], bind_result(build_ball_order_packet(1, 3, [3, 4, 5]), 2))
 
     def test_remote_short_press_pauses_business_same_retry_fails_new_request_resumes(self):
         objects = [SimpleNamespace(class_id=cid, score=.9, x=cid * 40, y=100, w=30, h=40)
@@ -332,10 +334,11 @@ class MainLoopTests(unittest.TestCase):
         self.assertEqual(captures, ["QR"] + ["OBJECT"] * 4)
         self.assertEqual(entered, ["IDLE", "QR", "OBJECT", "OBJECT"])
         results = [p for p in sent if p[2] == 0x62]
-        self.assertEqual([p[7] for p in results], [0x53, 0x53, 0x53, 0x01])
-        self.assertEqual([struct.unpack_from("<H", p, 3)[0] for p in results], [1, 1, 1, 2])
-        self.assertEqual(results[-1][10], 1)
-        self.assertEqual(results[-1][21], 3)
+        self.assertEqual([p[7] for p in results], [0x53, 0x53, 0x53, 0x01, 0x54])
+        self.assertEqual([struct.unpack_from("<H", p, 3)[0] for p in results], [1, 1, 1, 2, 2])
+        self.assertEqual(results[-2][10], 1)
+        self.assertEqual(results[-2][21], 3)
+        self.assertEqual(results[-1][8:10], results[-2][8:10])
 
     def test_automatic_load_failure_stays_qr_without_unbounded_retries(self):
         sent, captures, _, entered = self.run_loop([b""] * 4, [self.qr("331"), [], [], []],
@@ -372,10 +375,12 @@ class MainLoopTests(unittest.TestCase):
             build_task_packet(2, 1, 2), b""], detections=[[], [red], [red], [green]],
             dual_buffer=True, displayed_frames=frames)
         self.assertEqual(frames, [1, 1, 3, 3])
-        packets = [p for p in sent if p[2] == 0x62]
+        packets = [p for p in sent if p[2] == 0x62 and p[7] == 0x01]
         self.assertEqual([struct.unpack_from("<H", p, 3)[0] for p in packets], [1, 2])
         self.assertEqual([p[21] for p in packets], [4, 5])
         self.assertEqual([p[24:26] for p in packets], [struct.pack("<H", 115), struct.pack("<H", 215)])
+        self.assertEqual([p[10:16] for p in sent if p[2] == 0x62 and p[7] == 0x54],
+                         [bytes((4, 1, 1, 4, 255, 255)), bytes((5, 1, 1, 5, 255, 255))])
 
     def test_dual_buffer_manual_modes_and_mcu_resume_prime_again(self):
         red = SimpleNamespace(class_id=4, score=.9, x=100, y=20, w=30, h=40)
@@ -387,9 +392,11 @@ class MainLoopTests(unittest.TestCase):
             dual_buffer=True, displayed_frames=frames)
         self.assertEqual(captures, ["OBJECT", "OBJECT", "QR"] + ["OBJECT"] * 4)
         self.assertEqual(frames, [1, 1, 4, 4, 6, 6])
-        packets = [p for p in sent if p[2] == 0x62]
+        packets = [p for p in sent if p[2] == 0x62 and p[7] == 0x01]
         self.assertEqual([struct.unpack_from("<H", p, 3)[0] for p in packets], [1, 2])
         self.assertTrue(all(p[7] == 0x01 for p in packets))
+        self.assertEqual([struct.unpack_from("<H", p, 3)[0] for p in sent
+                          if p[2] == 0x62 and p[7] == 0x54], [1, 2])
 
     def test_dual_buffer_touch_hides_info_not_uart_target(self):
         bucket = SimpleNamespace(class_id=9, score=.9, x=100, y=100, w=40, h=40)

@@ -130,12 +130,15 @@ class UartMainTests(unittest.TestCase):
             [[detection(4)], [detection(4)]], [])
         frames = self.frames(serial.wire)
         self.assertEqual([mode for _, _, mode in captures], ["OBJECT", "OBJECT", "QR", "QR", "QR"])
-        self.assertEqual([packet[2] for packet in frames], [0x61, 0x62, 0x62, 0x61, 0x62, 0x62, 0x61, 0x62])
+        self.assertEqual([packet[2] for packet in frames],
+                         [0x61, 0x62, 0x62, 0x62, 0x62, 0x61, 0x62, 0x62, 0x61, 0x62])
+        self.assertEqual([packet[7] for packet in frames if packet[2] == 0x62],
+                         [0x01, 0x54, 0x01, 0x54, 0x53, 0x53, 0x53])
         qr_results = [packet for packet in frames if packet[2] == 0x62
                       and struct.unpack_from("<H", packet, 3)[0] == 2]
         self.assertEqual(len(qr_results), 3)
         self.assertTrue(all(packet[7] == 0x53 for packet in qr_results))
-        timeline = [(0, "@2")]
+        timeline = [(0, "!11")]
         for turn in range(1, 6):
             if turn == 3:
                 timeline.append((turn * 10 - 1, "@1"))
@@ -163,13 +166,15 @@ class UartMainTests(unittest.TestCase):
             [[], [detection(4, 100)], [detection(4, 999)], [detection(9, 200)], []],
             [], dual_buffer=True)
         frames = self.frames(serial.wire)
-        self.assertEqual([p[2] for p in frames], [0x61, 0x62, 0x61, 0x62, 0x62])
-        results = [p for p in frames if p[2] == 0x62]
+        self.assertEqual([p[2] for p in frames], [0x61, 0x62, 0x62, 0x61, 0x62, 0x62])
+        results = [p for p in frames if p[2] == 0x62 and p[7] == 0x01]
         self.assertEqual([p[10] for p in results], [1, 1, 0])
         self.assertEqual([p[21] for p in results if p[10]], [4, 9])
-        timeline = [(0, "@2")]
+        self.assertEqual([p[10:16] for p in frames if p[2] == 0x62 and p[7] == 0x54],
+                         [bytes((4, 1, 1, 4, 255, 255))])
+        timeline = [(0, "!11")]
         for turn in range(1, 6):
-            if turn == 3: timeline.append((turn * 10 - 1, "@2"))
+            if turn == 3: timeline.append((turn * 10 - 1, "!40"))
             timeline += [(turn * 10, chunk) for chunk_turn, chunk in serial.chunks if chunk_turn == turn]
         lines, stats = self.mcu.replay(timeline)
         self.assertEqual([line for line in lines if line.startswith("OBJ,")],
@@ -193,9 +198,10 @@ class UartMainTests(unittest.TestCase):
         self.assertEqual(stats[7], 0, "new empty frame must not be mistaken for a duplicate")
 
     def test_repeated_short_writes_drain_old_tail_then_ack_before_fresh_capture_and_latest_target(self):
-        commands = [build_task_packet(1, 1, 1), build_task_packet(2, 4, 0)] + [b""] * 5
+        # 靶任务不产生54；保留原来的单坐标长尾/新ACK时间线压力测试。
+        commands = [build_task_packet(1, 2, 1), build_task_packet(2, 4, 0)] + [b""] * 5
         serial, captures = self.run_loop(commands,
-            [[detection(4)], [detection(9, 100)], [detection(9, 200)], [detection(9, 300)]],
+            [[detection(6)], [detection(9, 100)], [detection(9, 200)], [detection(9, 300)]],
             [9, 3, 0, 5, 0, 4, 0, 22, 2, 0, 7, 4, 0, 6, 0])
         frames = self.frames(serial.wire)
         self.assertEqual([packet[2] for packet in frames], [0x61, 0x62, 0x61, 0x62, 0x62])
@@ -215,6 +221,29 @@ class UartMainTests(unittest.TestCase):
         lines, stats = self.mcu.replay(timeline)
         objects = [line for line in lines if line.startswith("OBJ,")]
         self.assertEqual(objects, ["OBJ,3,0,115,40,30,40,90,1,640,480", "OBJ,3,0,315,40,30,40,90,3,640,480"])
+        self.assertEqual(stats[:4], (2, 0, 2, 0))
+        self.assertEqual(stats[7], 0)
+
+    def test_ball_coordinate_and_rank_tails_finish_before_bucket_ack_and_capture(self):
+        # 首轮01短写，追加54时先完整排旧01；54又短写，次轮先排54再ACK。
+        serial, captures = self.run_loop([build_task_packet(1, 1, 1), build_task_packet(2, 4, 0)],
+            [[detection(4)], [detection(9, 100)]], [9, 3, 0, 31, 3, 0])
+        frames = self.frames(serial.wire)
+        self.assertEqual([p[2] for p in frames], [0x61, 0x62, 0x62, 0x61, 0x62])
+        self.assertEqual([p[7] for p in frames if p[2] == 0x62], [0x01, 0x54, 0x01])
+        self.assertEqual([struct.unpack_from('<H', p, 3)[0] for p in frames], [1, 1, 1, 2, 2])
+        self.assertEqual(frames[1][8:10], frames[2][8:10])
+        self.assertEqual(frames[2][10:16], bytes((4, 1, 1, 4, 255, 255)))
+        self.assertEqual(captures[1][1], sum(len(p) for p in frames[:4]))
+        timeline = [(0, '!11')]
+        for turn in (1, 2):
+            if turn == 2:
+                timeline.append((19, '!40'))
+            timeline += [(turn * 10, chunk) for at, chunk in serial.chunks if at == turn]
+        lines, stats = self.mcu.replay(timeline)
+        self.assertEqual([line for line in lines if line.startswith('OBJ,')],
+                         ['OBJ,0,0,25,40,30,40,90,0,640,480',
+                          'OBJ,3,0,115,40,30,40,90,1,640,480'])
         self.assertEqual(stats[:4], (2, 0, 2, 0))
         self.assertEqual(stats[7], 0)
 

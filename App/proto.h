@@ -54,6 +54,16 @@ typedef struct {
     uint32_t crc_bad, binary_bad, binary_gap, binary_unmapped, duplicate;
 } ProtoStats;
 
+/* Request-bound historical first-seen order (62 inner54), NOT coordinates,
+ * visibility, alignment or a grab-complete signal. rank0 means unknown.
+ * Only BALL task1 and HOSTAGE task3. Slots are detector model IDs, never QR
+ * digits or ranks. BALL54 uses3/4/5, HOSTAGE54 uses0/1/2; groups cannot mix.
+ * TARGET/BUCKET54 is rejected; rank54 never authorizes coordinate freshness. */
+typedef struct {
+    uint8_t task, digit, target_model, rank, seen_count, slots[3];
+    uint16_t request, sequence;
+} ProtoTargetRank;
+
 /* Read-only wire evidence. A rejected/legacy/echoed packet NEVER authorizes
  * QR or motion. Counters are cumulative since proto_init; request is live. */
 #define PROTO_WIRE_PREFIX_LEN 16u
@@ -63,6 +73,7 @@ typedef struct {
     uint32_t result_preack, result_mismatch;
     uint32_t legacy_qr, legacy_obj, command_echo, unknown_type;
     uint32_t bad_length, invalid_payload, outside_phase;
+    uint32_t rank_packets, rank_duplicate, rank_stale, rank_conflict;
     uint16_t request, last_reject_len;
     uint8_t mode, controlled, ack, fresh, failed, receiving;
     uint8_t task, selection; /* 0 task = generic 0x60 session */
@@ -78,6 +89,12 @@ void proto_set_on_frame(void (*cb)(const ProtoFrame *f));
 void proto_feed_byte(uint8_t ch);                       /* 每收到 1 字节调一次 */
 void proto_stats_get(ProtoStats *out);
 void proto_wire_diag_get(ProtoWireDiag *out);
+/* Non-consuming IRQ-safe snapshot of the current selected BALL/HOSTAGE54.
+ * Return1 for a legal received status, INCLUDING rank0 unknown; return0 and
+ * zero out when none/current request notACKed/closed/failed. Lifetime is only
+ * this RX phase: copy before local receive_end/new task/cancel/reset/NACK.
+ * No coordinate freshness is conferred, and no motion callback is emitted. */
+int proto_target_rank_get(ProtoTargetRank *out);
 
 /* Binary: queue a new request; only proto_service (DefaultTask) transmits. */
 void proto_send_scene(ProtoScene sc);
