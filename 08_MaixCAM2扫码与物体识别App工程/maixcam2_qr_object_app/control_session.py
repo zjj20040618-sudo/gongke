@@ -22,26 +22,38 @@ class ControlSession:
         电控QR请求期间仍只回锁存53；坐标须等新OBJECT/63请求。
         独立模式则直接回三码所选物体。
         """
-        if self.manual_override or self.modes.mode != "QR":
+        if self.modes.mode != "QR" or (self.manual_override and not self.can_resume_object_after_qr()):
             return False
         if self.remote_owned and (not self.acknowledged or self.request_id is None):
             return False
         self.modes.enter("OBJECT")
-        self.qr_handoff = self.remote_owned
+        self.manual_override = False
+        self.qr_handoff = self.remote_owned and self.last_command[1] == 1
         return True
+
+    def can_resume_object_after_qr(self):
+        """人工扫码只恢复已ACK的原OBJECT任务，不用QR结果改写电控任务。"""
+        return (self.manual_override and self.modes.mode == "QR" and self.remote_owned
+                and self.request_id is not None and self.acknowledged
+                and self.last_command is not None
+                and self.last_command[:2] == (self.request_id, 2))
 
     def manual_toggle(self):
         """USER只切视觉预览；接管后手动查看不能产生本轮任务结果。
 
         先切摄像头，再改变控制状态；切换失败保留原会话。
-        已接管时保持请求号用于拒绝旧重试，必须收到更大新请求号才恢复业务。
+        已接管时仅在预览与原请求模式不一致期间暂停；返回原模式恢复。
+        保留已完成的ACK和历史编号，扫码可自动返回原OBJECT任务。
         这不是MCU急停，实车应先从电控停止运动再手动诊断。
         """
         self.modes.toggle()
         self.qr_handoff = False
         if self.remote_owned:
-            self.manual_override = True
-            self.acknowledged = False
+            self.manual_override = not (self.request_id is not None and self.last_command is not None
+                and self.last_command[0] == self.request_id
+                and self.MODES[self.last_command[1]] == self.modes.mode)
+            print("[CONTROL] USER mode={} request={} manual_paused={} acked={}".format(
+                self.modes.mode, self.request_id, self.manual_override, self.acknowledged))
 
     def ready_for_capture(self):
         return (self.manual_override or not self.remote_owned
@@ -86,7 +98,7 @@ class ControlSession:
         return self.last_ack, True
 
     def ack_sent(self, packet):
-        if not self.manual_override and packet == self.last_ack and self.request_id is not None:
+        if packet == self.last_ack and self.request_id is not None:
             self.acknowledged = True
 
     def result(self, packet):

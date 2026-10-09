@@ -133,25 +133,84 @@ class TaskControlTests(unittest.TestCase):
         self.assertEqual(self.control.apply(1, 2, 1, 1), (ack, False))
         self.assertEqual(self.control.result(self.empty), bind_result(self.empty, 1))
 
-    def test_manual_switch_suppresses_business_even_after_return_to_same_mode(self):
+    def test_manual_switch_pauses_preview_and_resumes_same_request_on_return(self):
         self.modes.toggle = lambda: self.modes.enter("QR" if self.modes.mode == "OBJECT" else "OBJECT")
         ack, _ = self.control.apply(1, 2, 4, 0)
         self.control.ack_sent(ack)
         self.control.manual_toggle()
         self.assertTrue(self.control.ready_for_capture())
         self.assertIsNone(self.control.result(build_qr_packet(1, "123")))
-        self.control.manual_toggle()
-        self.assertIsNone(self.control.result(self.empty))
+        self.assertTrue(self.control.acknowledged)
         failure, changed = self.control.apply(1, 2, 4, 0)
-        self.assertEqual(failure, build_ack_packet(1, 2, 1))
+        self.assertEqual(failure, build_ack_packet(1, 1, 1))
         self.assertFalse(changed)
         self.control.ack_sent(ack)
-        self.assertFalse(self.control.acknowledged)
+        self.assertTrue(self.control.acknowledged)
+        self.control.manual_toggle()
+        self.assertFalse(self.control.manual_override)
+        self.assertEqual(self.control.result(self.empty), bind_result(self.empty, 1))
         new_ack, _ = self.control.apply(2, 2, 4, 0)
         self.assertFalse(self.control.manual_override)
         self.assertIsNone(self.control.result(self.empty))
         self.control.ack_sent(new_ack)
         self.assertEqual(self.control.result(self.empty), bind_result(self.empty, 2))
+
+    def test_manual_qr_resumes_original_object_without_sending_qr_under_object_request(self):
+        self.modes.toggle = lambda: self.modes.enter("QR" if self.modes.mode == "OBJECT" else "OBJECT")
+        ack, _ = self.control.apply(6, 2, 3, 3)
+        self.control.ack_sent(ack)
+        self.control.manual_toggle()
+        qr = build_qr_packet(1, "123")
+        self.assertIsNone(self.control.result(qr))
+        self.assertTrue(self.control.can_resume_object_after_qr())
+        self.assertTrue(self.control.auto_object_after_qr())
+        self.assertFalse(self.control.manual_override)
+        self.assertFalse(self.control.qr_handoff)
+        self.assertEqual(self.control.target_class_id, 0)
+        self.assertEqual(self.control.result(self.empty), bind_result(self.empty, 6))
+        self.assertIsNone(self.control.result(qr))
+
+    def test_manual_return_before_ack_still_blocks_results(self):
+        self.modes.toggle = lambda: self.modes.enter("QR" if self.modes.mode == "OBJECT" else "OBJECT")
+        ack, _ = self.control.apply(6, 2, 3, 3)
+        self.control.manual_toggle()
+        self.assertFalse(self.control.can_resume_object_after_qr())
+        self.assertFalse(self.control.auto_object_after_qr())
+        self.control.manual_toggle()
+        self.assertIsNone(self.control.result(self.empty))
+        self.control.ack_sent(ack)
+        self.assertEqual(self.control.result(self.empty), bind_result(self.empty, 6))
+
+    def test_original_ack_completed_during_preview_only_enables_auto_return(self):
+        self.modes.toggle = lambda: self.modes.enter("QR" if self.modes.mode == "OBJECT" else "OBJECT")
+        ack, _ = self.control.apply(6, 2, 3, 3)
+        self.control.manual_toggle()
+        self.control.ack_sent(ack)
+        self.assertTrue(self.control.can_resume_object_after_qr())
+        self.assertIsNone(self.control.result(build_qr_packet(1, "123")))
+
+    def test_failed_auto_return_keeps_original_task_paused(self):
+        self.modes.toggle = lambda: self.modes.enter("QR" if self.modes.mode == "OBJECT" else "OBJECT")
+        ack, _ = self.control.apply(6, 2, 3, 3)
+        self.control.ack_sent(ack)
+        self.control.manual_toggle()
+        self.modes.fail = True
+        with self.assertRaises(RuntimeError):
+            self.control.auto_object_after_qr()
+        self.assertTrue(self.control.manual_override)
+        self.assertIsNone(self.control.result(self.empty))
+
+    def test_original_qr_request_manual_return_then_auto_handoff_still_only_reports_qr(self):
+        self.modes.toggle = lambda: self.modes.enter("QR" if self.modes.mode == "OBJECT" else "OBJECT")
+        ack, _ = self.control.apply(6, 1)
+        self.control.ack_sent(ack)
+        self.control.manual_toggle()
+        self.assertIsNone(self.control.result(self.empty))
+        self.control.manual_toggle()
+        self.assertTrue(self.control.auto_object_after_qr())
+        self.assertTrue(self.control.qr_handoff)
+        self.assertIsNotNone(self.control.result(build_qr_packet(1, "123")))
+        self.assertIsNone(self.control.result(self.empty))
 
     def test_manual_switch_failure_preserves_live_session(self):
         ack, _ = self.control.apply(1, 2, 4, 0)

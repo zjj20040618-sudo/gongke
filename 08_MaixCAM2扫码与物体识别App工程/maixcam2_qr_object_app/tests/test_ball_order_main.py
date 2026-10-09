@@ -77,10 +77,12 @@ class BallOrderMainTests(unittest.TestCase):
         self.assertEqual([p[10] for p in positions], [1, 0])
         self.assertEqual(bytes(serial.wire), b''.join(packets))
 
-    def test_manual_and_general_object_requests_never_report_ball_order(self):
+    def test_manual_preview_pauses_order_return_resumes_and_general_request_has_no_order(self):
         _, _, _, orders, _ = self.run_loop([build_task_packet(1, 1, 1), b'', b''],
             [[fixture.detection(4)], [fixture.detection(5)]], manual_toggles=(2, 3))
-        self.assertEqual(len(orders), 1)
+        self.assertEqual(len(orders), 2)
+        self.assertEqual([r[3] for r in orders], [1, 1])
+        self.assertEqual(orders[-1][4:], (2, 4, 5, 255))
         _, _, _, orders, _ = self.run_loop([build_control_packet(1, 2)],
             [[fixture.detection(3), fixture.detection(4), fixture.detection(5)]])
         self.assertEqual(orders, [])

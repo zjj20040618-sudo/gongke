@@ -107,6 +107,20 @@ class TeammateRankProtocolTests(unittest.TestCase):
             self.assertEqual(counts[-1][:7], (1, 0, 1, 0, 0, 0, 0))
             self.assertTrue(all(p[7] in (1, 0x54) for p in packets if p[2] == 0x62))
 
+    def test_manual_qr_auto_return_reaches_teammate_mcu_with_same_task_and_history(self):
+        qr = {"payload": "123", "text": "123", "x": 0, "y": 0, "w": 20, "h": 20}
+        for task_id, digit, first, target in ((1, 1, 5, 4), (3, 3, 1, 0)):
+            with self.subTest(task_id=task_id):
+                packets, ranks, counts, captures = self.run_camera(
+                    [build_task_packet(1, task_id, digit), b"", b"", b"", b""],
+                    [[fixture.detection(first)], [fixture.detection(first)],
+                     [fixture.detection(target)], [fixture.detection(target)]],
+                    dual_buffer=True, manual_toggles=(3,), qr_frames=([qr],))
+                self.assertEqual([row[2] for row in captures], ["OBJECT", "OBJECT", "QR", "OBJECT", "OBJECT"])
+                self.assertEqual(ranks[-1], (1, task_id, digit, 1, 2, target, 2, 2, first, target, 255))
+                self.assertEqual(counts[-1][:7], (1, 0, 2, 0, 0, 0, 0))
+                self.assertTrue(all(p[7] in (1, 0x54) for p in packets if p[2] == 0x62))
+
     def test_retry_loss_and_new_request_keep_numbering_contract(self):
         _, ranks, counts, _ = self.run_camera(
             [build_task_packet(1, 1, 1), build_task_packet(1, 1, 1), b"",

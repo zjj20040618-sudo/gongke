@@ -38,8 +38,9 @@ class UartMainTests(unittest.TestCase):
         cls.addClassCleanup(replay_class.doClassCleanups)
         cls.mcu = replay_class()
 
-    def run_loop(self, commands, detections, write_counts, dual_buffer=False, manual_toggles=()):
+    def run_loop(self, commands, detections, write_counts, dual_buffer=False, manual_toggles=(), qr_frames=()):
         incoming, detected, counts = map(iter, (commands, detections, write_counts))
+        decoded = iter(qr_frames)
         turn, captures = [0], []
 
         def need_exit():
@@ -111,7 +112,7 @@ class UartMainTests(unittest.TestCase):
         replacements = {
             "maix": fake_maix,
             "mode_controller": SimpleNamespace(ModeController=Modes),
-            "qr_reader": SimpleNamespace(QrReader=lambda: SimpleNamespace(decode=lambda img: [], roi=lambda img: [])),
+            "qr_reader": SimpleNamespace(QrReader=lambda: SimpleNamespace(decode=lambda img: next(decoded, []), roi=lambda img: [])),
             "ui": SimpleNamespace(draw_header=noop, draw_objects=noop, draw_qrs=noop, make_qr_preview=noop),
             "user_button": SimpleNamespace(UserButton=lambda: SimpleNamespace(
                 take_toggle_request=lambda: turn[0] in manual_toggles, close=noop)),
@@ -126,6 +127,26 @@ class UartMainTests(unittest.TestCase):
                 main = load_file("uart_main_loop", APP / "main.py")
                 main.main()
         return serial, captures
+
+    def test_manual_qr_success_restores_object_request_and_preserves_number_history(self):
+        qr = {"payload": "123", "text": "123", "x": 0, "y": 0, "w": 20, "h": 20}
+        serial, captures = self.run_loop(
+            [build_task_packet(6, 3, 3), b"", b""],
+            [[detection(1)], [detection(0)]], [], manual_toggles=(2,), qr_frames=([qr],))
+        self.assertEqual([mode for _, _, mode in captures], ["OBJECT", "QR", "OBJECT"])
+        frames = self.frames(serial.wire)
+        results = [p for p in frames if p[2] == 0x62]
+        self.assertTrue(all(struct.unpack_from("<H", p, 3)[0] == 6 for p in results))
+        self.assertTrue(all(p[7] in (0x01, 0x54) for p in results))
+        self.assertFalse(any(at == 2 for at, chunk in serial.chunks))
+        orders = [p for p in results if p[7] == 0x54]
+        self.assertEqual(orders[-1][11:13], bytes([2, 2]))  # 目标0排第2；先前看到的1仍保留。
+
+    def test_manual_qr_without_valid_payload_stays_paused(self):
+        serial, captures = self.run_loop(
+            [build_task_packet(6, 3, 3), b"", b""], [[detection(0)]], [], manual_toggles=(2,))
+        self.assertEqual([mode for _, _, mode in captures], ["OBJECT", "QR", "QR"])
+        self.assertTrue(all(at == 1 for at, chunk in serial.chunks))
 
     def test_rx_exception_then_new_qr_request_still_acks_and_reports_qr(self):
         serial, captures = self.run_loop(

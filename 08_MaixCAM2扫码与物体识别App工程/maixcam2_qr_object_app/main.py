@@ -107,11 +107,13 @@ def main():
                 gc.collect()
                 try:
                     control.manual_toggle()
-                    hostage_order.reset()  # 手动预览不记录场外物体，也不冒充本轮任务结果。
-                    ball_order.reset()
-                    pending_ack = None  # 不继续确认已被人工暂停的业务请求。
+                    if not control.remote_owned:
+                        hostage_order.reset()
+                        ball_order.reset()
+                    # 原请求的ACK与历史编号保留；人工预览不新增编号、不回传。
                     frame_pair.reset()
-                    manual_object_view = modes.mode == config.MODE_OBJECT
+                    manual_object_view = modes.mode == config.MODE_OBJECT and (
+                        not control.remote_owned or control.manual_override)
                     inspector.reset()
                     object_display.reset()
                     if modes.mode == config.MODE_QR:
@@ -187,8 +189,10 @@ def main():
                     sequence = (sequence + 1) & 0xFFFF  # 分配给新帧；尾包完成与新帧不能共用seq。
                     qr_sent = send_packet(serial, control.result(packet))
                     uart_ms = time.ticks_ms() - uart_started
-                if task.payload is not None and qr_sent and not auto_object_failed and not control.manual_override:
-                    pending_auto_object = True  # 完整报码并释放原图后，下一轮才换格式。
+                if task.payload is not None and not auto_object_failed and (
+                        (qr_sent and not control.manual_override) or control.can_resume_object_after_qr()):
+                    # 正常QR完整报码；人工QR仅恢复原OBJECT，不发跨模式二维码包。
+                    pending_auto_object = True  # 释放原图后，下一轮才换格式。
             else:
                 objects, work_ms = modes.detector.detect(img)
                 paired = frame_pair.align(img, capture_ms, loop_started)
@@ -200,7 +204,7 @@ def main():
                     width, height = img.width(), img.height()
                 selected_objects = task.select(objects, control.target_class_id,
                     include_barrel=control.remote_owned or task.payload is not None, img_w=width, img_h=height)
-                if result_ready:
+                if result_ready and not control.manual_override and not control.qr_handoff:
                     # 使用全部新检测结果；若先筛成抓取目标，就无法知道另外两种谁先出现。
                     hostage_order.observe(objects, width, height)
                     ball_order.observe(objects, width, height)
@@ -243,7 +247,8 @@ def main():
             if manual_object_view:
                 task_status = "MANUAL: ALL CLASSES"
             if control.manual_override:
-                task_status += " MCU PAUSED: NEW REQUEST REQUIRED"
+                task_status += (" SCAN QR TO RESUME OBJECT" if control.can_resume_object_after_qr()
+                                else " MCU RESULTS PAUSED: RETURN TO REQUEST MODE")
             if not result_ready:
                 task_status += " PIPELINE WARMUP"
             if control.qr_handoff:
