@@ -1,4 +1,12 @@
-# 本次更新：MC2编号协议对齐队友MCU
+# 本次更新：MC2配套电控启动会话V1
+
+## 2026-10-09：启动会话与旧包隔离
+
+基于电控6fe1538接入08 MC2四步启动握手和66业务包装；只修改视觉通信/状态及相关测试、说明，保留电控同批路线/机械修改。新CONFIRM提交才清旧QR、请求、ACK、排序和图像流水线；旧HELLO不清任务，握手重试幂等，旧会话包不可驱动当前任务。同一会话的人工扫码恢复仍可用；新会话必须重新下发任务。
+
+双方默认旧协议：MC2 `maixcam2_qr_object_app/config.py::BOOT_SESSION_ENABLED=False`，电控 `App/proto.h::PROTO_BOOT_SESSION_ENABLE=0`。新协议必须配对开启True/1并重新部署完整App、重编烧录MCU；不自动降级，不能仅升级一端。MC2单独重启仍须两端重新启动。模型、相机/串口参数与用户已有调参不改变；旧dist未重打包。
+
+基线163项、新版181项主机测试全通过，无错误/跳过。包括固定电控6fe1538真实C解析器自测、Python组包双向握手、MCU重启同号旧包隔离、四任务/球人质六排列、空帧、真实main/UartLink的二维码锁存与排序重置、分片/CRC/短写/重试。源码合并不等于设备已部署/烧录或实体UART/RNG/运动验收；先静止验证握手与MCU单独重启，再测四任务。详细交接见 [VISION_TO_CONTROL.md](VISION_TO_CONTROL.md) 页首；精确契约见 [CONTROL_TO_VISION.md](CONTROL_TO_VISION.md) 页首。
 
 ## 2026-10-09：修复MC2人工扫码后不切识别模式
 

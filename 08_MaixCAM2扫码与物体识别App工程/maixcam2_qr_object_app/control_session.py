@@ -5,8 +5,9 @@ from task_selection import TaskSelection
 class ControlSession:
     MODES = ("IDLE", "QR", "OBJECT")
 
-    def __init__(self, modes):
+    def __init__(self, modes, transport=None):
         self.modes = modes
+        self.transport = transport
         self.request_id = None
         self.last_command = None
         self.last_ack = None
@@ -15,6 +16,16 @@ class ControlSession:
         self.acknowledged = False
         self.manual_override = False
         self.qr_handoff = False  # 已自动打开OBJECT，但电控仍持有原QR请求。
+
+    def reset_for_boot(self):
+        """Only a validated new CONFIRM may revoke the old task authority."""
+        self.__init__(self.modes, self.transport)
+        self.remote_owned = True
+        self.modes.enter("IDLE")
+
+    def _build_ack(self, request_id, mode, status=0):
+        packet = build_ack_packet(request_id, mode, status)
+        return self.transport.wrap(packet) if self.transport is not None else packet
 
     def auto_object_after_qr(self):
         """预加载OBJECT；不擅自改变电控请求模式、编号或ACK。
@@ -56,6 +67,8 @@ class ControlSession:
                 self.modes.mode, self.request_id, self.manual_override, self.acknowledged))
 
     def ready_for_capture(self):
+        if self.transport is not None and not self.transport.ready:
+            return False
         return (self.manual_override or not self.remote_owned
                 or (self.request_id is not None and self.acknowledged))
 
@@ -65,12 +78,12 @@ class ControlSession:
             if self.manual_override:
                 actual = self.MODES.index(self.modes.mode) if self.modes.mode in self.MODES else 0
                 # 不发原来成功的缓存ACK：现在是人工诊断，不再执行该请求。
-                return build_ack_packet(request_id, actual, 1), False
+                return self._build_ack(request_id, actual, 1), False
             return self.last_ack, False  # lost ACK retry must not reload model or clear fresh results
         if self.last_command and request_id < self.last_command[0]:
             actual = self.MODES.index(self.modes.mode) if self.modes.mode in self.MODES else 0
             print("[CONTROL] stale request={} current={} rejected".format(request_id, self.last_command[0]))
-            return build_ack_packet(request_id, actual, 1), False
+            return self._build_ack(request_id, actual, 1), False
         self.remote_owned = True
         self.qr_handoff = False
         self.request_id = None  # a failed switch must never report old results under new request
@@ -93,12 +106,12 @@ class ControlSession:
             print("[CONTROL] switch failed:", exc)
         actual_mode = self.MODES.index(self.modes.mode) if self.modes.mode in self.MODES else 0
         self.last_command = command
-        self.last_ack = build_ack_packet(request_id, actual_mode, status)
+        self.last_ack = self._build_ack(request_id, actual_mode, status)
         print("[CONTROL] request={} actual_mode={} task={} digit={} class={} status={}".format(request_id, self.MODES[actual_mode], task_id, qr_digit, self.target_class_id, status))
         return self.last_ack, True
 
     def ack_sent(self, packet):
-        if packet == self.last_ack and self.request_id is not None:
+        if packet is not None and packet == self.last_ack and self.request_id is not None:
             self.acknowledged = True
 
     def result(self, packet):
@@ -117,4 +130,5 @@ class ControlSession:
                 return None
         elif packet[2] != expected_type:
             return None
-        return bind_result(packet, self.request_id) if self.remote_owned else packet
+        result = bind_result(packet, self.request_id) if self.remote_owned else packet
+        return self.transport.wrap(result) if self.transport is not None else result

@@ -30,6 +30,7 @@ class UartLink:
         self.rx_bytes = self.rx_errors = self.tx_bytes = self.tx_errors = 0
         self._last_state = None
         self._state_at = 0.0
+        self._session_state = None
 
     def _ensure_open(self):
         # 初始化失败不等于关闭整个App；最多每秒重试一次，避免每帧刷屏/重配引脚。
@@ -82,6 +83,12 @@ class UartLink:
         self._record(message)
 
     def record_state(self, control, pending_ack=None, receiver=None):
+        transport = getattr(control, "transport", None)
+        if transport is not None:
+            session_state = (transport.active, transport.pending, transport.ready)
+            if session_state != self._session_state:
+                self._session_state = session_state
+                self._record("[SESSION STATE] active={} pending={} ready={}".format(*session_state))
         # 状态改变立即记录；静默时每秒一次，区分没有RX、人工暂停和ACK等待。
         state = (control.modes.mode, control.request_id, control.manual_override,
                  control.acknowledged, control.qr_handoff, control.last_command,
@@ -121,7 +128,8 @@ class UartLink:
     def _begin_packet(self, packet):
         self._pending_packet = packet
         self._offset = self._write_calls = 0
-        is_ack = len(packet) >= 3 and packet[:3] == b"\xaa\x55\x61"
+        is_ack = (len(packet) >= 3 and packet[2] in (0x61, 0x65, 0x68)) or (
+            len(packet) >= 26 and packet[2] == 0x66 and packet[21] == 0x61)
         if not is_ack:
             self._business_frames += 1
         every = max(1, int(getattr(config, "UART_TRACE_EVERY_N_FRAMES", 10)))

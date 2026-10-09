@@ -34,6 +34,7 @@ QR_SHAPE_NAMES_CN = {"1": "圆柱", "2": "圆锥", "3": "腰鼓"}
 QR_COLOR_CODES = {"1": "R", "2": "G", "3": "B"}
 QR_SHAPE_CODES = {"1": "Cyl", "2": "Cone", "3": "Drum"}
 UART_ENABLED = True
+BOOT_SESSION_ENABLED = False  # 配对电控PROTO_BOOT_SESSION_ENABLE=1时设True；不自动降级。
 UART_DEVICE = "/dev/ttyS2"  # MC2的UART2；不是原MC的UART1。
 UART_BAUDRATE = 115200
 UART_TX_PIN = "B0"  # MC2 TX 接 MCU RX（如原电控PD6），3.3V TTL。

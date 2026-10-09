@@ -11,6 +11,7 @@ from mode_controller import ModeController
 from protocol import (build_object_packet, build_qr_packet, build_hostage_order_packet,
                       build_ball_order_packet, CommandReceiver)
 from control_session import ControlSession
+from boot_session import BootSession
 from qr_reader import QrReader
 from ui import draw_header, draw_objects, draw_qrs, make_qr_preview
 from user_button import UserButton
@@ -40,7 +41,9 @@ def main():
         frame_pair = FramePair(config.DUAL_BUFFER)
         serial, button = init_uart(), UserButton()
         modes, qr_reader = ModeController(cam), QrReader()
-        receiver, control = CommandReceiver(), ControlSession(modes)
+        boot = BootSession() if config.BOOT_SESSION_ENABLED else None
+        receiver = boot if boot is not None else CommandReceiver()
+        control = ControlSession(modes, boot)
         task = TaskSelection()
         hostage_order = HostageOrder()
         ball_order = BallOrder()
@@ -54,6 +57,8 @@ def main():
         manual_object_view = modes.mode == config.MODE_OBJECT
         print("[APP] ready {}; model={} classes=10; UART controls recognition".format(modes.mode, config.MODEL_FILE))
         print("[UART] QR=0x53; OBJECT=0x01; HOSTAGE/BALL ORDER=0x54; task request=0x63; MCU requires f976afb-compatible rank receiver")
+        print("[SESSION] transport={}; MCU boot V1 requires 6fe1538+".format(
+            "V1: waiting HELLO; no legacy fallback" if boot is not None else "legacy (boot V1 disabled)"))
         for class_id, name in enumerate(config.CLASS_NAMES_CN):
             print("[CLASS] {} {} ({})".format(class_id, name, class_name(class_id)))
 
@@ -63,7 +68,34 @@ def main():
             # 前一帧已释放；只有主循环会修改摄像头和模型。
             if serial is not None:
                 data = serial.read(len=256, timeout=0)
-                for command in receiver.feed(data or b""):
+                commands = (receiver.feed(data or b"", time.ticks_ms()) if boot is not None
+                            else receiver.feed(data or b""))
+                for command in commands:
+                    if boot is not None:
+                        response, committed, command = boot.receive(command)
+                        if committed:
+                            control.reset_for_boot()
+                            pending_ack = None
+                            task.reset()
+                            hostage_order.reset()
+                            ball_order.reset()
+                            sequence = 0
+                            frame_pair.reset()
+                            inspector.reset()
+                            object_display.reset()
+                            cached_qrs, cached_qr_left = [], 0
+                            pending_auto_object = auto_object_failed = False
+                            last_task_message = None
+                            manual_object_view = False
+                            fps_count, fps_value, fps_started = 0, 0.0, time.ticks_ms()
+                        if response is not None:
+                            ack_attempted = True
+                            pending_ack = response
+                            if send_packet(serial, response):
+                                boot.transmitted(response)
+                                pending_ack = None
+                        if command is None:
+                            continue
                     record_event = getattr(serial, "record_event", None)
                     if record_event is not None:
                         record_event("[CONTROL RX] parsed={} previous_mode={} previous_request={}".format(
@@ -95,6 +127,8 @@ def main():
                 if pending_ack is not None and not ack_attempted:
                     if send_packet(serial, pending_ack):
                         control.ack_sent(pending_ack)
+                        if boot is not None:
+                            boot.transmitted(pending_ack)
                         pending_ack = None
             # 短按始终切换QR/OBJECT；长按优先退出，绝不同时触发短按。
             # 只退出视觉 App，不是电机急停；停车/断流保护由电控独立处理。

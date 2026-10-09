@@ -38,7 +38,8 @@ class UartMainTests(unittest.TestCase):
         cls.addClassCleanup(replay_class.doClassCleanups)
         cls.mcu = replay_class()
 
-    def run_loop(self, commands, detections, write_counts, dual_buffer=False, manual_toggles=(), qr_frames=()):
+    def run_loop(self, commands, detections, write_counts, dual_buffer=False, manual_toggles=(), qr_frames=(),
+                 boot_enabled=False, boot_random=None):
         incoming, detected, counts = map(iter, (commands, detections, write_counts))
         decoded = iter(qr_frames)
         turn, captures = [0], []
@@ -57,6 +58,8 @@ class UartMainTests(unittest.TestCase):
                 if kwargs != {"len": 256, "timeout": 0}:
                     raise AssertionError("UART read must remain bounded and nonblocking")
                 data = next(incoming)
+                if callable(data):
+                    data = data(self)
                 if isinstance(data, Exception):
                     raise data
                 return data
@@ -119,12 +122,16 @@ class UartMainTests(unittest.TestCase):
         }
         with patch.dict(sys.modules, replacements), \
              patch.multiple(config, DISPLAY_ENABLED=False, START_MODE="IDLE", UART_TRACE=False,
-                 UART_WRITE_ATTEMPTS=8, UART_TRACE_EVERY_N_FRAMES=10, DUAL_BUFFER=dual_buffer), \
+                 UART_WRITE_ATTEMPTS=8, UART_TRACE_EVERY_N_FRAMES=10, DUAL_BUFFER=dual_buffer,
+                 BOOT_SESSION_ENABLED=boot_enabled), \
              contextlib.redirect_stdout(io.StringIO()):
             hardware = load_file("uart_main_hardware", APP / "hardware.py")
             with patch.dict(sys.modules, {"hardware": hardware}), \
                  patch.object(hardware, "init_uart", return_value=hardware.UartLink(serial)):
                 main = load_file("uart_main_loop", APP / "main.py")
+                if boot_random is not None:
+                    import boot_session
+                    main.BootSession = lambda: boot_session.BootSession(boot_random)
                 main.main()
         return serial, captures
 
