@@ -2,7 +2,7 @@
 
 共同仓库：[zjj20040618-sudo/gongke](https://github.com/zjj20040618-sudo/gongke)，目前共用分支 `main`。本机目录是 `C:/Users/15119/gongkesai/gongke`，队友可以放在自己的其他非 OneDrive 目录。
 
-电控主要改根目录 `App/`；视觉主要改 `03_扫码与物体识别联合App工程/qr_object_app/`。旧的 `jiejie` 演示仓库不再使用，但本仓库 Keil 工程文件依然叫 `MDK-ARM/jiejie.uvprojx`，不要混淆。
+电控主要改根目录 `App/`；视觉主要改 `08_MaixCAM2扫码与物体识别App工程/maixcam2_qr_object_app/`。旧的 `jiejie` 演示仓库不再使用，但本仓库 Keil 工程文件依然叫 `MDK-ARM/jiejie.uvprojx`，不要混淆。
 
 2026-10-06当前发布说明见 [README_本次更新.md](README_本次更新.md) 与 [CONTROL_TO_VISION.md](CONTROL_TO_VISION.md)：电控`20261006-XY-STEP3-X20-Y30`（上传成功以远端提交核对为准，未烧录，主机全套exit0、Keil全量0 Error / 0 Warning）。已审核并同步远端main066d346合入的视觉5d5e812/App2.1.16，不主动改视觉源码/算法；本机STEP3电控0e8cc85保留，7a2ab10是上轮历史。三点差异相对共同祖先58950a6无App电控变动，不把分支旧基线误判为删除。旧01/53等与任务映射兼容，新54站位解析/锁存/返回路线未接入，不能称全对齐；真实writer/C/VAT40回放确认54拒绝不污染01，但不是实机验收。38～41短步/后Y纠角、39免QR/41原22按本次说明；31新任务链未接、35X-only不变。新实际画幅由模型读取，07:47旧640×480不替代新部署；若实际320高球/桶临时点不可达，不自动缩放或猜站位1。夹持、实体投影/延迟与收敛仍待实测，下方10月4日为历史。MOTION_YAW_TUNING新增全局里程方案仅未实施研究，不自动授权修改31/38～41，也不覆盖当前视觉对位需求。
 

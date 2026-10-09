@@ -5,7 +5,7 @@
 先读 [README_本次更新.md](README_本次更新.md) 了解本次改动；视觉队友接着读 [CONTROL_TO_VISION.md](CONTROL_TO_VISION.md)。视觉侧说明保存在 [VISION_TO_CONTROL.md](VISION_TO_CONTROL.md)；双端已有53/63软件配套，源码版本不代表设备已部署。
 
 - 电控工程：[MDK-ARM/jiejie.uvprojx](MDK-ARM/jiejie.uvprojx)。`App/` 为自写控制代码，`Src/`、`Inc/` 为外设/RTOS入口。
-- 视觉工程：`03_扫码与物体识别联合App工程/qr_object_app/`，保留队友本轮源码与9564模型，不另改识别算法。
+- 视觉工程：`08_MaixCAM2扫码与物体识别App工程/maixcam2_qr_object_app/`，当前唯一视觉工程为MaixCAM2，使用9767 MUD及NPU/VNPU模型；旧03 MaixCAM工程已删除。
 - 结构与调参入口：[PROJECT_GUIDE.md](PROJECT_GUIDE.md)、[MOTION_YAW_TUNING.md](MOTION_YAW_TUNING.md)。
 - 协议与共同待办：[VISION_CONTROL_PROTOCOL.md](VISION_CONTROL_PROTOCOL.md)、[VISION_CONTROL_TODO.md](VISION_CONTROL_TODO.md)。
 - 电控/机构待测：[CONTROL_TUNING_TODO.md](CONTROL_TUNING_TODO.md)、[ACTUATOR_TEAMMATE_HANDOFF.md](ACTUATOR_TEAMMATE_HANDOFF.md)。

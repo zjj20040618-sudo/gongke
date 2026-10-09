@@ -164,11 +164,9 @@ try {
     foreach ($pixelSign in @(1, -1)) {
         Invoke-HostCase "eod_align_left_axis_$pixelSign" @('tests/align_boundary_test.c') @('tests/stubs', 'App') @("-DVISION_CX_FWD_SIGN=$pixelSign", '-DSWEEP_FWD_MMS=100.0f', '-DSWEEP_BALL_DELTA_MM=10.0f', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     }
-    Invoke-HostPythonCase 'vision camera main loop' 'tests/test_vision_control_main.py'
-    Invoke-HostPythonCase 'vision ball order main loop' 'tests/test_vision_ball_order_main.py'
-    Invoke-HostPythonCase 'full binary packet replay' 'tests/test_vision_binary_replay.py'
-    Invoke-HostPythonCase 'current QR53 and four selected tasks' 'tests/test_vision_qr53_replay.py'
-    Invoke-HostPythonCase 'request-bound target rank54 producer replay' 'tests/test_vision_rank_replay.py'
+    # The old MaixCAM app and its producer fixtures have been retired.
+    & $hostPython -B -m unittest discover -s '08_MaixCAM2扫码与物体识别App工程/maixcam2_qr_object_app/tests'
+    if ($LASTEXITCODE -ne 0) { throw 'MaixCAM2 application and MCU packet replay failed' }
     Invoke-HostPythonCase 'receive-only vision IRQ/stop contract' 'tests/test_vision_diag_contract.py'
 
     $mission = Get-Content 'App/mission.c' -Raw -Encoding utf8
