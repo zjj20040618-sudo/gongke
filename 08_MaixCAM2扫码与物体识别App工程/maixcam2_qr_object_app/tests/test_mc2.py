@@ -65,11 +65,12 @@ class MC2Tests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "MaixCAM2"):
                 check_device()
 
-    def test_reference_parameters_preserved(self):
+    def test_published_camera_parameters_preserved(self):
         self.assertEqual((config.QR_WIDTH, config.QR_HEIGHT), (1920, 1280))
         self.assertEqual((config.QR_ROI_FRACTION, config.QR_ROI_CENTER_X,
-                          config.QR_ROI_CENTER_Y), (.20, .44, .35))
-        self.assertEqual(config.CONF_THRESHOLD, .35)
+                          config.QR_ROI_CENTER_Y), (.25, .44, .34))
+        self.assertTrue(config.QR_ROI_TOUCH_MOVE)
+        self.assertEqual(config.CONF_THRESHOLD, .50)
         self.assertEqual(config.TASK_CONFIRM_FRAMES, 1)
         self.assertEqual(config.KEY_LONG_PRESS_MS, 1500)
 

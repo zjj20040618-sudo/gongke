@@ -1,7 +1,7 @@
 id: mc2_qr_object_test
 name: MC2 QR Object Test
 name[zh]: MC2扫码与物体识别测试
-version: 1.0.0
+version: 1.1.0
 icon: app.png
 author: Bellator
 desc: MaixCAM2 YOLO26 and QR with UART2 task protocol
@@ -22,12 +22,12 @@ files:
   - hostage_order.py
   - main.py
   - mode_controller.py
-  - model_metadata.py
-  - platform_check.py
-  - model_9767.mud
   - model_9767_npu.axmodel
   - model_9767_vnpu.axmodel
+  - model_9767.mud
+  - model_metadata.py
   - object_detector.py
+  - platform_check.py
   - protocol.py
   - qr_reader.py
   - task_selection.py
