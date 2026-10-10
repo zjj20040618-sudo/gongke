@@ -17,6 +17,7 @@ static float yaw, leg_yaw, vx, vy, w, fore, lateral;
 static float heading_hold_target;
 static float heading_hold_kp;
 static unsigned heading_hold_calls;
+static unsigned creep_drive_calls;
 static int imu_valid, aborted, laser;
 static int32_t counts[4];
 static unsigned request_count, laser_on, imu_zero, arm_calls;
@@ -24,6 +25,7 @@ static uint16_t seq;
 static uint8_t last_task, last_digit, last_opcode;
 static VisionAlignTestStatus st;
 static int route_environment;
+static unsigned route_fixture_owner;
 static int route_auto_hostage_rank;
 static int route_auto_ball_rank;
 static const int32_t qr123[3] = {1,2,3};
@@ -50,6 +52,8 @@ int32_t ctrl_enc_total(int wheel) { return counts[wheel]; }
 int run_aborted(void) { return aborted; }
 void motion_brake(void) { vx=vy=w=0.0f; }
 void motion_vel_set_precise(float x, float y, float turn) { vx=x;vy=y;w=turn; }
+void motion_vel_set_creep(float x, float y, float turn)
+{ ++creep_drive_calls; motion_vel_set_precise(x,y,turn); }
 float motion_odo_mm(void) { return fore; }
 float motion_lateral_odo_mm(void) { return lateral; }
 void bp_laser_set(int on) { laser=on; if(on)laser_on++; }
@@ -121,6 +125,7 @@ static void reset_environment(void)
     now_ms=0;vx=vy=w=fore=lateral=0.0f;yaw=37.0f;imu_valid=1;aborted=laser=0;
     leg_yaw=heading_hold_target=heading_hold_kp=0.0f;heading_hold_calls=0u;
     route_environment=0;route_auto_hostage_rank=1;route_auto_ball_rank=1;
+    route_fixture_owner=0u;
     memset(counts,0,sizeof counts);request_count=laser_on=imu_zero=arm_calls=0;seq=1;
     last_opcode=last_task=last_digit=0;
     proto_init();proto_set_binary_mode(1);proto_set_binary_tx(tx);proto_set_on_frame(vision_align_test_feed_frame);
@@ -164,17 +169,31 @@ static int route_ramp100(float ratio)
     tick(200u);CHECK(vx==100.0f&&vy==100.0f*ratio&&st.state==VAT_ROUTE_SEARCH);
     return 1;
 }
-static int reset_route(unsigned mode)
+static int reset_route_scoped(unsigned mode,unsigned owner)
 {
     reset_environment();
     proto_send_scene(SCENE_QR);proto_service();ack(request(),1u,0u);qr_feed(request());
     int32_t locked[3]={0,0,0};CHECK(proto_qr_get(locked));
     proto_receive_end();CHECK(!proto_qr_get(NULL));
     CHECK(!vision_align_test_start((uint8_t)mode,locked));
-    CHECK(vision_align_test_start_route((uint8_t)mode,locked));proto_service();vision_align_test_status(&st);
+    CHECK(owner ? vision_align_test_start_route_scoped((uint8_t)mode,locked,(uint8_t)owner)
+                : vision_align_test_start_route((uint8_t)mode,locked));
+    proto_service();vision_align_test_status(&st);
     route_environment=1;
+    route_fixture_owner=owner?owner:31u;
     CHECK(stopped()&&request_count==2u&&last_opcode==0x63u);
     return 1;
+}
+static int reset_route(unsigned mode) { return reset_route_scoped(mode,0u); }
+static void yaw_frame_keepalive(void)
+{
+    if(!route_environment||route_fixture_owner!=31u)return;
+    int y=st.task==PROTO_TASK_BUCKET?VAT_BUCKET_Y_PX:st.task==PROTO_TASK_HOSTAGE?VAT_HOSTAGE_Y_PX:VAT_BALL_Y_PX;
+    unsigned width=st.img_w?st.img_w:st.rx_img_w?st.rx_img_w:640u;
+    unsigned height=st.img_h?st.img_h:st.rx_img_h?st.rx_img_h:480u;
+    if((unsigned)y>=height)y=(int)(height/2u);
+    object(request(),st.task==PROTO_TASK_BUCKET?9:st.task==PROTO_TASK_HOSTAGE?0:4,
+           st.x_goal,y,width,height,seq++);
 }
 static int check_route_locked_qr_entry(void)
 {
@@ -234,11 +253,16 @@ static int end_step_by_odometry(void)
     tick(20u);CHECK(st.state==VAT_BRAKE&&stopped()&&!st.step_capped);
     CHECK(fabsf(st.step_mm-3.0f)<0.0001f);return 1;
 }
+static VisionAlignTestState route_fine_state(void)
+{
+    return route_fixture_owner==31u&&!VAT_Y_ALIGN_ENABLE?VAT_FINE_CONTINUOUS:VAT_STEP_MOVE;
+}
 static int yaw_settle(void)
 {
     CHECK(st.state==VAT_YAW_FIX&&st.yaw_dirty&&st.yaw_ever);
-    yaw=st.yaw_target;tick(20u);CHECK(st.state==VAT_YAW_FIX&&stopped());
-    tick20(34u);CHECK(st.state==VAT_YAW_FIX&&stopped());tick(20u);
+    yaw=st.yaw_target;yaw_frame_keepalive();tick(20u);CHECK(st.state==VAT_YAW_FIX&&stopped());
+    for(unsigned i=0u;i<34u;i++){yaw_frame_keepalive();tick(20u);}
+    CHECK(st.state==VAT_YAW_FIX&&stopped());yaw_frame_keepalive();tick(20u);
     CHECK(st.state==VAT_RECHECK&&stopped()&&!st.yaw_dirty&&!st.latest&&!st.rx_fresh&&!st.good);
     return 1;
 }
@@ -247,6 +271,13 @@ static int stop_recheck(void)
     CHECK(st.state==VAT_BRAKE&&stopped());tick(240u);CHECK(st.state==VAT_BRAKE&&stopped());tick(20u);
     if(st.yaw_dirty){CHECK(st.state==VAT_YAW_FIX&&stopped());CHECK(yaw_settle());}
     CHECK(st.state==VAT_RECHECK&&stopped()&&!st.latest&&!st.good);return 1;
+}
+static int route_fine_stop_recheck(int model,int x,int y)
+{
+    if(route_fine_state()==VAT_FINE_CONTINUOUS){
+        frame(model,x,y);CHECK(st.state==VAT_BRAKE&&stopped()&&!st.good);
+    }else CHECK(end_step_by_odometry());
+    return stop_recheck();
 }
 static int finish(int model,int x,int y)
 {
@@ -431,8 +462,9 @@ static int check_cancellation_and_abort_nack(void)
 }
 static int check_ball_turn_bucket_sequence(int route)
 {
-    int bucket_x=route?125:190;
-    CHECK(route?reset_route(41u):reset(41u));CHECK(ready());CHECK(finish(4,route?135:190,VAT_BALL_Y_PX));
+    /* Historical XY/2s wait contract belongs to deferred43. */
+    int bucket_x=route?VAT_ROUTE43_BUCKET_X_PX:190;
+    CHECK(route?reset_route_scoped(41u,43u):reset(41u));CHECK(ready());CHECK(finish(4,route?135:190,VAT_BALL_Y_PX));
     unsigned before=request_count;
     if(route){
         CHECK(st.state==VAT_WAIT_BALL_ACTION&&!vision_align_test_take_turn_request());
@@ -472,7 +504,7 @@ static int check_ball_turn_bucket_sequence(int route)
     CHECK(st.state==VAT_DONE&&strcmp(st.reason,"ALIGNED_BALL_BUCKET")==0&&stopped());
     CHECK(vision_align_test_take_route_action()==VAT_ROUTE_ACTION_NONE);
     for(unsigned fault=0u;fault<3u;fault++){
-        CHECK(route?reset_route(41u):reset(41u));CHECK(ready());CHECK(finish(4,route?135:190,VAT_BALL_Y_PX));
+        CHECK(route?reset_route_scoped(41u,43u):reset(41u));CHECK(ready());CHECK(finish(4,route?135:190,VAT_BALL_Y_PX));
         if(route){CHECK(vision_align_test_take_route_action()==VAT_ROUTE_ACTION_BALL);vision_align_test_notify_route_action_result(1);}
         else tick(5000u);
         CHECK(vision_align_test_take_turn_request());
@@ -506,7 +538,7 @@ static int check_route_search100_first_image_brake_and_fine(void)
     const unsigned modes[]={41u,40u};
     const int models[]={4,0},xs[]={135,215},ys[]={VAT_BALL_Y_PX,VAT_HOSTAGE_Y_PX};
     for(unsigned kind=0u;kind<2u;kind++)for(unsigned sticky=0u;sticky<2u;sticky++){
-        CHECK(reset_route(modes[kind]));
+        CHECK(reset_route_scoped(modes[kind],43u));
         object(request(),models[kind],xs[kind],ys[kind],640u,480u,seq++);
         tick(1000u);CHECK(st.state==VAT_ALIGN&&stopped()&&!st.good&&!heading_hold_calls);
         ack((uint16_t)(request()-1u),2u,0u);tick(20u);CHECK(stopped());
@@ -540,7 +572,7 @@ static int check_route_search100_first_image_brake_and_fine(void)
         vision_align_test_cancel();
     }
     for(unsigned fault=0u;fault<6u;fault++){
-        CHECK(reset_route(41u));CHECK(ready());tick(20u);CHECK(route_ramp100(0.0f));
+        CHECK(reset_route_scoped(41u,43u));CHECK(ready());tick(20u);CHECK(route_ramp100(0.0f));
         if(fault==0u)vision_align_test_cancel();
         else if(fault==1u)aborted=1;
         else if(fault==2u)imu_valid=0;
@@ -562,9 +594,21 @@ static int check_route_search_gain_and_late_yaw_recheck(void)
     CHECK(!vision_align_test_route_search_kp_set(1.0f));yaw=37.5f;leg_yaw=5.0f;tick(20u);
     CHECK(heading_hold_kp==3.0f&&fabsf(w-(-0.5f*3.0f*0.0174533f))<0.00001f&&step_heading_kp_deg()==0.3f);
     yaw=37.0f;frame(4,135,VAT_BALL_Y_PX);CHECK(st.state==VAT_BRAKE&&stopped()&&st.yaw_ever);
-    yaw=37.5f;tick(260u);CHECK(st.state==VAT_YAW_FIX&&st.yaw_dirty&&stopped());
-    tick(20u);CHECK(w<0.0f&&vx==0.0f&&vy==0.0f);CHECK(yaw_settle());
-    tick(1000u);CHECK(st.state==VAT_RECHECK&&stopped()&&!st.good);CHECK(finish(4,135,VAT_BALL_Y_PX));
+    yaw=37.5f;tick(260u);
+    if (VAT_ROUTE31_BALL_HOSTAGE_STOP_YAW_ENABLE) {
+        CHECK(st.state==VAT_YAW_FIX&&st.yaw_dirty&&stopped());
+        tick(20u);CHECK(w<0.0f&&vx==0.0f&&vy==0.0f);CHECK(yaw_settle());
+        tick(20u);CHECK(st.state==VAT_RECHECK&&stopped()&&!st.good);
+        CHECK(finish(4,135,VAT_BALL_Y_PX));
+    } else {
+        CHECK(st.state==VAT_RECHECK&&!st.yaw_dirty&&stopped()&&!st.good&&!st.latest);
+        CHECK(st.yaw_target==37.0f&&fabsf(st.yaw_error+0.5f)<0.00001f);
+        for (unsigned fresh=1u;fresh<=VAT_GOOD_FRAMES;fresh++) {
+            frame(4,135,VAT_BALL_Y_PX);
+            CHECK(stopped()&&!st.yaw_dirty&&st.yaw_target==37.0f);
+            if (fresh<VAT_GOOD_FRAMES) CHECK(st.state==VAT_ALIGN&&st.good==fresh);
+        }
+    }
     CHECK(st.state==VAT_WAIT_BALL_ACTION);vision_align_test_cancel();
 
     CHECK(reset_route(40u));CHECK(vision_align_test_route_search_kp_set(0.0f));
@@ -590,9 +634,9 @@ static int check_route_search_threshold_right_ff_and_isolation(void)
     const unsigned modes[]={41u,40u};
     const int models[]={4,0},xs[]={135,215},ys[]={VAT_BALL_Y_PX,VAT_HOSTAGE_Y_PX};
     const float invalid[]={-0.01f,0.1001f,NAN,INFINITY,-INFINITY};
-    CHECK(VAT_ROUTE_FINE_ERROR_PX==30&&VAT_ROUTE_BUCKET_FINE_ERROR_PX==30);
+    CHECK(VAT_ROUTE_FINE_ERROR_PX==15&&VAT_ROUTE_BUCKET_FINE_ERROR_PX==15);
     for(unsigned kind=0u;kind<2u;kind++)for(unsigned sticky=0u;sticky<2u;sticky++){
-        CHECK(reset_route(modes[kind]));
+        CHECK(reset_route_scoped(modes[kind],43u));
         for(unsigned i=0u;i<sizeof invalid/sizeof invalid[0];i++)
             CHECK(!vision_align_test_route_search_ff_set(invalid[i]));
         CHECK(vision_align_test_route_search_ff_set(0.0f));
@@ -638,9 +682,9 @@ static int check_route_search_threshold_right_ff_and_isolation(void)
     }
     /* Every new route starts with FF0; before-coarse IRQ evidence still allows
      * its owner to configure, but cannot restart100 after the relative gate. */
-    CHECK(reset_route(40u));CHECK(ready());tick(20u);
+    CHECK(reset_route_scoped(40u,43u));CHECK(ready());tick(20u);
     CHECK(route_ramp100(0.0f));vision_align_test_cancel();
-    CHECK(reset_route(41u));ack(request(),2u,0u);
+    CHECK(reset_route_scoped(41u,43u));ack(request(),2u,0u);
     object(request(),4,164,VAT_BALL_Y_PX,640u,480u,seq++);
     CHECK(vision_align_test_route_search_ff_set(0.05f));tick(260u);
     CHECK(st.state==VAT_BRAKE&&stopped()&&!st.yaw_ever&&!heading_hold_calls);
@@ -656,7 +700,7 @@ static int check_route_search_threshold_right_ff_and_isolation(void)
         vision_align_test_cancel();
     }
     /* Paired bucket inherits the owner's cruise but never its lateral FF. */
-    CHECK(reset_route(41u));CHECK(vision_align_test_route_search_ff_set(0.05f));
+    CHECK(reset_route_scoped(41u,43u));CHECK(vision_align_test_route_search_ff_set(0.05f));
     CHECK(vision_align_test_route_search_speed_set(200.0f));
     CHECK(ready());CHECK(finish(4,135,VAT_BALL_Y_PX));
     CHECK(vision_align_test_take_route_action()==VAT_ROUTE_ACTION_BALL);
@@ -671,7 +715,7 @@ static int check_route_search_threshold_right_ff_and_isolation(void)
     frame(9,154,VAT_BUCKET_Y_PX);CHECK(st.state==VAT_BRAKE&&stopped());CHECK(stop_recheck());
     frame(9,400,VAT_BUCKET_Y_PX);CHECK(st.state==VAT_STEP_MOVE&&vx==20.0f&&vy==0.0f);
     vision_align_test_cancel();
-    puts("route coarse: ball/hostage goal+30 stayscoarse,goal+29 latchesfine; stale/empty/oldrequest/class do not latch; FF and standalone isolation; rank1bucket far400 backward/owner200/noFF then abs(error)<30 fine20 passed");
+    puts("deferred43 legacy coarse: ball/hostage goal+30 stayscoarse,goal+29 latchesfine; stale/empty/oldrequest/class do not latch; FF and standalone isolation; rank1bucket far400 backward/owner200/noFF then abs(error)<30 fine20 passed");
     return 1;
 }
 
@@ -683,37 +727,37 @@ static int check_route_signed_coarse_strict_boundaries(void)
         int direction=side?1:-1;
         CHECK(reset_route(modes[kind]));CHECK(vision_align_test_route_search_ff_set(0.05f));
         CHECK(ready());tick(20u);CHECK(route_ramp100(0.05f));
-        /* Both exact30 boundaries are coarse; only a NEW accepted selected
+        /* Both exact15 boundaries are coarse; only a NEW accepted selected
          * image can reverse cruise, and its ramp restarts at zero. */
-        frame(models[kind],goals[kind]-30,ys[kind]);
+        frame(models[kind],goals[kind]-15,ys[kind]);
         CHECK(st.state==VAT_ROUTE_SEARCH&&vx==0.0f&&vy==0.0f&&!st.good);
         tick(20u);CHECK(fabsf(vx+14.0f)<0.00001f&&vy==0.0f);
         tick(20u);CHECK(fabsf(vx+28.0f)<0.00001f&&vy==0.0f);
         tick(120u);CHECK(st.state==VAT_ROUTE_SEARCH&&vx==-100.0f&&vy==0.0f);
         uint16_t last=(uint16_t)(seq-1u);
-        object(request(),models[kind],goals[kind]+29,ys[kind],640u,480u,last);tick(20u);
+        object(request(),models[kind],goals[kind]+14,ys[kind],640u,480u,last);tick(20u);
         CHECK(st.state==VAT_ROUTE_SEARCH&&vx==-100.0f&&vy==0.0f); /* duplicate */
-        object(request(),models[kind],goals[kind]+29,ys[kind],640u,480u,(uint16_t)(last-1u));tick(20u);
+        object(request(),models[kind],goals[kind]+14,ys[kind],640u,480u,(uint16_t)(last-1u));tick(20u);
         CHECK(st.state==VAT_ROUTE_SEARCH&&vx==-100.0f&&vy==0.0f); /* backwards */
-        frame(models[kind],goals[kind]+30,ys[kind]);
+        frame(models[kind],goals[kind]+15,ys[kind]);
         CHECK(st.state==VAT_ROUTE_SEARCH&&vx==0.0f&&vy==0.0f);
         tick(20u);CHECK(fabsf(vx-14.0f)<0.00001f&&fabsf(vy-0.7f)<0.00001f);
         tick(20u);CHECK(fabsf(vx-28.0f)<0.00001f&&fabsf(vy-1.4f)<0.00001f);
         tick(120u);CHECK(st.state==VAT_ROUTE_SEARCH&&vx==100.0f&&vy==5.0f);
-        /* +/-29 latches fine but is outside unchanged +/-10 arrival. An
+        /* +/-14 latches fine but is outside unchanged +/-10 arrival. An
          * empty packet after the crossing cannot erase the fine latch. */
-        object(request(),models[kind],goals[kind]+29*direction,ys[kind],640u,480u,seq++);
+        object(request(),models[kind],goals[kind]+14*direction,ys[kind],640u,480u,seq++);
         object(request(),-1,0,0,640u,480u,seq++);tick(20u);
         CHECK(st.state==VAT_BRAKE&&stopped()&&!st.good);CHECK(stop_recheck());
-        frame(models[kind],goals[kind]+29*direction,ys[kind]);
-        CHECK(st.state==VAT_STEP_MOVE&&vx==20.0f*(float)direction&&vy==0.0f&&!st.good);
-        CHECK(end_step_by_odometry());CHECK(stop_recheck());
+        frame(models[kind],goals[kind]+14*direction,ys[kind]);
+        CHECK(st.state==route_fine_state()&&vx==20.0f*(float)direction&&vy==0.0f&&!st.good);
+        CHECK(route_fine_stop_recheck(models[kind],goals[kind],ys[kind]));
         CHECK(finish(models[kind],goals[kind],ys[kind]));
         CHECK(st.state==(kind?VAT_WAIT_HOSTAGE_ACTION:VAT_WAIT_BALL_ACTION)&&stopped());
         if(kind)CHECK(hostage_owner_complete(VAT_DONE));
         vision_align_test_cancel();
     }
-    puts("route coarse signed: +/-30 staycoarse, +/-29 brake/stickyfine but not arrival; accepted sequence alone reverses ramp0/14/28, positive-onlyFF, negativeFF0, fresh/still final5frames passed");
+    puts("route31 coarse signed: +/-15 staycoarse, +/-14 brake/stickyfine but not arrival; accepted sequence alone reverses ramp0/14/28, positive-onlyFF, negativeFF0, fresh/still final5frames passed");
     return 1;
 }
 static int route_bucket_goal_ready(void)
@@ -722,10 +766,10 @@ static int route_bucket_goal_ready(void)
     CHECK(finish(4,135,VAT_BALL_Y_PX));CHECK(st.state==VAT_WAIT_BALL_ACTION&&st.x_goal==135);
     CHECK(vision_align_test_take_route_action()==VAT_ROUTE_ACTION_BALL);
     vision_align_test_notify_route_action_result(1);vision_align_test_status(&st);
-    CHECK(st.state==VAT_TURN_REQUEST&&st.task==PROTO_TASK_BUCKET&&st.x_goal==125);
+    CHECK(st.state==VAT_TURN_REQUEST&&st.task==PROTO_TASK_BUCKET&&st.x_goal==105);
     uint16_t before_turn=request();CHECK(vision_align_test_take_turn_request());
     yaw=217.0f;vision_align_test_notify_turn_result(1);proto_service();vision_align_test_status(&st);
-    CHECK(st.state==VAT_BRAKE&&request()!=before_turn&&st.x_goal==125);
+    CHECK(st.state==VAT_BRAKE&&request()!=before_turn&&st.x_goal==105);
     ack(request(),2u,0u);tick(260u);CHECK(st.state==VAT_RECHECK&&stopped());
     return 1;
 }
@@ -741,30 +785,80 @@ static int check_route_bucket_strict_boundaries_and_rank_direction(void)
         vision_align_test_notify_route_action_result(1);CHECK(vision_align_test_take_turn_request());
         yaw=217.0f;vision_align_test_notify_turn_result(1);proto_service();
         ack(request(),2u,0u);tick(260u);CHECK(st.state==VAT_RECHECK&&stopped());
-        frame(9,125+30*pixel_direction,VAT_BUCKET_Y_PX);
+        frame(9,105+15*pixel_direction,VAT_BUCKET_Y_PX);
         CHECK(st.state==VAT_ROUTE_BUCKET_SEARCH&&vx==0.0f&&vy==0.0f&&!st.good);
         tick(20u);CHECK(fabsf(vx-14.0f*(float)cruise_direction)<0.00001f&&vy==0.0f);
         tick(20u);CHECK(fabsf(vx-28.0f*(float)cruise_direction)<0.00001f&&vy==0.0f);
         tick(120u);CHECK(vx==100.0f*(float)cruise_direction&&vy==0.0f&&st.state==VAT_ROUTE_BUCKET_SEARCH);
-        object(request(),9,125+29*pixel_direction,VAT_BUCKET_Y_PX,640u,480u,seq++);
+        object(request(),9,105+14*pixel_direction,VAT_BUCKET_Y_PX,640u,480u,seq++);
         object(request(),-1,0,0,640u,480u,seq++);tick(20u);
         CHECK(st.state==VAT_BRAKE&&stopped()&&!st.good);CHECK(stop_recheck());
-        frame(9,125+29*pixel_direction,VAT_BUCKET_Y_PX);
-        CHECK(st.state==VAT_STEP_MOVE&&vx==20.0f*(float)pixel_direction&&vy==0.0f&&!st.good);
-        CHECK(end_step_by_odometry());CHECK(stop_recheck());
-        CHECK(finish(9,125,VAT_BUCKET_Y_PX));CHECK(st.state==VAT_WAIT_BUCKET_ACTION&&stopped());
+        frame(9,105+14*pixel_direction,VAT_BUCKET_Y_PX);
+        CHECK(st.state==route_fine_state()&&vx==20.0f*(float)pixel_direction&&vy==0.0f&&!st.good);
+        CHECK(route_fine_stop_recheck(9,105,VAT_BUCKET_Y_PX));
+        CHECK(finish(9,105,VAT_BUCKET_Y_PX));CHECK(st.state==VAT_WAIT_BUCKET_ACTION&&stopped());
         vision_align_test_cancel();
     }
-    puts("bucket coarse: +/-30 remaincoarse, +/-29 stickyfine; rank1back/rank3forward/rank2coords, all noFF; fine usespixel sign and retains +/-10/fivefresh arrival passed");
+    puts("bucket31 coarse: +/-15 remaincoarse, +/-14 stickyfine; rank1back/rank3forward/rank2coords, all noFF; fine usespixel sign and retains +/-10/fivefresh arrival passed");
+    return 1;
+}
+static int check_route31_gate15_scoped43_gate30_isolation(void)
+{
+    const unsigned modes[]={41u,40u},owners[]={0u,31u,43u};
+    const int models[]={4,0},goals[]={135,215},ys[]={VAT_BALL_Y_PX,VAT_HOSTAGE_Y_PX};
+    const unsigned invalid_owners[]={0u,30u,32u,34u,38u,41u,42u,44u,255u};
+    CHECK(VAT_ROUTE_FINE_ERROR_PX==15&&VAT_ROUTE43_FINE_ERROR_PX==30&&VAT_TOL_PX==10);
+    for(unsigned i=0u;i<sizeof invalid_owners/sizeof invalid_owners[0];i++){
+        reset_environment();
+        CHECK(!vision_align_test_start_route_scoped(41u,qr123,(uint8_t)invalid_owners[i]));
+        CHECK(!vision_align_test_start_route_scoped(40u,qr123,(uint8_t)invalid_owners[i]));
+        proto_service();CHECK(request_count==0u&&stopped());
+    }
+    for(unsigned owner=0u;owner<3u;owner++)for(unsigned kind=0u;kind<2u;kind++)for(unsigned side=0u;side<2u;side++){
+        int sign=side?1:-1,gate=owners[owner]==43u?30:15;
+        CHECK(reset_route_scoped(modes[kind],owners[owner]));CHECK(ready());
+        frame(models[kind],goals[kind]+sign*gate,ys[kind]);
+        CHECK(st.state==VAT_ROUTE_SEARCH&&vx==0.0f&&vy==0.0f&&!st.good);
+        tick(20u);CHECK(fabsf(vx-sign*14.0f)<0.0001f&&vy==0.0f);
+        frame(models[kind],goals[kind]+sign*(gate-1),ys[kind]);
+        CHECK(st.state==VAT_BRAKE&&stopped()&&!st.good);CHECK(stop_recheck());
+        frame(models[kind],goals[kind]+sign*(gate-1),ys[kind]);
+        CHECK(st.state==route_fine_state()&&vx==sign*20.0f&&!st.good&&vy==0.0f);
+        vision_align_test_cancel();CHECK(stopped());
+    }
+    /* A43 gate must survive both bucket requests around the paired180.
+     * The31 wrapper must reset back to15 on a later start without re-init. */
+    for(unsigned owner=31u;owner<=43u;owner+=12u)for(unsigned side=0u;side<2u;side++){
+        int sign=side?1:-1,gate=owner==43u?30:15;
+        int bucket_goal=owner==43u?125:105;
+        CHECK(reset_route_scoped(41u,owner));CHECK(ready());CHECK(finish(4,135,VAT_BALL_Y_PX));
+        CHECK(vision_align_test_take_route_action()==VAT_ROUTE_ACTION_BALL);
+        vision_align_test_notify_route_action_result(1);vision_align_test_status(&st);
+        CHECK(st.state==VAT_TURN_REQUEST&&st.task==PROTO_TASK_BUCKET&&st.x_goal==bucket_goal);
+        CHECK(vision_align_test_take_turn_request());
+        yaw=217.0f;vision_align_test_notify_turn_result(1);proto_service();
+        ack(request(),2u,0u);tick(260u);CHECK(st.state==VAT_RECHECK&&st.x_goal==bucket_goal&&stopped());
+        frame(9,bucket_goal+sign*gate,VAT_BUCKET_Y_PX);
+        CHECK(st.state==VAT_ROUTE_BUCKET_SEARCH&&vx==0.0f&&vy==0.0f);
+        tick(20u);CHECK(fabsf(vx+14.0f)<0.0001f&&vy==0.0f); /* rank1, either pixel side. */
+        frame(9,bucket_goal+sign*(gate-1),VAT_BUCKET_Y_PX);
+        CHECK(st.state==VAT_BRAKE&&stopped()&&!st.good);
+        vision_align_test_cancel();
+        CHECK(vision_align_test_start_route(41u,qr123));proto_service();vision_align_test_status(&st);
+        CHECK(ready());frame(4,155,VAT_BALL_Y_PX);
+        CHECK(st.state==VAT_ROUTE_SEARCH&&vx==0.0f&&!st.good);
+        vision_align_test_cancel();CHECK(stopped());
+    }
+    puts("route scope: default31/explicit31 strict +/-15 coarse,+/-14 fine;43 strict +/-30 coarse,+/-29 fine retained across pairedbucket requests; invalidowner sendsnothing, new31 resets gate; standalone and arrival +/-10 unchanged passed");
     return 1;
 }
 static int check_route_task_x_goals_and_standalone_isolation(void)
 {
-    CHECK(VAT_X_PX==190&&VAT_ROUTE_BALL_X_PX==135&&VAT_ROUTE_BUCKET_X_PX==125&&VAT_ROUTE_HOSTAGE_X_PX==215);
-    CHECK(VAT_TOL_PX==10&&VAT_ROUTE_BUCKET_FINE_ERROR_PX==30);
-    const int goals[]={215,125},boundaries[][2]={{205,225},{115,135}},outside[][2]={{204,226},{114,136}};
+    CHECK(VAT_X_PX==190&&VAT_ROUTE_BALL_X_PX==135&&VAT_ROUTE_BUCKET_X_PX==105&&VAT_ROUTE43_BUCKET_X_PX==125&&VAT_ROUTE_HOSTAGE_X_PX==215);
+    CHECK(VAT_TOL_PX==10&&VAT_ROUTE_BUCKET_FINE_ERROR_PX==15);
+    const int goals[]={215,105},boundaries[][2]={{205,225},{95,115}},outside[][2]={{204,226},{94,116}};
     for(unsigned bucket=0u;bucket<2u;bucket++)for(unsigned edge=0u;edge<2u;edge++){
-        if(bucket){CHECK(route_bucket_goal_ready());frame(9,125,VAT_BUCKET_Y_PX);
+        if(bucket){CHECK(route_bucket_goal_ready());frame(9,105,VAT_BUCKET_Y_PX);
             CHECK(st.state==VAT_BRAKE);CHECK(stop_recheck());}
         else {CHECK(reset_route(40u));CHECK(st.x_goal==215);CHECK(!st.alignment_confirmed);CHECK(ready());}
         CHECK(finish(bucket?9:0,boundaries[bucket][edge],bucket?VAT_BUCKET_Y_PX:VAT_HOSTAGE_Y_PX));
@@ -775,14 +869,14 @@ static int check_route_task_x_goals_and_standalone_isolation(void)
         vision_align_test_cancel();
     }
     for(unsigned bucket=0u;bucket<2u;bucket++)for(unsigned edge=0u;edge<2u;edge++){
-        if(bucket){CHECK(route_bucket_goal_ready());frame(9,125,VAT_BUCKET_Y_PX);
+        if(bucket){CHECK(route_bucket_goal_ready());frame(9,105,VAT_BUCKET_Y_PX);
             CHECK(st.state==VAT_BRAKE);CHECK(stop_recheck());}
         else {
             CHECK(reset_route(40u));CHECK(ready());frame(0,215,VAT_HOSTAGE_Y_PX);
             CHECK(st.state==VAT_BRAKE);CHECK(stop_recheck());
         }
         frame(bucket?9:0,outside[bucket][edge],bucket?VAT_BUCKET_Y_PX:VAT_HOSTAGE_Y_PX);
-        CHECK(st.x_goal==goals[bucket]&&st.state==VAT_STEP_MOVE&&vx==(edge?20.0f:-20.0f)&&vy==0.0f&&!st.good);
+        CHECK(st.x_goal==goals[bucket]&&st.state==route_fine_state()&&vx==(edge?20.0f:-20.0f)&&vy==0.0f&&!st.good);
         CHECK(!st.alignment_confirmed);
         vision_align_test_cancel();
     }
@@ -797,17 +891,17 @@ static int check_route_task_x_goals_and_standalone_isolation(void)
         CHECK(reset_route(41u));CHECK(ready());frame(4,135,VAT_BALL_Y_PX);
         CHECK(st.state==VAT_BRAKE);CHECK(stop_recheck());
         frame(4,ball_outside[edge],VAT_BALL_Y_PX);
-        CHECK(st.x_goal==135&&st.state==VAT_STEP_MOVE&&vx==(edge?20.0f:-20.0f)&&vy==0.0f&&!st.good);
+        CHECK(st.x_goal==135&&st.state==route_fine_state()&&vx==(edge?20.0f:-20.0f)&&vy==0.0f&&!st.good);
         vision_align_test_cancel();
     }
-    CHECK(reset_route(41u));CHECK(ready());frame(4,164,VAT_BALL_Y_PX);
+    CHECK(reset_route(41u));CHECK(ready());frame(4,149,VAT_BALL_Y_PX);
     CHECK(st.state==VAT_BRAKE);CHECK(stop_recheck());
     for(unsigned i=0u;i<VAT_GOOD_FRAMES;i++){
         frame(4,190,VAT_BALL_Y_PX);
-        CHECK(st.x_goal==135&&st.state==VAT_STEP_MOVE&&vx==20.0f&&!st.good);
+        CHECK(st.x_goal==135&&st.state==route_fine_state()&&vx==20.0f&&!st.good);
     }
     CHECK(vision_align_test_take_route_action()==VAT_ROUTE_ACTION_NONE);
-    CHECK(end_step_by_odometry());CHECK(stop_recheck());
+    CHECK(route_fine_stop_recheck(4,135,VAT_BALL_Y_PX));
     for(unsigned i=1u;i<=VAT_GOOD_FRAMES;i++){
         frame(4,135,VAT_BALL_Y_PX);CHECK(stopped()&&st.good==i);
         CHECK(st.state==(i<VAT_GOOD_FRAMES?VAT_ALIGN:VAT_WAIT_BALL_ACTION));
@@ -821,7 +915,7 @@ static int check_route_task_x_goals_and_standalone_isolation(void)
               mode==39u?VAT_BUCKET_Y_PX:mode==40u?VAT_HOSTAGE_Y_PX:VAT_BALL_Y_PX));
         CHECK(st.x_goal==190&&st.cx==200&&stopped());vision_align_test_cancel();
     }
-    /* Hostage215 +/-10 requires226px; bucket125 +/-10 fits136px but NOT135.
+    /* Hostage215 +/-10 requires226px; bucket105 +/-10 fits116px but NOT115.
      * Real geometry/final arrival use the current goal, never old bucket180. */
     CHECK(reset_route(40u));CHECK(ready());
     object(request(),0,215,VAT_HOSTAGE_Y_PX,226u,480u,seq++);tick(20u);
@@ -835,24 +929,55 @@ static int check_route_task_x_goals_and_standalone_isolation(void)
     object(request(),0,215,VAT_HOSTAGE_Y_PX,225u,480u,seq++);tick(20u);
     CHECK(st.state==VAT_STOPPED&&st.x_goal==215&&strcmp(st.reason,"IMAGE_GEOMETRY")==0&&stopped()&&!st.alignment_confirmed);
     CHECK(route_bucket_goal_ready());
-    object(request(),9,125,VAT_BUCKET_Y_PX,136u,480u,seq++);tick(20u);
+    object(request(),9,105,VAT_BUCKET_Y_PX,116u,480u,seq++);tick(20u);
     CHECK(st.state==VAT_BRAKE);CHECK(stop_recheck());
     for(unsigned i=0u;i<VAT_GOOD_FRAMES;i++){
-        object(request(),9,125,VAT_BUCKET_Y_PX,136u,480u,seq++);tick(20u);CHECK(stopped());
+        object(request(),9,105,VAT_BUCKET_Y_PX,116u,480u,seq++);tick(20u);CHECK(stopped());
     }
-    CHECK(st.state==VAT_WAIT_BUCKET_ACTION&&st.x_goal==125&&st.img_w==136u);vision_align_test_cancel();
+    CHECK(st.state==VAT_WAIT_BUCKET_ACTION&&st.x_goal==105&&st.img_w==116u);vision_align_test_cancel();
     CHECK(route_bucket_goal_ready());
-    object(request(),9,125,VAT_BUCKET_Y_PX,135u,480u,seq++);tick(20u);
-    CHECK(st.state==VAT_STOPPED&&st.x_goal==125&&strcmp(st.reason,"IMAGE_GEOMETRY")==0&&stopped()&&!st.bucket_seen);
+    object(request(),9,105,VAT_BUCKET_Y_PX,115u,480u,seq++);tick(20u);
+    CHECK(st.state==VAT_STOPPED&&st.x_goal==105&&strcmp(st.reason,"IMAGE_GEOMETRY")==0&&stopped()&&!st.bucket_seen);
     CHECK(reset(39u));CHECK(ready());
     object(request(),9,190,VAT_BUCKET_Y_PX,191u,480u,seq++);tick(20u);
     CHECK(st.state==VAT_STOPPED&&st.x_goal==190&&strcmp(st.reason,"IMAGE_GEOMETRY")==0&&stopped());
-    puts("route taskX: ball135/125..145 inclusive,124/146 microstep,old190 cannot align,new135 needs5 fresh; bucket125/115..135 inclusive,114/136 microstep,width136 accepts/135 rejects;hostage215/205..225 inclusive,204/226 microstep,width226 accepts/225 rejects; both pairedbucketrequests updategoal; standalone38..41 remain190,geometry/finalarrival use currentgoal passed");
+    puts("route taskX: ball135/125..145 inclusive,124/146 microstep,old190 cannot align,new135 needs5 fresh; bucket105/95..115 inclusive,94/116 microstep,width116 accepts/115 rejects;43 bucket125 preserved;hostage215/205..225 inclusive,204/226 microstep,width226 accepts/225 rejects; both pairedbucketrequests updategoal; standalone38..41 remain190,geometry/finalarrival use currentgoal passed");
     return 1;
 }
-static int route_bucket_unacked_after_turn(void)
+static int check_bucket_goal_owner_switch_without_reinit(void)
 {
-    CHECK(reset_route(41u));CHECK(vision_align_test_route_search_kp_set(3.0f));
+    CHECK(reset_route_scoped(41u,31u));
+    const unsigned owners[]={31u,43u,31u};
+    const int goals[]={105,125,105};
+    for(unsigned sample=0u;sample<3u;sample++){
+        if(sample){
+            CHECK(vision_align_test_start_route_scoped(41u,qr123,(uint8_t)owners[sample]));
+            proto_service();vision_align_test_status(&st);
+        }
+        CHECK(st.task==PROTO_TASK_BALL&&st.x_goal==135&&stopped());
+        CHECK(ready());CHECK(finish(4,135,VAT_BALL_Y_PX));
+        CHECK(vision_align_test_take_route_action()==VAT_ROUTE_ACTION_BALL);
+        unsigned requests=request_count;
+        vision_align_test_notify_route_action_result(1);proto_service();vision_align_test_status(&st);
+        uint16_t first=request();
+        CHECK(st.state==VAT_TURN_REQUEST&&st.task==PROTO_TASK_BUCKET&&st.x_goal==goals[sample]&&request_count==requests+1u);
+        CHECK(vision_align_test_take_turn_request());yaw+=180.0f;
+        vision_align_test_notify_turn_result(1);proto_service();vision_align_test_status(&st);
+        CHECK(st.state==VAT_BRAKE&&st.task==PROTO_TASK_BUCKET&&st.x_goal==goals[sample]&&request()!=first&&request_count==requests+2u);
+        vision_align_test_cancel();CHECK(stopped());
+        if(sample==1u){
+            CHECK(vision_align_test_start(39u,NULL));proto_service();vision_align_test_status(&st);
+            CHECK(st.task==PROTO_TASK_BUCKET&&st.x_goal==190&&stopped());CHECK(ready());
+            CHECK(finish(9,180,VAT_BUCKET_Y_PX));CHECK(st.state==VAT_DONE&&st.x_goal==190);
+            vision_align_test_cancel();CHECK(stopped());
+        }
+    }
+    puts("bucket workpoint owner switch withoutreinit:31 bothrequests105 ->43 bothrequests125 ->independent39 goal190 ->31 bothrequests105; ball135 never changes passed");
+    return 1;
+}
+static int route_bucket_unacked_after_turn_scoped(unsigned owner)
+{
+    CHECK(reset_route_scoped(41u,owner));CHECK(vision_align_test_route_search_kp_set(3.0f));
     CHECK(vision_align_test_route_search_speed_set(200.0f));
     CHECK(ready());CHECK(finish(4,135,VAT_BALL_Y_PX));
     CHECK(st.ball_rank==1u&&vision_align_test_take_route_action()==VAT_ROUTE_ACTION_BALL);
@@ -862,14 +987,19 @@ static int route_bucket_unacked_after_turn(void)
     CHECK(vision_align_test_take_turn_request());w=1.2f;tick(5000u);
     CHECK(st.state==VAT_TURN_ACTIVE&&w==1.2f); /* Never overwrite external turn. */
     yaw=217.0f;vision_align_test_notify_turn_result(1);proto_service();vision_align_test_status(&st);
-    CHECK(st.state==VAT_BRAKE&&st.task==PROTO_TASK_BUCKET&&st.x_goal==125&&stopped());
+    CHECK(st.state==VAT_BRAKE&&st.task==PROTO_TASK_BUCKET&&st.x_goal==(owner==43u?125:105)&&stopped());
     return 1;
 }
+static int route_bucket_unacked_after_turn(void)
+{
+    return route_bucket_unacked_after_turn_scoped(31u);
+}
+
 static int check_route_bucket_wait_search_sticky_and_loss(void)
 {
     CHECK(VAT_ROUTE_BUCKET_SEARCH==VAT_ROUTE_SEARCH+1&&VAT_ROUTE_BUCKET_MISSING_MS==2000u);
     for(unsigned sticky=0u;sticky<2u;sticky++){
-        CHECK(route_bucket_unacked_after_turn());uint16_t current=request();
+        CHECK(route_bucket_unacked_after_turn_scoped(43u));uint16_t current=request();
         tick(5000u);CHECK(st.state==VAT_RECHECK&&stopped());
         ack((uint16_t)(current-1u),2u,0u);
         object((uint16_t)(current-1u),9,125,VAT_BUCKET_Y_PX,640u,480u,seq++);
@@ -898,7 +1028,7 @@ static int check_route_bucket_wait_search_sticky_and_loss(void)
     }
     /* A target BEFORE coarse-search delay still arms seen-then-lost release,
      * not coarse restart or a fabricated alignment. */
-    CHECK(route_bucket_unacked_after_turn());ack(request(),2u,0u);tick(260u);
+    CHECK(route_bucket_unacked_after_turn_scoped(43u));ack(request(),2u,0u);tick(260u);
     object(request(),9,125,VAT_BUCKET_Y_PX,640u,480u,seq++);
     object(request(),-1,0,0,640u,480u,seq++);tick(1u);
     CHECK(st.state==VAT_BRAKE&&stopped()&&!st.yaw_ever);CHECK(stop_recheck());
@@ -911,7 +1041,7 @@ static int check_route_bucket_wait_search_sticky_and_loss(void)
     tick(5000u);CHECK(vision_align_test_take_turn_request());yaw=217.0f;
     vision_align_test_notify_turn_result(1);proto_service();ack(request(),2u,0u);tick(260u);
     tick(10000u);CHECK(st.state==VAT_RECHECK&&stopped());vision_align_test_cancel();
-    puts("bucket31: completed180+newACK starts2s; rank1back owner200 ramp/heading/noFF; abs(error)<30 stickyfine+empty brakes/yaw/newframes; fine seenlost2s release/still250 never fakealigned or coarse restart; standalone39/41 isolated passed");
+    puts("deferred43 legacy bucket: completed180+newACK starts2s; rank1back owner200 ramp/heading/noFF; abs(error)<30 stickyfine+empty brakes/yaw/newframes; fine seenlost2s release/still250 never fakealigned or coarse restart; standalone39/41 isolated passed");
     return 1;
 }
 static int check_route_bucket_faults_and_cancel(void)
@@ -925,7 +1055,7 @@ static int check_route_bucket_faults_and_cancel(void)
         else if(fault==3u)yaw=NAN;
         else if(fault==4u)leg_yaw=NAN;
         else if(fault==5u)ack(request(),2u,1u);
-        else object(request(),9,100,VAT_BUCKET_Y_PX,135u,480u,seq++);
+        else object(request(),9,100,VAT_BUCKET_Y_PX,115u,480u,seq++);
         tick(1u);CHECK(st.state==VAT_STOPPED&&stopped());
         vision_align_test_notify_turn_result(1);tick(5000u);CHECK(st.state==VAT_STOPPED&&stopped());
     }
@@ -1064,7 +1194,7 @@ static int check_hostage_owner_waits_and_faults(void)
 static int check_hostage_loss_wrap_recovery_and_geometry(void)
 {
     CHECK(VAT_ROUTE_HOSTAGE_LOST_MS==2000u&&VAT_WAIT_HOSTAGE_ACTION==16&&VAT_WAIT_HOSTAGE_RANK==17&&VAT_ROUTE_ACTION_HOSTAGE==3);
-    CHECK(reset_route(40u));route_auto_hostage_rank=0;CHECK(ready());tick(20u);CHECK(route_ramp100(0.0f));
+    CHECK(reset_route_scoped(40u,43u));route_auto_hostage_rank=0;CHECK(ready());tick(20u);CHECK(route_ramp100(0.0f));
     now_ms=UINT32_MAX-1000u;
     object(request(),0,500,VAT_HOSTAGE_Y_PX,640u,480u,65534u);tick(20u);
     object(request(),0,500,VAT_HOSTAGE_Y_PX,640u,480u,65535u);tick(20u);
@@ -1095,32 +1225,194 @@ static int check_hostage_loss_wrap_recovery_and_geometry(void)
     /* Preserve the old illegal-cy stimulus: the parser rejects it before
      * delivery, so it cannot arm the lost-target timer. A protocol-valid
      * frame too narrow for the private goal must stop inside VAT instead. */
-    CHECK(reset_route(40u));CHECK(ready());tick(20u);CHECK(route_ramp100(0.0f));
+    CHECK(reset_route_scoped(40u,43u));CHECK(ready());tick(20u);CHECK(route_ramp100(0.0f));
     object(request(),0,350,480,640u,480u,seq++);tick(20u);
     CHECK(st.state==VAT_ROUTE_SEARCH&&!st.alignment_confirmed&&!st.hostage_seen&&vx==100.0f);
     object(request(),0,180,VAT_HOSTAGE_Y_PX,191u,480u,seq++);tick(20u);
     CHECK(st.state==VAT_STOPPED&&!st.alignment_confirmed&&!st.hostage_seen&&stopped());
     CHECK(vision_align_test_take_route_action()==VAT_ROUTE_ACTION_NONE);
-    puts("VAT hostage loss:16/17 states/action3;sequence65534/65535/0 and tickwrap;empty/54/replay norefresh,1999/2000+249/250;pre-take recovery cancels,but committed coordinates do not;rankwait/DONE retainfallback andnever fakealignment;parserinvalidcy ignored/privategoalgeometry stops before timer passed");
+    puts("VAT deferred43 hostage loss:16/17 states/action3;sequence65534/65535/0 and tickwrap;empty/54/replay norefresh,1999/2000+249/250;pre-take recovery cancels,but committed coordinates do not;rankwait/DONE retainfallback andnever fakealignment;parserinvalidcy ignored/privategoalgeometry stops before timer passed");
+    return 1;
+}
+static int check_hostage_offset_resume_fresh_rank_and_scope(void)
+{
+    CHECK(reset_route(40u));route_auto_hostage_rank=0;CHECK(ready());
+    CHECK(!vision_align_test_route_hostage_offset_resume());
+    CHECK(finish(0,215,VAT_HOSTAGE_Y_PX));
+    CHECK(!vision_align_test_route_hostage_offset_resume()); /* Pending, not taken. */
+    CHECK(st.state==VAT_WAIT_HOSTAGE_ACTION&&st.alignment_confirmed&&st.good==5u);
+    CHECK(vision_align_test_take_route_action()==VAT_ROUTE_ACTION_HOSTAGE);
+    uint16_t same_request=request(),old_sequence=(uint16_t)(seq-1u);
+    unsigned sent=request_count;
+    uint32_t old_age=st.hostage_age_ms;
+    now_ms+=20u;counts[0]+=20; /* External offset: deliberately do not poll VAT. */
+    uint16_t moving_sequence=seq++;
+    object(request(),0,215,VAT_HOSTAGE_Y_PX,640u,480u,moving_sequence);
+    rank_frame(request(),77u,0u,2u,2u,1u,0u,255u);
+    CHECK(vision_align_test_take_route_action()==VAT_ROUTE_ACTION_NONE);
+    CHECK(vision_align_test_route_hostage_offset_resume());vision_align_test_status(&st);
+    CHECK(st.state==VAT_BRAKE&&strcmp(st.reason,"HOSTAGE_OFFSET_RECHECK")==0&&stopped());
+    CHECK(request()==same_request&&request_count==sent&&st.task==PROTO_TASK_HOSTAGE);
+    CHECK(st.target_rank==2u&&st.rank_sequence==77u&&st.hostage_seen&&st.hostage_age_ms==old_age+20u);
+    CHECK(st.yaw_target==37.0f&&!st.alignment_confirmed&&!st.hostage_fallback);
+    CHECK(!st.good&&!st.latest&&!st.rx_fresh&&!st.axis&&st.cx==0&&st.cy==0);
+    CHECK(!vision_align_test_route_hostage_offset_resume());
+    vision_align_test_notify_route_action_result(1);vision_align_test_status(&st);
+    CHECK(st.state==VAT_BRAKE); /* The canceled taken action cannot report success. */
+    uint32_t resume_age=st.hostage_age_ms;
+    for(unsigned i=0u;i<5u;i++){
+        object(request(),0,215,VAT_HOSTAGE_Y_PX,640u,480u,
+            i==0u?old_sequence:moving_sequence);tick(1u);
+        CHECK(st.state==VAT_BRAKE&&!st.good&&!st.latest&&!st.alignment_confirmed&&stopped());
+        CHECK(st.hostage_age_ms==resume_age+i+1u);
+        CHECK(vision_align_test_take_route_action()==VAT_ROUTE_ACTION_NONE);
+    }
+    object(request(),0,215,VAT_HOSTAGE_Y_PX,640u,480u,seq++);
+    CHECK(stop_recheck()); /* Receive evidence during braking is not arrival. */
+    for(unsigned i=1u;i<=5u;i++){
+        frame(0,215,VAT_HOSTAGE_Y_PX);
+        CHECK(st.good==i&&stopped()&&st.target_rank==2u&&st.rank_sequence==77u);
+        if(i<5u)CHECK(st.state==VAT_ALIGN&&!st.alignment_confirmed&&
+            vision_align_test_take_route_action()==VAT_ROUTE_ACTION_NONE);
+    }
+    CHECK(st.state==VAT_WAIT_HOSTAGE_ACTION&&st.alignment_confirmed&&!st.hostage_fallback);
+    CHECK(request()==same_request&&request_count==sent);
+    CHECK(hostage_owner_complete(VAT_DONE));
+    CHECK(!vision_align_test_route_hostage_offset_resume());
+
+    /* Scope isolation:43's real taken action is neither canceled nor rechecked. */
+    CHECK(reset_route_scoped(40u,43u));CHECK(ready());CHECK(finish(0,215,VAT_HOSTAGE_Y_PX));
+    CHECK(vision_align_test_take_route_action()==VAT_ROUTE_ACTION_HOSTAGE);
+    CHECK(!vision_align_test_route_hostage_offset_resume());
+    vision_align_test_notify_route_action_result(1);vision_align_test_status(&st);
+    CHECK(st.state==VAT_DONE&&st.alignment_confirmed&&stopped());
+    CHECK(reset(40u));CHECK(ready());CHECK(finish(0,190,VAT_HOSTAGE_Y_PX));
+    CHECK(!vision_align_test_route_hostage_offset_resume()&&st.state==VAT_DONE);
+    CHECK(reset_route(41u));CHECK(ready());CHECK(finish(4,135,VAT_BALL_Y_PX));
+    CHECK(vision_align_test_take_route_action()==VAT_ROUTE_ACTION_BALL);
+    CHECK(!vision_align_test_route_hostage_offset_resume());
+    vision_align_test_notify_route_action_result(1);vision_align_test_status(&st);
+    CHECK(st.state==VAT_TURN_REQUEST);vision_align_test_cancel();
+    CHECK(route_bucket_goal_ready());CHECK(finish(9,105,VAT_BUCKET_Y_PX));
+    CHECK(vision_align_test_take_route_action()==VAT_ROUTE_ACTION_BUCKET);
+    CHECK(!vision_align_test_route_hostage_offset_resume());
+    vision_align_test_notify_route_action_result(1);vision_align_test_status(&st);
+    CHECK(st.state==VAT_DONE&&stopped());
+    CHECK(reset_route(40u));route_auto_hostage_rank=0;CHECK(ready());CHECK(finish(0,215,VAT_HOSTAGE_Y_PX));
+    CHECK(vision_align_test_take_route_action()==VAT_ROUTE_ACTION_HOSTAGE);
+    vision_align_test_notify_route_action_result(1);vision_align_test_status(&st);
+    CHECK(st.state==VAT_WAIT_HOSTAGE_RANK&&!vision_align_test_route_hostage_offset_resume());
+    vision_align_test_cancel();
+    puts("hostage LEFT20 resume: same request/rank54/original heading, canceled old action/five frames, moving-window sequence replay cannot refresh loss, five NEW frames;43/ball/bucket/standalone/rankwait isolated passed");
+    return 1;
+}
+static int check_hostage_offset_resume_faults_yaw_loss_and_cancel(void)
+{
+    for(unsigned fault=0u;fault<7u;fault++){
+        CHECK(reset_route(40u));CHECK(ready());CHECK(finish(0,215,VAT_HOSTAGE_Y_PX));
+        CHECK(vision_align_test_take_route_action()==VAT_ROUTE_ACTION_HOSTAGE);
+        if(fault==0u)aborted=1;
+        else if(fault==1u)imu_valid=0;
+        else if(fault==2u)yaw=NAN;
+        else if(fault==3u)yaw=INFINITY;
+        else if(fault==4u)ack(request(),2u,1u);
+        else if(fault==5u)proto_receive_end();
+        else vision_align_test_cancel();
+        CHECK(!vision_align_test_route_hostage_offset_resume());vision_align_test_status(&st);
+        CHECK(st.state==VAT_STOPPED&&stopped());
+        CHECK(!vision_align_test_route_hostage_offset_resume());
+        CHECK(vision_align_test_take_route_action()==VAT_ROUTE_ACTION_NONE);
+        vision_align_test_notify_route_action_result(1);tick(10000u);
+        CHECK(st.state==VAT_STOPPED&&stopped());
+    }
+    /* Keep the ORIGINAL37 reference, never retarget to38. The default no longer
+     * rotates a stopped31 hostage; the historical opt-in still restores37. */
+    CHECK(reset_route(40u));CHECK(ready());CHECK(finish(0,215,VAT_HOSTAGE_Y_PX));
+    CHECK(vision_align_test_take_route_action()==VAT_ROUTE_ACTION_HOSTAGE);
+    yaw=38.0f;CHECK(vision_align_test_route_hostage_offset_resume());tick(260u);
+    CHECK(st.yaw_target==37.0f&&st.yaw_error==-1.0f);
+    if (VAT_ROUTE31_BALL_HOSTAGE_STOP_YAW_ENABLE) {
+        CHECK(st.state==VAT_YAW_FIX);CHECK(yaw_settle());
+    } else CHECK(st.state==VAT_RECHECK&&stopped()&&!st.yaw_dirty&&!st.good);
+    CHECK(finish(0,215,VAT_HOSTAGE_Y_PX));
+    CHECK(hostage_owner_complete(VAT_DONE));
+
+    /* Loss timing comes from the last actual NEW01, not resume time; old
+     * coordinates already received during the external move cannot renew it. */
+    CHECK(reset_route(40u));CHECK(ready());CHECK(finish(0,215,VAT_HOSTAGE_Y_PX));
+    CHECK(vision_align_test_take_route_action()==VAT_ROUTE_ACTION_HOSTAGE);
+    uint32_t last_at=now_ms-st.hostage_age_ms;
+    uint16_t moving_sequence=seq++;
+    now_ms+=300u;object(request(),0,215,VAT_HOSTAGE_Y_PX,640u,480u,moving_sequence);
+    now_ms=last_at+300u;
+    CHECK(vision_align_test_route_hostage_offset_resume());vision_align_test_status(&st);
+    CHECK(st.hostage_age_ms==300u&&!st.alignment_confirmed&&!st.hostage_fallback);
+    object(request(),0,215,VAT_HOSTAGE_Y_PX,640u,480u,moving_sequence);tick(1u);
+    CHECK(st.hostage_age_ms==301u&&st.state==VAT_BRAKE&&strcmp(st.reason,"HOSTAGE_LOST300_BRAKE")==0);
+    tick(249u);CHECK(st.state==VAT_BRAKE&&!st.alignment_confirmed&&!st.hostage_fallback);
+    tick(1u);CHECK(st.state==VAT_WAIT_HOSTAGE_ACTION&&st.hostage_fallback&&!st.alignment_confirmed&&!st.good);
+    CHECK(vision_align_test_take_route_action()==VAT_ROUTE_ACTION_HOSTAGE);
+    CHECK(vision_align_test_route_hostage_offset_resume());vision_align_test_status(&st);
+    CHECK(st.state==VAT_BRAKE&&!st.hostage_fallback&&!st.alignment_confirmed);
+    /* A truly NEW stopped coordinate cancels loss, but is not itself five-frame proof. */
+    frame(0,215,VAT_HOSTAGE_Y_PX);CHECK(st.hostage_age_ms==20u&&st.state==VAT_BRAKE&&!st.good);
+    tick(240u);CHECK(st.state==VAT_RECHECK&&stopped()&&!st.good&&!st.latest);
+    CHECK(finish(0,215,VAT_HOSTAGE_Y_PX));
+    CHECK(st.alignment_confirmed&&!st.hostage_fallback);vision_align_test_cancel();
+    CHECK(!vision_align_test_route_hostage_offset_resume()&&vision_align_test_take_route_action()==VAT_ROUTE_ACTION_NONE&&stopped());
+
+    /* Cancel also remains immediate throughout the new brake/recheck path. */
+    for(unsigned phase=0u;phase<2u;phase++){
+        CHECK(reset_route(40u));CHECK(ready());CHECK(finish(0,215,VAT_HOSTAGE_Y_PX));
+        CHECK(vision_align_test_take_route_action()==VAT_ROUTE_ACTION_HOSTAGE);
+        CHECK(vision_align_test_route_hostage_offset_resume());
+        vision_align_test_status(&st);
+        if(phase)CHECK(stop_recheck());
+        vision_align_test_cancel();tick(10000u);
+        CHECK(st.state==VAT_STOPPED&&stopped()&&!vision_align_test_route_hostage_offset_resume());
+    }
+    puts("hostage dormantoffset resume: abort/IMU/NAN/INF/NACK/closedACK/cancel stop, original-heading reference retained with stopped-yaw build policy, actual NEW01 300/301+249/250 fallback retained (not fakealigned), true NEW recovery cancels loss, cancel brake/recheck passed");
     return 1;
 }
 int main(void)
 {
+    /* The historical motion cases below explicitly exercise enabled Y. The
+     * current X-only build independently runs the route boundaries and new
+     * hostage resume/fault contract without pretending Y30 should be active. */
+    if(!VAT_Y_ALIGN_ENABLE){
+        if(!check_route_locked_qr_entry()
+        ||!check_route_search_gain_and_late_yaw_recheck()
+        ||!check_route_search_threshold_right_ff_and_isolation()
+        ||!check_route_signed_coarse_strict_boundaries()
+        ||!check_route_bucket_strict_boundaries_and_rank_direction()
+        ||!check_route31_gate15_scoped43_gate30_isolation()
+        ||!check_route_task_x_goals_and_standalone_isolation()
+        ||!check_bucket_goal_owner_switch_without_reinit()
+        ||!check_hostage_owner_waits_and_faults()||!check_hostage_loss_wrap_recovery_and_geometry()
+        ||!check_hostage_offset_resume_fresh_rank_and_scope()
+        ||!check_hostage_offset_resume_faults_yaw_loss_and_cancel())return 1;
+        puts("VAT X-only: strict31<15/43<30/standaloneX20, hostage LEFT20 resume same request/rank/originalyaw, NEW frames/loss timing/faults/cancel passed; Y-only motion cases require VAT_Y_ALIGN_ENABLE=1; no physical acceptance");
+        return 0;
+    }
     if(!check_qr_ack_direct_bucket_and_initial_search()||!check_fixed_step_direction_and_fresh_recheck()
     ||!check_step_distance_time_and_age_exits()||!check_pixels_sequences_geometry_and_still()
     ||!check_post_yaw_stability_final_gate_timeout()||!check_imu_faults_and_no_initial_correction()
     ||!check_cancellation_and_abort_nack()||!check_route_locked_qr_entry()
     ||!check_ball_turn_bucket_sequence(0)||!check_ball_turn_bucket_sequence(1)
+    ||!check_bucket_goal_owner_switch_without_reinit()
     ||!check_route_action_failure_and_cancel()
     ||!check_route_search100_first_image_brake_and_fine()
     ||!check_route_search_gain_and_late_yaw_recheck()
     ||!check_route_search_threshold_right_ff_and_isolation()
     ||!check_route_signed_coarse_strict_boundaries()
     ||!check_route_bucket_strict_boundaries_and_rank_direction()
+    ||!check_route31_gate15_scoped43_gate30_isolation()
     ||!check_route_task_x_goals_and_standalone_isolation()
     ||!check_route_bucket_wait_search_sticky_and_loss()||!check_route_bucket_faults_and_cancel()
     ||!check_route_rank_wait_capture_and_independent()
     ||!check_ball_rank_wait_late_domain_and_faults()
-    ||!check_hostage_owner_waits_and_faults()||!check_hostage_loss_wrap_recovery_and_geometry())return 1;
+    ||!check_hostage_owner_waits_and_faults()||!check_hostage_loss_wrap_recovery_and_geometry()
+    ||!check_hostage_offset_resume_fresh_rank_and_scope()
+    ||!check_hostage_offset_resume_faults_yaw_loss_and_cancel())return 1;
     puts("VAT realparser: bounded3mm/250ms X20/Y30 steps, no midstep reversal, signedaxis odo+age exits, stop250/newimage, postY-yaw700/minW/finalgate/seqhistory,±10/fivefresh/still,strict standalone QR/ACK/direct39/stickyseen/cancel/IMU/NACK/ODO,route40/41 lockedQR after RX close,41shared180/newheading,route-onlysearch100/headingbridge/firstimagebrake/newXY/no-reblind/searchfaults passed; no physical acceptance");return 0;
 }

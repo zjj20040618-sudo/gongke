@@ -101,6 +101,8 @@ void motion_vel_set(float x, float y, float w)
 { host_integer_calls++; last_x = x; last_y = y; last_w = w; }
 void motion_vel_set_precise(float x, float y, float w)
 { host_precise_calls++; last_x = x; last_y = y; last_w = w; }
+void motion_vel_set_creep(float x, float y, float w)
+{ motion_vel_set_precise(x, y, w); }
 float motion_odo_mm(void) { return host_fore; }
 float motion_lateral_odo_mm(void) { return host_lateral; }
 void motion_ik(float x, float y, float w, int16_t out[4])
@@ -346,23 +348,45 @@ static int fixture_complete_route31_predeploy(void)
     CHECK(s_seq_mode == 31u && s_seq_stage == ROUTE31_PREDEPLOY_STAGE);
     CHECK(s_route31_lift_phase == R31_RACK_EXTEND && host_timer_active);
     CHECK(host_jog_axis == 0 && host_jog_dir == 0 && host_timer_pps == 5000u);
-    /* Independent3200 expectation pins the new31 recipe,
+    /* Independent3400 expectation pins the new31 recipe,
      * rather than letting the host fixture silently copy a changed macro. */
-    CHECK(ROUTE31_RACK_EXTEND_STEPS == 3200u && s_jog_clock.remaining == 3200u);
+    CHECK(ROUTE31_RACK_EXTEND_STEPS == 3400u && s_jog_clock.remaining == 3400u);
     int before = pulse_calls;
-    CHECK(jog_host_ticks(3199u) == 0 && s_jog_clock.remaining == 1u && host_timer_active);
+    CHECK(jog_host_ticks(3399u) == 0 && s_jog_clock.remaining == 1u && host_timer_active);
     test_poll();
     CHECK(s_seq_state == SQ_ARM_PREP && s_route31_lift_phase == R31_RACK_EXTEND &&
-          pulse_calls == before + 3199 && !s_route31_rack_deployed);
+          pulse_calls == before + 3399 && !s_route31_rack_deployed);
     CHECK(jog_host_ticks(1u) == 0);
     test_poll();
     CHECK(s_seq_state == SQ_ARM_PREP && s_route31_lift_phase == R31_RACK_EXTEND_WAIT &&
-          pulse_calls == before + 3200 && !host_timer_active &&
-          host_jog_pulses[0][0] == 3200u && !host_jog_pulses[0][1]);
+          pulse_calls == before + 3400 && !host_timer_active &&
+          host_jog_pulses[0][0] == 3400u && !host_jog_pulses[0][1]);
     CHECK(jog_host_service_ms(250u) == 0);
     test_poll();
     CHECK(s_seq_state == SQ_STILL && s_route31_rack_deployed && s_msel == 30 &&
           s_route31_lift_phase == R31_LIFT_OFF && !servo_calls &&
+          last_x == 0.0f && last_y == 0.0f && last_w == 0.0f);
+    return 0;
+}
+
+static int fixture_complete_route31_cross_yaw(void)
+{
+    if (s_seq_state != SQ_CROSS_YAW) return 0;
+    CHECK(s_seq_mode == 31u && s_seq_stage == 4u &&
+          s_route31_cross_heading_valid && !s_route31_cross_yaw_done);
+    unsigned zeros = (unsigned)zero_calls;
+    /* Supply a corrected physical endpoint, never invent a missing reference.
+     * Keep the absolute/local sensor frames coherent, including wrapped goals. */
+    float correction = fmodf(s_route31_task_yaw_goal - host_yaw, 360.0f);
+    if (correction > 180.0f) correction -= 360.0f;
+    if (correction < -180.0f) correction += 360.0f;
+    host_absolute_yaw += correction;
+    host_yaw = s_route31_task_yaw_goal;
+    test_poll();
+    CHECK(s_seq_state == SQ_CROSS_YAW && last_x == 0.0f && last_y == 0.0f && last_w == 0.0f);
+    host_tick += 400u; test_poll();
+    CHECK(s_seq_state == SQ_STILL && s_seq_stage == 4u &&
+          s_route31_cross_yaw_done && (unsigned)zero_calls == zeros &&
           last_x == 0.0f && last_y == 0.0f && last_w == 0.0f);
     return 0;
 }
@@ -372,6 +396,7 @@ static int sequence_start_stage(void)
     int board_contact = route31_owner() && s_seq_stage == 4u && !s_seq_contact_post;
     int contact_nudge = route31_owner() && s_seq_stage == 4u && s_seq_contact_post;
     CHECK(fixture_complete_route31_predeploy() == 0);
+    CHECK(fixture_complete_route31_cross_yaw() == 0);
     CHECK(s_seq_state == SQ_STILL && last_w == 0.0f && last_x == 0.0f && last_y == 0.0f);
     host_tick += T_DIST_STILL_MS;
     test_poll();
@@ -450,13 +475,27 @@ static int sequence_finish_stage(void)
         host_tick += T_TURN_SETTLE_MS; test_poll();
     }
     if (s_seq_state == SQ_QR_WAIT) CHECK(sequence_release_qr() == 0);
-    /* Ordinary mode31 stage drivers consume this logical contact unit's two
-     * fixed nudges. Mode43 still exposes each nudge behind its own fresh g. */
+    CHECK(fixture_complete_route31_cross_yaw() == 0);
+    /* Ordinary mode31 stage drivers consume this logical contact unit's
+     * BACK10 only. Mode43 still exposes BACK10/FWD15 behind fresh g gates. */
     while (s_seq_mode == ROUTE_TEST_MODE && s_seq_stage == 4u && s_seq_contact_post &&
            s_seq_state == SQ_STILL) {
         CHECK(sequence_start_stage() == 0);
         CHECK(sequence_finish_stage() == 0);
     }
+    return 0;
+}
+
+/* Tests which focus only on stage4 must first establish a real legal stage3
+ * reference and complete its correction, not bypass the production guard. */
+static int fixture_prepare_route31_board(void)
+{
+    CHECK(s_seq_mode == 31u);
+    s_seq_stage = 3u; route_seq_prepare();
+    CHECK(sequence_start_stage() == 0);
+    CHECK(s_route31_cross_heading_valid && !s_route31_cross_yaw_done);
+    CHECK(sequence_finish_stage() == 0);
+    CHECK(s_seq_stage == 4u && s_seq_state == SQ_STILL && s_route31_cross_yaw_done);
     return 0;
 }
 
@@ -527,12 +566,20 @@ static int check_route_cross_heading_restart(unsigned mode)
     for (unsigned run = 1u; run <= 2u; ++run) {
         run_cmd(selection); run_cmd("ykp1.2"); run_cmd("g");
         CHECK(s_seq_run == run && s_route_heading_kp == 1.2f && step_heading_kp_deg() == 0.3f);
+        if (mode == 31u) host_absolute_yaw = run == 1u ? 37.0f : -37.0f;
         s_seq_stage = 3u; route_seq_prepare();
         CHECK(sequence_start_stage() == 0);
-        CHECK(s_msel == 16 && s_dist_target == -650.0f && s_v == 300.0f && s_dist_heading_kp == 0.0f);
+        if (mode == 31u)
+            CHECK(s_route31_cross_heading_valid && !s_route31_cross_yaw_done &&
+                  s_route31_cross_heading == (run == 1u ? 37.0f : -37.0f));
+        CHECK(s_msel == 16 && s_dist_target == (mode == 31u ? -620.0f : -650.0f) && s_v == 300.0f && s_dist_heading_kp == 0.0f);
         CHECK(s_dist_ff_ratio == 0.0f && last_x == -300.0f && last_y == 0.0f);
-        host_yaw = 6.0f; tick(); CHECK(last_w == 0.0f);
-        host_yaw = -6.0f; tick(); CHECK(last_w == 0.0f);
+        host_yaw = 6.0f;
+        if (mode == 31u) host_absolute_yaw = s_route31_cross_heading + host_yaw;
+        tick(); CHECK(last_w == 0.0f);
+        host_yaw = -6.0f;
+        if (mode == 31u) host_absolute_yaw = s_route31_cross_heading + host_yaw;
+        tick(); CHECK(last_w == 0.0f);
         CHECK(s_route_heading_kp == 1.2f && step_heading_kp_deg() == 0.3f);
         CHECK(sequence_finish_stage() == 0 && s_seq_stage == 4u);
         CHECK(sequence_start_stage() == 0);
@@ -566,10 +613,12 @@ static int check_route_cross_heading_restart(unsigned mode)
               step_heading_kp_deg() == 0.3f && host_yaw == 0.0f && last_w == 0.0f);
         CHECK(s_dist_ff_ratio == 0.00625f && last_x == (mode == 31u ? -200.0f : -100.0f) &&
               last_y == (mode == 31u ? -1.25f : -0.625f));
-        host_yaw = 3.0f; tick();
-        CHECK(fabsf(last_w + 1.2f * 3.0f * 0.0174533f) < 0.000001f);
-        host_yaw = -3.0f; tick();
-        CHECK(fabsf(last_w - 1.2f * 3.0f * 0.0174533f) < 0.000001f);
+        /* Check restored moving gain below31's1.5deg mid-yaw brake.
+         * The dedicated mid-yaw fixture covers larger errors and resume. */
+        host_yaw = 1.0f; tick();
+        CHECK(fabsf(last_w + 1.2f * 1.0f * 0.0174533f) < 0.000001f);
+        host_yaw = -1.0f; tick();
+        CHECK(fabsf(last_w - 1.2f * 1.0f * 0.0174533f) < 0.000001f);
         run_cmd("g");
         CHECK(s_seq_state == SQ_STOPPED && s_msel == (int)mode &&
               s_route_heading_kp == 1.2f && step_heading_kp_deg() == 0.3f);
@@ -578,7 +627,7 @@ static int check_route_cross_heading_restart(unsigned mode)
     CHECK(s_dist_heading_kp == 0.3f && s_route_heading_kp == 1.2f);
     run_cmd("g"); run_cmd("32");
     CHECK(dist_heading_kp_get(NULL) == 0.3f && step_heading_kp_deg() == 0.3f);
-    printf("route%u two-run post-cross: back650/v300 ->forward%s/v%u yaw/FF disabled; wheel-still/node zero/750ms wait ->fresh back190/v%u restoresykp + independentBFF; manual/32 unchanged passed\n", mode, mode == 31u ? "tilt_contact" : "80", mode == 31u ? 40u : 20u, mode == 31u ? 200u : 100u);
+    printf("route%u two-run post-cross: back%u/v300 ->forward%s/v%u yaw/FF disabled; wheel-still/node zero/750ms wait ->fresh back190/v%u restoresykp + independentBFF; manual/32 unchanged passed\n", mode, mode == 31u ? 620u : 650u, mode == 31u ? "tilt_contact" : "80", mode == 31u ? 40u : 20u, mode == 31u ? 200u : 100u);
     return 0;
 }
 
@@ -586,7 +635,7 @@ static int check_route_sequence(void)
 {
     /* Independent expectation, not copied from the live recipe at runtime. */
     static const int expected_modes[9] = {17,16,20,16,15,16,18,16,30};
-    static const int expected_commands[9] = {-535,-630,90,-650,0,-190,800,-760,-90};
+    static const int expected_commands[9] = {-575,-610,90,-620,0,-190,780,-805,-90};
     static const float expected_speeds[9] = {250,200,100,300,40,200,250,200,100};
     static const char *const stop_keys[] = {"g", "a", "0"};
     reset_fixture();
@@ -603,7 +652,7 @@ static int check_route_sequence(void)
     for (int i = 0; i < 9; i++) {
         CHECK(s_seq_stage == i && sequence_start_stage() == 0);
         CHECK(s_msel == expected_modes[i] && s_route_leg == i + 1 &&
-              s_active_test == (uint32_t)i + 1u + (i >= 5 ? 2u : 0u) + (i == 8 ? 1u : 0u));
+              s_active_test == (uint32_t)i + 1u + (i == 8 ? 1u : 0u));
         CHECK(s_route31_plan[i].heading_hold == (i == 3 || i == 4 ? 0u : 1u));
         if (dist_mode()) {
             CHECK(s_dist_target == (float)expected_commands[i] && s_v == expected_speeds[i]);
@@ -618,15 +667,15 @@ static int check_route_sequence(void)
             CHECK(turn_target_deg() == (float)expected_commands[i] && last_x == 0.0f && last_y == 0.0f);
             CHECK(last_w == (i == 8 ? -2.0f*T_TURN_MAX_W : 2.0f*T_TURN_MAX_W));
         }
-        CHECK(start_calls == 0 && pulse_calls == (i == 8 ? 3200 : 0) && servo_calls == 0 && !s_go);
+        CHECK(start_calls == 0 && pulse_calls == (i == 8 ? 3400 : 0) && servo_calls == 0 && !s_go);
         CHECK(sequence_finish_stage() == 0);
         CHECK(s_seq_state == (i == 8 ? SQ_TASK : i == 7 ? SQ_ARM_PREP : SQ_STILL));
         CHECK(host_target_calls == (i == 8 ? 1 : 0) && s_seq_state != SQ_BUCKET_ALIGN && s_seq_state != SQ_MANUAL_D_WAIT);
     }
-    CHECK(zero_calls == 15 && prepare_calls == 0); /* No report zero at board/contact nudges. */
+    CHECK(zero_calls == 14 && prepare_calls == 0); /* Crossing retains yaw; board/nudges have no report zero. */
     CHECK(s_seq_stage == ROUTE31_PAIR_STAGE && vision_align_test_active() && s_vat.mode == 41u &&
           s_vat.state == VAT_BRAKE && host_target_task == PROTO_TASK_BALL && host_target_digit == 1u);
-    CHECK(last_x == 0.0f && last_y == 0.0f && last_w == 0.0f && !laser_state && pulse_calls == 3200 && !host_timer_active && !servo_calls);
+    CHECK(last_x == 0.0f && last_y == 0.0f && last_w == 0.0f && !laser_state && pulse_calls == 3400 && !host_timer_active && !servo_calls);
     run_cmd("g"); CHECK(s_seq_state == SQ_STOPPED && !vision_align_test_active() && host_receive_closed);
     /* Terminal router policy only; the dedicated real-wire task regression
      * verifies reaching DONE through ball/bucket/target/hostage, not this stub. */
@@ -643,7 +692,8 @@ static int check_route_sequence(void)
         for (int key = 0; key < 3; key++) {
             for (int phase = 0; phase < 4; phase++) {
                 reset_fixture(); run_cmd("31"); run_cmd("g");
-                s_seq_stage = (uint8_t)stage; route_seq_prepare();
+                if (stage == 4) CHECK(fixture_prepare_route31_board() == 0);
+                else { s_seq_stage = (uint8_t)stage; route_seq_prepare(); }
                 if (phase >= 1) CHECK(fixture_complete_route31_predeploy() == 0);
                 if (phase == 1) { host_tick += T_DIST_STILL_MS; test_poll(); CHECK(s_seq_state == SQ_WAIT); }
                 if (phase >= 2) CHECK(sequence_start_stage() == 0);
@@ -661,7 +711,7 @@ static int check_route_sequence(void)
                 for (int j = 0; j < 4; j++) { host_tick += 1000u; test_poll(); }
                 run_cmd("g");
                 CHECK(s_seq_state == SQ_STOPPED && last_x == 0.0f && last_y == 0.0f && last_w == 0.0f &&
-                      !s_go && start_calls == 0 && pulse_calls == (stage == 8 && phase >= 1 ? 3200 : 0) && !host_timer_active && servo_calls == 0);
+                      !s_go && start_calls == 0 && pulse_calls == (stage == 8 && phase >= 1 ? 3400 : 0) && !host_timer_active && servo_calls == 0);
             }
         }
     }
@@ -681,14 +731,15 @@ static int check_route_sequence(void)
         for (size_t k = 0; k < sizeof writes / sizeof writes[0]; k++) {
             run_cmd(writes[k]);
             CHECK(strstr(last_message, "ERR ROUTE_SEQ_ACTIVE") != NULL && s_v == 250.0f &&
-                  s_d == 535.0f && s_seq_stage == 0u && s_msel == 17 && servo_calls == 0);
+                  s_d == 575.0f && s_seq_stage == 0u && s_msel == 17 && servo_calls == 0);
         }
         CHECK(route_seq_active()); run_cmd("g");
     }
     /* All failed sensor/turn statuses cancel rather than advancing a ready/done submode. */
     for (int stage = 0; stage < 9; stage++) {
         reset_fixture(); run_cmd("31"); run_cmd("g");
-        s_seq_stage = (uint8_t)stage; route_seq_prepare();
+        if (stage == 4) CHECK(fixture_prepare_route31_board() == 0);
+        else { s_seq_stage = (uint8_t)stage; route_seq_prepare(); }
         CHECK(sequence_start_stage() == 0);
         host_imu_valid = 0; test_poll();
         CHECK(s_seq_state == SQ_STOPPED && s_seq_stage == stage && strstr(last_message, "status=IMUERR") != NULL);
@@ -713,7 +764,7 @@ static int check_route_sequence(void)
     reset_fixture(); run_cmd("31"); run_cmd("g"); CHECK(sequence_start_stage() == 0);
     dist_begin_finish(0u); host_tick += T_DIST_STILL_MS; test_poll();
     CHECK(s_seq_state == SQ_STOPPED && s_seq_stage == 0u);
-    puts("route31: nine-road prefix R2back630/board_tilt1.5_wait1s_guard300_confirm100_v40, crossing/contact yaw/FF disabled, QRgate/right800/back760/rackDIR0nl3200predeploy/left90 then actual ball/bucket41 task handoff; independent3200 recipe and3199-not-DONE boundary, no legacybucket/manuald, three backwardBFF legs, post-yaw-before-next, terminal router policy,108 road g/a/0 cancellations, locks and IMU/abort/turn failure passed");
+    puts("route31: nine-road prefix R1left575/R2back610/right90/cross620/board_tilt1.0_wait300ms_guard300_confirm100_v40/no_contact_nudges, crossing/contact yaw/FF disabled, QRgate/right780/back805/rackDIR0nl3400predeploy/left90 then actual ball/bucket41 task handoff; independent3400 recipe and3399-not-DONE boundary, no legacybucket/manuald, three backwardBFF legs, post-yaw-before-next, terminal router policy,108 road g/a/0 cancellations, locks and IMU/abort/turn failure passed");
     return 0;
 }
 

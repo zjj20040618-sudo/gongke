@@ -1,4 +1,5 @@
-/* Route31/43 bucket trial: real CRC/request parser + real VAT module.
+/* Owner43 legacy bucket contract: real CRC/request parser + real VAT module.
+ * Current31 continuousX/strict300ms coverage is in the dedicated31 fixtures;
  * Reuse the existing module mocks, not its older bucket assertions.
  * Pixels, yaw and encoders are injected; this is not hardware acceptance. */
 #define main inherited_vat_module_fixture_main
@@ -7,7 +8,7 @@
 
 static int bs_bucket_unacked_rank(unsigned position)
 {
-    CHECK(reset_route(41u));
+    CHECK(reset_route_scoped(41u,43u));
     route_auto_ball_rank=(int)position;
     CHECK(vision_align_test_route_search_speed_set(200.0f));
     CHECK(vision_align_test_route_search_kp_set(3.0f));
@@ -156,7 +157,7 @@ static int bs_recovery_brake_and_faults(void)
         else if(f==2u)imu_valid=0;
         else if(f==3u)yaw=NAN;
         else if(f==4u)ack(request(),2u,1u);
-        else if(f==5u)object(request(),9,100,VAT_BUCKET_Y_PX,135u,480u,seq++);
+        else if(f==5u)object(request(),9,100,VAT_BUCKET_Y_PX,115u,480u,seq++);
         else {CHECK(vision_align_test_take_route_action()==VAT_ROUTE_ACTION_BUCKET);ack(request(),2u,1u);vision_align_test_notify_route_action_result(1);}
         tick(1u); CHECK(st.state==VAT_STOPPED && stopped() && !st.good);
         CHECK(vision_align_test_take_route_action()==VAT_ROUTE_ACTION_NONE);
@@ -276,7 +277,8 @@ int main(void)
        || !bs_recovery_brake_and_faults() || !bs_independent_isolation()
        || !bs_rank_direction_far_loss_and_fine_boundary()
        || !bs_coarse_drop_wait2s_exact_boundaries_and_recovery()
-       || !bs_rank1_and_rank3_far_either_side_keep_direction()) return 1;
-    puts("bucket31 host: X125 strict gate95/155 coarse,96/154 fine;rank1 alwaysback/rank3 alwaysforward whilefar/rank2 freshcx-or-wait; ACK2s,owner200 ramp/noFF;fresh300/301..1999 stops/2000 rank-resumes-ramp;strict abs(error)<30 sticky fine20;coarse loss no release/fine seenlost2s release/still250/recovery+take;seq+tickwrap/replay/empty/54/ACK/abort/IMU/geometry,standalone39/41 isolated passed; no hardware acceptance");
+       || !bs_rank1_and_rank3_far_either_side_keep_direction()
+       || !check_route31_gate15_scoped43_gate30_isolation()) return 1;
+    puts("bucket43 legacy host: X125 strict gate95/155 coarse,96/154 fine;rank1 alwaysback/rank3 alwaysforward whilefar/rank2 freshcx-or-wait; ACK2s,owner200 ramp/noFF;fresh300/301..1999 stops/2000 rank-resumes-ramp;strict abs(error)<30 sticky fine20;coarse loss no release/fine seenlost2s release/still250/recovery+take;seq+tickwrap/replay/empty/54/ACK/abort/IMU/geometry,standalone39/41 isolated passed; current31 continuousX/lost300 covered separately; no hardware acceptance");
     return 0;
 }

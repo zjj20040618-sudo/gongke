@@ -12,6 +12,7 @@ void ctrl_set_speed_precise(int motor, float rpm)
     ff_delivered[motor] = rpm;
     ff_delivered_mask |= 1u << (unsigned)motor;
 }
+void ctrl_set_speed_creep(int motor, float rpm) { ctrl_set_speed_precise(motor,rpm); }
 
 /* Keep the dispatcher's observable capture stubs. Namespacing the real motion
  * implementation provides a second boundary check without editing the fixture. */
@@ -19,6 +20,7 @@ void ctrl_set_speed_precise(int motor, float rpm)
 #define motion_ik ff_real_motion_ik
 #define motion_vel_set ff_real_motion_vel_set
 #define motion_vel_set_precise ff_real_motion_vel_set_precise
+#define motion_vel_set_creep ff_real_motion_vel_set_creep
 #define motion_brake ff_real_motion_brake
 #define motion_pose ff_real_motion_pose
 #define motion_pose_update ff_real_motion_pose_update
@@ -32,11 +34,13 @@ void ctrl_set_speed_precise(int motor, float rpm)
 #define motion_linear_ramp_init ff_real_motion_linear_ramp_init
 #define motion_linear_profile_step ff_real_motion_linear_profile_step
 #define motion_linear_ramp_step ff_real_motion_linear_ramp_step
+void ff_real_motion_brake(void); /* Header was already read by the capture fixture. */
 #include "../App/motion.c"
 #undef motion_init
 #undef motion_ik
 #undef motion_vel_set
 #undef motion_vel_set_precise
+#undef motion_vel_set_creep
 #undef motion_brake
 #undef motion_pose
 #undef motion_pose_update
@@ -74,8 +78,10 @@ static int ff_check_real_ik(void)
     for (int m = 0; m < 4; ++m) CHECK(ff_near(ff_delivered[m], expected[m]));
     float recovered_x = (ff_delivered[0] + ff_delivered[1] + ff_delivered[2] + ff_delivered[3]) * 0.25f * velocity_per_rpm;
     float recovered_y = (-ff_delivered[0] + ff_delivered[1] - ff_delivered[2] + ff_delivered[3]) * 0.25f * velocity_per_rpm;
+    float recovered_w = (ff_delivered[0] - ff_delivered[1] - ff_delivered[2] + ff_delivered[3]) * 0.25f * velocity_per_rpm / M_A_HALF_MM;
     CHECK(fabsf(recovered_x - last_x) < 0.0002f);
     CHECK(fabsf(recovered_y - last_y) < 0.0002f);
+    CHECK(fabsf(recovered_w - last_w) < 0.00001f);
     return 0;
 }
 
@@ -265,7 +271,7 @@ static int check_all_route_owners_precise_ff_at_all_speeds(void)
             }
             s_seq_stage = (uint8_t)cases[n].stage; route_seq_prepare();
             if (cases[n].owner == 31u && cases[n].stage == ROUTE31_TARGET_CORNER_STAGE)
-                CHECK(route_seq_leg()->distance_mm == 420u && s_d == 420.0f);
+                CHECK(route_seq_leg()->distance_mm == 445u && s_d == 445.0f);
             if (cases[n].owner == 31u && cases[n].stage == ROUTE31_HOSTAGE_EXIT_STAGE)
                 CHECK(route_seq_leg()->distance_mm == 1315u && s_d == 1315.0f);
             CHECK(sequence_start_stage() == 0 && s_msel == cases[n].mode && route_seq_leg()->heading_hold);
@@ -296,7 +302,40 @@ static int check_all_route_owners_precise_ff_at_all_speeds(void)
             CHECK(s_dist_ff_ratio == snapshot);
             run_cmd("g"); CHECK(last_x == 0.0f && last_y == 0.0f && last_w == 0.0f);
         }
-    puts("routeFFF: all4 route owners,91 existing plus7 final15 direction/speed input cases includingv100/v300;31dynamic12/final15 both fixedright4pct, other FFF/BFF/LFF/RFF unchanged; all reach real precise4wheel IK, active snapshots locked passed");
+    puts("routeFFF: all4 route owners and7 speed inputs;31 corner/right9.5pct and final/right3.5pct, other FFF/BFF/LFF/RFF unchanged; all reach real precise4wheel IK with vx/vy/w roundtrip, active snapshots locked passed");
+    return 0;
+}
+
+static int check_route31_corner_compensation_is_translation_not_yaw(void)
+{
+    static const unsigned speeds[] = {100u,200u,350u,600u};
+    /* Retained moving hold/FF behavior up to the strict1.5deg boundary.
+     * Larger deviations now belong to the separately tested pause executor. */
+    static const float yaw_errors[] = {-1.5f,-1.0f,0.0f,1.0f,1.5f};
+    CHECK(ROUTE31_CORNER_RIGHT_FF_RATIO == 0.095f && ROUTE43_CORNER_RIGHT_FF_RATIO == 0.065f);
+    for (unsigned k = 0u; k < sizeof speeds / sizeof speeds[0]; ++k) {
+        reset_fixture(); ff_select_route(31u); run_cmd("ykp1.2"); run_cmd("g");
+        s_seq_qr[0] = 1; s_seq_qr[1] = 2; s_seq_qr[2] = 3;
+        s_seq_stage = ROUTE31_TARGET_CORNER_STAGE; route_seq_prepare();
+        CHECK(sequence_start_stage() == 0 && s_msel == 15 && s_dist_heading_kp == 1.2f);
+        motion_brake(); s_round = R_READY; s_v = (float)speeds[k]; mode_start(); tick();
+        for (unsigned n = 0u; n < sizeof yaw_errors / sizeof yaw_errors[0]; ++n) {
+            host_yaw = s_dist_heading0 + yaw_errors[n]; tick();
+            CHECK(last_x == (float)speeds[k] && ff_near(last_y, (float)speeds[k] * 0.095f));
+            CHECK(ff_near(last_w, -1.2f * yaw_errors[n] * 0.0174533f));
+            CHECK(ff_check_real_ik() == 0);
+            float no_cross_track[4];
+            motion_ik_precise(last_x, 0.0f, last_w, no_cross_track);
+            float delta[4];
+            for (int m = 0; m < 4; ++m) delta[m] = ff_delivered[m] - no_cross_track[m];
+            /* Lateral correction is a diagonal +/- pattern, not left/right
+             * differential steering. Its independent rotational component is0. */
+            CHECK(delta[0] < 0.0f && delta[1] > 0.0f && delta[2] < 0.0f && delta[3] > 0.0f);
+            CHECK(fabsf(delta[0] - delta[1] - delta[2] + delta[3]) < 0.0001f);
+        }
+        run_cmd("g"); CHECK(last_x == 0.0f && last_y == 0.0f && last_w == 0.0f);
+    }
+    puts("31 corner:body-right9.5% scales100/200/350/600 speeds;20 yaw samples change only gyro w; real4wheel FF has zero rotational component; not physical no-twist acceptance");
     return 0;
 }
 
@@ -309,6 +348,7 @@ int main(void)
     CHECK(check_body_relative_sign_contract_and_mission_isolation() == 0);
     CHECK(check_route_strafe_seed_report_and_manual_isolation() == 0);
     CHECK(check_all_route_owners_precise_ff_at_all_speeds() == 0);
+    CHECK(check_route31_corner_compensation_is_translation_not_yaw() == 0);
     puts("translation_feedforward_test: all host checks passed; drift ratio/sign with installed load still needs ruler measurement");
     return 0;
 }

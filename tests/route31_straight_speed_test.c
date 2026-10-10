@@ -25,10 +25,11 @@ static int speed_prepare_with_lateral(unsigned stage, unsigned speed, unsigned l
 {
     CHECK(speed_boot_with_lateral(speed, lateral) == 0);
     step_vision_receive_end();
-    s_seq_stage = (uint8_t)stage;
     s_route31_rack_deployed = 1u; /* Isolate speed from the separately tested rack job. */
     s_route31_hostage_rank = 1u;
-    route_seq_prepare(); wire_sync();
+    if (stage == 4u) CHECK(fixture_prepare_route31_board() == 0);
+    else { s_seq_stage = (uint8_t)stage; route_seq_prepare(); }
+    wire_sync();
     CHECK(s_seq_state != SQ_STOPPED && s_route31_straight_v == (float)speed &&
           s_route31_lateral_v == (float)lateral);
     return 0;
@@ -167,23 +168,30 @@ static int speed_default_stage_scope(void)
         step_vision_receive_end();
         s_route31_rack_deployed = 1u;
         s_route31_hostage_rank = 1u;
-        s_seq_stage = (uint8_t)stage;
-        route_seq_prepare(); wire_sync();
+        if (stage == 4u) CHECK(fixture_prepare_route31_board() == 0);
+        else { s_seq_stage = (uint8_t)stage; route_seq_prepare(); }
+        wire_sync();
         int strafe = stage == 0u || stage == 6u;
         int ordinary = stage == 1u || stage == 5u || stage == 7u || stage == 12u || stage == 15u;
         int search = stage == 9u || stage == 11u || stage == 14u;
         float expected = strafe ? 250.0f : ordinary || search ? 200.0f :
                          stage == 3u ? 300.0f : stage == 4u ? 40.0f : 100.0f;
         CHECK(route_seq_speed_mms() == expected && s_v == expected);
+        if (stage == 14u) CHECK(fabsf(s_route_search_ff - 0.05f) < 0.00001f);
+        if (stage == 2u) CHECK(turn_target_deg() == 90.0f);
+        if (stage == ROUTE31_HOSTAGE_TURN_STAGE) CHECK(turn_target_deg() == 93.0f);
         if (strafe || ordinary || stage == 3u || stage == 4u) {
             CHECK(sequence_start_stage() == 0 && s_v == expected);
-            if (stage == 7u) CHECK(s_dist_target == -760.0f);
+            if (stage == 7u) CHECK(s_dist_target == -805.0f);
+            if (stage == 15u) CHECK(route_seq_leg()->distance_mm == 1415u && s_dist_target == 1415.0f);
             if (strafe) CHECK(fabsf(last_y) == 250.0f);
             else CHECK(last_x == (s_msel == 16 ? -expected : expected));
+            if (stage == 15u) CHECK(fabsf(s_dist_ff_ratio + 0.075f) < 0.00001f &&
+                                  fabsf(last_y - expected * 0.075f) < 0.00001f);
         }
         run_cmd("g"); CHECK(s_seq_state == SQ_STOPPED && !host_timer_active && !laser_state);
     }
-    puts("route31 defaults without overrides: all16 stages straight/search200 and lateral250; fixed turns100/cross300/contact40 and cancellation preserved passed");
+    puts("route31 defaults without overrides: all16 stages straight/search200 and lateral250; fixed turns100 with preCrossRIGHT90/hostageRIGHT93, rank1final1415/cross300/contact40 and cancellation preserved passed");
     return 0;
 }
 
@@ -198,17 +206,23 @@ static int speed_every_stage_scope(void)
             int search = stage == 9u || stage == 11u || stage == 14u;
             float expected = ordinary || search ? (float)speed : stage == 3u ? 300.0f : stage == 4u ? 40.0f : 100.0f;
             CHECK(route_seq_speed_mms() == expected && s_v == expected);
+            if (stage == 14u) CHECK(fabsf(s_route_search_ff - 0.05f) < 0.00001f);
+            if (stage == 2u) CHECK(turn_target_deg() == 90.0f);
+            if (stage == ROUTE31_HOSTAGE_TURN_STAGE) CHECK(turn_target_deg() == 93.0f);
             if (ordinary || stage == 0u || stage == 3u || stage == 4u || stage == 6u) {
                 CHECK(sequence_start_stage() == 0 && s_v == expected);
                 CHECK(s_dist_ramp.acc == 700.0f && s_dist_ramp.dec == 350.0f && s_dist_precise);
                 CHECK(s_dist_heading_kp == (stage == 3u || stage == 4u ? 0.0f : stage == 6u ? 3.0f : 0.3f));
-                CHECK(stage == 0u ? s_dist_target == -535.0f :
-                      stage == 1u ? s_dist_target == -630.0f :
-                      stage == 3u ? s_dist_target == -650.0f :
+                CHECK(stage == 0u ? s_dist_target == -575.0f :
+                      stage == 1u ? s_dist_target == -610.0f :
+                      stage == 3u ? s_dist_target == -620.0f :
                       stage == 4u ? s_dist_target == 0.0f :
-                      stage == 7u ? s_dist_target == -760.0f : 1);
+                      stage == 7u ? s_dist_target == -805.0f : 1);
+                if (stage == 15u) CHECK(route_seq_leg()->distance_mm == 1415u && s_dist_target == 1415.0f);
                 if (ordinary) CHECK(last_x == (s_msel == 16 ? -expected : expected));
                 else if (stage == 0u || stage == 6u) CHECK(fabsf(last_y) == 100.0f);
+                if (stage == 15u) CHECK(fabsf(s_dist_ff_ratio + 0.075f) < 0.00001f &&
+                                      fabsf(last_y - expected * 0.075f) < 0.00001f);
             }
             run_cmd("g"); CHECK(s_seq_state == SQ_STOPPED && !host_timer_active);
         }
@@ -219,6 +233,29 @@ static int speed_every_stage_scope(void)
     run_cmd("36"); s_seq_stage = 1u; CHECK(route_seq_speed_mms() == 100.0f);
     run_cmd("37"); s_seq_stage = 0u; CHECK(route_seq_speed_mms() == 300.0f);
     puts("route31 v:all16 stages at1/100/200/600; ordinary back/forward only; explicit lateral100 override, turns, cross300/contact40, limits/acc/dec/ykp retained; 34/36/37 isolated passed");
+    return 0;
+}
+
+static int speed_internal_turn_offsets(void)
+{
+    static const unsigned requested[]={1u,40u,80u,250u,600u};
+    for(unsigned n=0u;n<5u;++n){
+        unsigned lateral=requested[n];float capped=lateral<80u?(float)lateral:80.0f;
+        CHECK(speed_boot_with_lateral(600u,lateral)==0);
+        step_vision_receive_end();s_route31_rack_deployed=1u;
+        s_seq_stage=ROUTE31_PAIR_STAGE;
+        s_seq_pair_turn=0u;s_seq_pair_offset=1u;s_seq_return_offset=0u;
+        route_seq_prepare();wire_sync();
+        CHECK(s_seq_state==SQ_STILL && route_seq_leg()->mode==17u &&
+              route_seq_leg()->distance_mm==15u && route_seq_leg()->heading_hold &&
+              route_seq_speed_mms()==capped && s_v==capped &&
+              s_route31_straight_v==600.0f && s_route31_lateral_v==(float)lateral);
+        CHECK(sequence_start_stage()==0 && s_dist_target==-15.0f &&
+              s_dist_align_enabled && last_y==-capped && !last_x);
+        run_cmd("g");CHECK(s_seq_state==SQ_STOPPED&&!s_seq_pair_offset&&!s_seq_return_offset&&stopped());
+    }
+    CHECK(ROUTE31_RETURN_RIGHT_MM == 0u); /* Return-turn handoff is tested by the real task chain. */
+    puts("31 firstLEFT15: actual executor min(pv,80) atpv1/40/80/250/600, straightv600 independent, heading/end-correction enabled; return lateral offset disabled passed");
     return 0;
 }
 
@@ -275,7 +312,7 @@ static int lateral_every_stage_scope(void)
                 if (strafe) {
                     CHECK(s_msel == (stage == 0u ? 17 : 18) && fabsf(last_y) == (float)lateral &&
                           last_x == 0.0f && last_w == 0.0f);
-                    CHECK(s_dist_target == (stage == 0u ? -535.0f : 800.0f));
+                    CHECK(s_dist_target == (stage == 0u ? -575.0f : 780.0f));
                 } else CHECK(last_x == (s_msel == 16 ? -expected : expected));
             }
             run_cmd("g"); CHECK(s_seq_state == SQ_STOPPED && !host_timer_active);
@@ -308,14 +345,16 @@ static int speed_search_and_fine(void)
     static const unsigned stages[] = {9u, 11u, 14u};
     static const int models[] = {4, 6, 1}; /* QR111 selects red ball/red target/cylinder. */
     static const unsigned image_y[] = {390u, 120u, 220u};
-    CHECK(VAT_ROUTE_BALL_X_PX == 135 && VAT_ROUTE_BUCKET_X_PX == 125 &&
+    CHECK(VAT_ROUTE_BALL_X_PX == 135 && VAT_ROUTE_BUCKET_X_PX == 105 && VAT_ROUTE43_BUCKET_X_PX == 125 &&
           VAT_ROUTE_HOSTAGE_X_PX == 215 && VAT_TOL_PX == 10);
     for (unsigned i = 0u; i < 3u; ++i) {
         CHECK(speed_prepare_with_lateral(stages[i], 200u, 600u) == 0);
-        if (i == 1u) CHECK(target35_point() == 240 && target35_low() == 237 && target35_high() == 243);
+        if (i == 1u) CHECK(target35_point() == 250 && target35_low() == 247 && target35_high() == 253 &&
+                           target35_fine_enter() == 360);
         else CHECK(s_vat.x_goal == (i == 0u ? 135 : 215));
         if (i != 1u) {
             CHECK(VAT_ROUTE_SEARCH_ACC_MMS2 == 700.0f);
+            CHECK(fabsf(s_route_search_ff - (i == 2u ? 0.05f : 0.03f)) < 0.00001f);
             /* Explicit trial FF exercises the public setter while still
              * braked. It must scale with actual ramp speed, not cruise200. */
             CHECK(vision_align_test_route_search_ff_set(0.03f));
@@ -344,7 +383,7 @@ static int speed_search_and_fine(void)
         CHECK(last_x == 200.0f && s_seq_state == SQ_TASK);
         speed_wire_object(wire_request, 1u, models[i], 400u, image_y[i]);
         CHECK(last_x == 200.0f);
-        unsigned near_x = i == 1u ? 300u : (unsigned)s_vat.x_goal + 29u;
+        unsigned near_x = i == 1u ? 300u : (unsigned)s_vat.x_goal + 14u;
         host_tick += VAT_POLL_MS; speed_wire_object(wire_request, 2u, models[i], near_x, image_y[i]);
         if (i == 1u) {
             CHECK(s_target31_fine && last_x == 30.0f);
@@ -354,7 +393,8 @@ static int speed_search_and_fine(void)
             CHECK(last_x == 0.0f && s_vat.state == VAT_BRAKE);
             host_tick += T_DIST_STILL_MS; wire_poll();
             host_tick += VAT_POLL_MS; speed_wire_object(wire_request, 3u, models[i], near_x, image_y[i]);
-            CHECK(s_vat.state == VAT_STEP_MOVE && last_x == 20.0f && last_y == 0.0f);
+            CHECK(s_vat.state == (VAT_Y_ALIGN_ENABLE ? VAT_STEP_MOVE : VAT_FINE_CONTINUOUS) &&
+                  last_x == 20.0f && last_y == 0.0f);
         }
         run_cmd("g"); CHECK(s_seq_state == SQ_STOPPED && !laser_state);
     }
@@ -365,7 +405,7 @@ static int speed_search_and_fine(void)
                                       target35_point() == 255 && target35_low() == 250 && target35_high() == 260);
     run_cmd("42"); CHECK(s_grab42_pps == 500u && s_grab42_u == 1900u && s_route31_straight_v == 600.0f &&
                          s_route31_lateral_v == 600.0f);
-    puts("route31 v/pv:actual ACK ball/hostage acc700 ->0/14/28/199.5/clamp200 with FF on actual speed;target coarse instant200 despite pv600;farcx400 retains coarse,abs_error29 fineX20/target350 fine30 one-way latch;independent39/35/42 isolated passed");
+    puts("route31 v/pv:actual ACK ball/hostage acc700 ->0/14/28/199.5/clamp200 with FF on actual speed;target coarse instant200 despite pv600;farcx400 retains coarse,abs_error14 fineX20/target360 fine30 one-way latch;independent39/35/42 isolated passed");
     return 0;
 }
 
@@ -376,6 +416,7 @@ int main(void)
     CHECK(speed_default_stage_scope() == 0);
     CHECK(speed_every_stage_scope() == 0);
     CHECK(lateral_every_stage_scope() == 0);
+    CHECK(speed_internal_turn_offsets() == 0);
     CHECK(speed_active_write_lock() == 0);
     CHECK(speed_search_and_fine() == 0);
     puts("route31 independent straight/lateral speed host regression passed; no hardware accepted");

@@ -13,7 +13,7 @@
 #define ARM_SERVO_MAX_US 2500u
 /* User-confirmed initial pulse; independent of uncalibrated open/close values. */
 #define ARM_SERVO_START_US 1150u
-/* Legacy cc/formal close. Current31/43 ball and independent42 use private1900 presets. */
+/* Legacy cc/formal close. Mode31 uses private2100;43/independent42 retain1900. */
 #define ARM_SERVO_GRIP_US 1700u
 
 void arm_init(void);

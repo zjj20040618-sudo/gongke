@@ -42,6 +42,7 @@ void     motion_ik(float vx, float vy, float w, int16_t rpm[4]); /* 体坐标速
 void     motion_vel_set(float vx, float vy, float w);             /* 直接按体坐标速度走 */
 void     motion_ik_precise(float vx, float vy, float w, float rpm[4]); /* 独立小数 IK；旧 IK 保持整数截断 */
 void     motion_vel_set_precise(float vx, float vy, float w);    /* 仅显式选择的新调用者保留小数轮速 */
+void     motion_vel_set_creep(float vx, float vy, float w); /* Opt-in fine translation; atomic four-wheel command publication. */
 void     motion_brake(void);
 void     motion_pose_update(void);          /* 1ms 更新 IMU 航向；x/y 积分待轮位/符号台校后启用 */
 const Pose *motion_pose(void);

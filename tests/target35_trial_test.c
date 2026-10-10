@@ -287,14 +287,16 @@ static int check_route31_fine_gate_is_not_an_aim_gate(void)
         host_scene_status = 1; test_poll();
         host_tick += T_DIST_STILL_MS; test_poll();
         host_tick += NAV_SETTLE_MS; test_poll();
-    CHECK(s_target35_phase == TA_SEEK && last_x == 200.0f && last_y == 13.0f && !s_target31_fine);
+    CHECK(s_target35_phase == TA_SEEK && last_x == 200.0f && last_y == 9.0f && !s_target31_fine);
         target_packet(CLS_TARGET, LAB_G, 400, 10u);
-        target_packet(CLS_TARGET, LAB_G, 350, 10u); /* Duplicate. */
-        CHECK(last_x == 200.0f && last_y == 13.0f && !s_target31_fine);
-        target_packet(CLS_TARGET, LAB_G, 349, 9u); /* Backwards. */
-        CHECK(last_x == 200.0f && last_y == 13.0f && !s_target31_fine);
-        target_cache_packet(CLS_TARGET, LAB_G, 350, 11u);
-        if (burst) { target_cache_packet(CLS_TARGET, LAB_G, 400, 12u); test_poll(); }
+        target_packet(CLS_TARGET, LAB_G, 360, 10u); /* Duplicate. */
+        CHECK(last_x == 200.0f && last_y == 9.0f && !s_target31_fine);
+        target_packet(CLS_TARGET, LAB_G, 359, 9u); /* Backwards. */
+        CHECK(last_x == 200.0f && last_y == 9.0f && !s_target31_fine);
+        target_packet(CLS_TARGET, LAB_G, 361, 11u);
+        CHECK(last_x == 200.0f && last_y == 9.0f && !s_target31_fine);
+        target_cache_packet(CLS_TARGET, LAB_G, 360, 12u);
+        if (burst) { target_cache_packet(CLS_TARGET, LAB_G, 400, 13u); test_poll(); }
         else target_empty();
         CHECK(last_x == 30.0f && last_y == 0.0f && s_target31_fine &&
               s_target35_phase == TA_SEEK && !s_target35_good && !laser_state);
@@ -302,14 +304,14 @@ static int check_route31_fine_gate_is_not_an_aim_gate(void)
         CHECK(last_x == 30.0f && last_y == 0.0f && s_target31_fine && !laser_state);
         run_cmd("0"); CHECK(s_seq_state == SQ_STOPPED && target_stopped() && !laser_state);
     }
-    puts("31-only direct RX:far400 then duplicate/backward350 cannot latch; fresh350->empty/far400 samepoll permanentlyfine30/noFF, never fakegood/laser;35 isolated passed");
+    puts("31-only direct RX:far400 then duplicate/backward360 cannot latch; fresh360->empty/far400 samepoll permanentlyfine30/noFF, never fakegood/laser;35 isolated passed");
     return 0;
 }
 
 static int check_route31_private_band_geometry(void)
 {
-    CHECK(ROUTE31_TARGET_CX == 240 && ROUTE31_TARGET_LOW_CX == 237 && ROUTE31_TARGET_HIGH_CX == 243);
-    for (unsigned width = 243u; width <= 245u; ++width) {
+    CHECK(ROUTE31_TARGET_CX == 250 && ROUTE31_TARGET_LOW_CX == 247 && ROUTE31_TARGET_HIGH_CX == 253);
+    for (unsigned width = 253u; width <= 255u; ++width) {
         ProtoFrame frame;
         reset_fixture(); run_cmd("31"); run_cmd("g");
         s_seq_qr[0] = 1; s_seq_qr[1] = 2; s_seq_qr[2] = 3;
@@ -321,23 +323,23 @@ static int check_route31_private_band_geometry(void)
         CHECK(s_target35_phase == TA_SEEK && !s_target31_fine);
         memset(&frame, 0, sizeof frame);
         frame.type = PF_OBJ; frame.cls = CLS_TARGET; frame.label = LAB_G;
-        frame.cx = 240; frame.cy = 160; frame.w = frame.h = 2;
+        frame.cx = 250; frame.cy = 160; frame.w = frame.h = 2;
         frame.conf = 95; frame.img_w = (uint16_t)width; frame.img_h = 320;
         frame.sequence = 1;
         host_proto_stats.obj++; host_proto_stats.lines++;
         test_vision_feed_frame(&frame); test_poll();
-        if (width == 243u) CHECK(s_seq_state == SQ_STOPPED && !laser_state);
+        if (width == 253u) CHECK(s_seq_state == SQ_STOPPED && !laser_state);
         else CHECK(s_target31_fine && s_target35_good == 1u && target_stopped() && !laser_state);
         CHECK(T_TARGET35_CX == 255 && T_TARGET35_LOW_CX == 250 && T_TARGET35_HIGH_CX == 260);
         run_cmd("0");
     }
-    puts("31 private240/237..243: valid image widths244..245 latch fine at240,243 width rejected; standalone35 constants unchanged passed");
+    puts("31 private250/247..253: valid image widths254..255 latch fine at250,253 width rejected; standalone35 constants unchanged passed");
     return 0;
 }
 
 static int check_route31_private_band_endpoints(void)
 {
-    static const int points[] = {236,237,240,243,244};
+    static const int points[] = {246,247,250,253,254};
     for (unsigned i = 0u; i < sizeof points / sizeof points[0]; ++i) {
         reset_fixture(); run_cmd("31"); run_cmd("g");
         s_seq_qr[0] = 1; s_seq_qr[1] = 2; s_seq_qr[2] = 3;
@@ -346,17 +348,17 @@ static int check_route31_private_band_endpoints(void)
         host_scene_status = 1; test_poll();
         host_tick += T_DIST_STILL_MS; test_poll();
         host_tick += NAV_SETTLE_MS; test_poll();
-        CHECK(s_target35_phase == TA_SEEK && target35_point() == 240 &&
-              target35_low() == 237 && target35_high() == 243);
+        CHECK(s_target35_phase == TA_SEEK && target35_point() == 250 &&
+              target35_low() == 247 && target35_high() == 253);
         target_packet(CLS_TARGET, LAB_G, points[i], 1u);
         CHECK(s_target31_fine && s_target35_phase == TA_SEEK && !laser_state && !last_y && !last_w);
-        if (points[i] < 237) CHECK(last_x == -30.0f && !s_target35_good);
-        else if (points[i] > 243) CHECK(last_x == 30.0f && !s_target35_good);
+        if (points[i] < 247) CHECK(last_x == -30.0f && !s_target35_good);
+        else if (points[i] > 253) CHECK(last_x == 30.0f && !s_target35_good);
         else CHECK(target_stopped() && s_target35_good == 1u);
         run_cmd("0"); CHECK(target_stopped() && !laser_state);
     }
     CHECK(target_ready() == 0 && target35_point() == 255 && target35_low() == 250 && target35_high() == 260);
-    puts("31 band237/243 included and236/244 correct directions;240 center;standalone35 remains255/250..260 passed");
+    puts("31 band247/253 included and246/254 correct directions;250 center;standalone35 remains255/250..260 passed");
     return 0;
 }
 

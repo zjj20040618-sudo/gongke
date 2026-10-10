@@ -215,7 +215,7 @@ static int check_r1_yaw_hold_before_qr_release(void)
     uint16_t request = wire_request;
     run_cmd("31"); wire_sync();
     CHECK(s_seq_state == SQ_READY && stopped() && wire_request == request);
-    CHECK(route_seq_leg()->distance_mm == 535u && route_seq_leg()->speed_mms == 250.0f);
+    CHECK(route_seq_leg()->distance_mm == 575u && route_seq_leg()->speed_mms == 250.0f);
     CHECK(s_route_test_plan[0].distance_mm == 530u && s_bucket36_plan[0].distance_mm == 530u);
     wire_ack(request, 1u, 0u);
     uint8_t qr53[12] = {0x62u, (uint8_t)request, (uint8_t)(request >> 8), 7u, 0u,
@@ -225,7 +225,7 @@ static int check_r1_yaw_hold_before_qr_release(void)
     CHECK(!zero_calls && !s_active_test && wire_commands == 1u);
     run_cmd("g");
     CHECK(s_seq_state == SQ_STILL && stopped() && proto_qr_get(NULL) && wire_request == request);
-    CHECK(sequence_start_stage() == 0 && s_seq_stage == 0u && s_dist_target == -535.0f && s_v == 250.0f);
+    CHECK(sequence_start_stage() == 0 && s_seq_stage == 0u && s_dist_target == -575.0f && s_v == 250.0f);
     CHECK(s_dist_align_enabled && s_seq_state == SQ_RUN && proto_qr_get(NULL) && wire_commands == 1u);
     host_lateral = s_dist_odo0 + s_dist_target; host_yaw = 3.0f; wire_poll();
     CHECK(s_round == R_BRAKE && s_seq_state == SQ_RUN && s_seq_stage == 0u && stopped());
@@ -255,7 +255,7 @@ static int check_r1_yaw_hold_before_qr_release(void)
     CHECK(s_seq_state == SQ_STILL && s_seq_stage == 1u && s_msel == 16 && stopped());
     CHECK(s_seq_qr[0] == 1 && s_seq_qr[1] == 2 && s_seq_qr[2] == 3);
     CHECK(wire_commands == 1u && wire_request == request && host_receive_closed && !s_receiving);
-    puts("route31 R1-only535/v250: select starts QR53 without motion; g preserves earlyQR; exact0.4 corrects continuously, same-side0.3/exact0 brake with no crossing requirement; full400ms hold precedes QR release/R2; shared34/36 recipes stay530 passed");
+    puts("route31 R1-only575/v250: select starts QR53 without motion; g preserves earlyQR; exact0.4 corrects continuously, same-side0.3/exact0 brake with no crossing requirement; full400ms hold precedes QR release/R2; shared34/36 recipes stay530 passed");
     return 0;
 }
 static int check_early_and_r1_cache(void)
@@ -446,11 +446,11 @@ static int check_notice_transition_race(void)
 static int check_complete_recipe_without_bucket(void)
 {
     static const int modes[9] = {17,16,20,16,15,16,18,16,30};
-    static const int commands[9] = {-535,-630,90,-650,0,-190,800,-760,-90};
+    static const int commands[9] = {-575,-610,90,-620,0,-190,780,-805,-90};
     static const float speeds[9] = {250,200,100,300,40,200,250,200,100};
     CHECK(ROUTE31_STAGES == 16u);
     CHECK(begin_qr_wait() == 0);
-    CHECK(s_dist_target == -535.0f && s_v == 250.0f && !host_target_calls);
+    CHECK(s_dist_target == -575.0f && s_v == 250.0f && !host_target_calls);
     uint16_t qr_request = wire_request;
     wire_ack(qr_request, 1u, 0u); wire_qr(qr_request, 1u, "213", 0, 0);
     CHECK(s_seq_stage == 1u && s_seq_state == SQ_STILL && stopped());
@@ -481,7 +481,7 @@ static int check_complete_recipe_without_bucket(void)
     CHECK(wire_opcode == 0x63u && wire_task == 1u && wire_digit == 2u && wire_request > qr_request);
     run_cmd("g"); host_tick += 10000u; wire_poll();
     CHECK(s_seq_state == SQ_STOPPED && stopped() && !s_receiving);
-    puts("route31: legal R1 QR -> nine R2back630/crossing-v300/tilt-contact-v40/right800/back760/left90 road actions -> selected ball from R1 tuple; no old bucket detour/manuald; cancellation closes task passed");
+    puts("route31: legal R1 QR -> nine R1left575/R2back610/right90/cross620-v300/tilt1.0-contact-v40/no_contact_nudges/right780/back805/left90 road actions -> selected ball from R1 tuple; no old bucket detour/manuald; cancellation closes task passed");
     return 0;
 }
 static int check_route_bucket_manual_stop(unsigned mode)

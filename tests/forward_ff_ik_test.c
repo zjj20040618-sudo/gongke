@@ -30,6 +30,12 @@ void ctrl_set_speed_precise(int motor, float rpm)
     ++precise_calls;
 }
 
+/* New low-speed entry only satisfies motion.c linkage in this legacy test. */
+void ctrl_set_speed_creep(int motor, float rpm)
+{
+    ctrl_set_speed_precise(motor, rpm);
+}
+
 /* PE host linking still needs these peripheral references from motion.c. */
 void ctrl_stop_all(void)
 {
