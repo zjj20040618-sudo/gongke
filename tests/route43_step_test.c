@@ -427,7 +427,7 @@ static int check_r43_late_qr_and_distance_slot(void)
     CHECK(r43_wait(2u) == 0 && s_seq_stage == 1u && !s_receiving && !proto_qr_get(NULL));
     run_cmd("d777");
     CHECK(s_route43_tune.road_mm[1] == 777u && s_route43_tune.road_mm[0] == 535u &&
-          s_route31_plan[1].distance_mm == 630u && r43_wait(2u) == 0);
+          s_route31_plan[1].distance_mm == 610u && r43_wait(2u) == 0);
     CHECK(r43_motion_begin(2u,16u,777u,200.0f) == 0);
     run_cmd("g"); CHECK(s_seq_state == SQ_STOPPED && r43_stopped());
     CHECK(r43_service(5000u) == 0); run_cmd("g");

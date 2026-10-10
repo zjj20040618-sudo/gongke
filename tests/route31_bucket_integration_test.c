@@ -97,7 +97,7 @@ static int integrated_aim_current(void)
 static int check_route31_qr53_road_prefix_to_ball(void)
 {
     static const int modes[9] = {17,16,20,16,15,16,18,16,30};
-    static const int commands[9] = {-535,-630,90,-650,0,-190,800,-760,-90};
+    static const int commands[9] = {-575,-610,90,-620,0,-190,780,-805,-90};
     static const float speeds[9] = {250,200,100,300,40,200,250,200,100};
     CHECK(integrated_boot(31u, 1) == 0);
     CHECK(s_seq_state == SQ_READY && stopped() && notice_calls == 1u && proto_qr_get(NULL));
@@ -126,7 +126,7 @@ static int check_route31_qr53_road_prefix_to_ball(void)
         CHECK(s_seq_state != SQ_BUCKET_ALIGN && s_seq_state != SQ_MANUAL_D_WAIT);
         if (stage < 8u)
             CHECK(!host_target_calls && !bucket_wire_calls && wire_request == qr_request && wire_commands == qr_commands);
-        CHECK(!laser_state && !host_laser_on_calls && pulse_calls == (stage == 8u ? 3200 : 0) && !servo_calls && !s_go);
+        CHECK(!laser_state && !host_laser_on_calls && pulse_calls == (stage == 8u ? 3400 : 0) && !servo_calls && !s_go);
     }
     CHECK(s_seq_qr[0] == 3 && s_seq_qr[1] == 3 && s_seq_qr[2] == 1 && notice_calls == 1u);
     CHECK(s_receiving && !s_bucket36_back_mm && s_seq_stage == 9u && s_msel == 31);
@@ -134,7 +134,7 @@ static int check_route31_qr53_road_prefix_to_ball(void)
     CHECK(!proto_qr_get(NULL)); /* route factory uses the validated R1 snapshot */
     run_cmd("g"); run_cmd("d500"); host_tick += 60000u; wire_poll();
     CHECK(s_seq_state == SQ_STOPPED && stopped() && !s_receiving);
-    puts("integrated31 realQR53: early331 stays through roadprefix, R2back630/tilt-contact-v40/right800/back760/left90; after nine road actions ball request starts from latched QR, no old2450/2125 road-only tail passed");
+    puts("integrated31 realQR53: early331 stays through roadprefix, R1left575/R2back610/right90/cross620/tilt1.0-contact-v40/no_contact_nudges/right780/back805/left90; after nine road actions ball request starts from latched QR, no old2450/2125 road-only tail passed");
     return 0;
 }
 
@@ -145,7 +145,8 @@ static int check_route31_all_motion_node_cancellations(void)
         for (unsigned phase = 0u; phase < 4u; ++phase)
             for (unsigned key = 0u; key < 3u; ++key) {
                 CHECK(integrated_boot(31u, 1) == 0); run_cmd("g");
-                s_seq_stage = (uint8_t)stage; route_seq_prepare();
+                if (stage == 4u) CHECK(fixture_prepare_route31_board() == 0);
+                else { s_seq_stage = (uint8_t)stage; route_seq_prepare(); }
                 if (phase >= 1u) CHECK(fixture_complete_route31_predeploy() == 0);
                 if (phase == 1u) {
                     host_tick += T_DIST_STILL_MS; wire_poll(); CHECK(s_seq_state == SQ_WAIT);
@@ -179,20 +180,33 @@ static int check_route31_turn_target_scope(void)
     CHECK(integrated_boot(31u, 1) == 0); run_cmd("g");
     static const unsigned stages[] = {2u, 8u, 13u};
     for (unsigned n = 0u; n < 3u; ++n) {
+        host_messages[0] = '\0';
         s_seq_stage = (uint8_t)stages[n]; route_seq_prepare();
         CHECK(sequence_start_stage() == 0);
-        CHECK(turn_target_deg() == (stages[n] == 8u ? -90.0f : 90.0f));
-        CHECK(strstr(host_messages, "comp=0deg") != NULL);
+        CHECK(turn_target_deg() == (stages[n] == 8u ? -90.0f :
+                                   stages[n] == ROUTE31_HOSTAGE_TURN_STAGE ? 93.0f : 90.0f));
+        CHECK(strstr(host_messages, stages[n] == ROUTE31_HOSTAGE_TURN_STAGE ?
+                     "comp=3deg" : "comp=0deg") != NULL);
     }
     run_cmd("g"); run_cmd("30"); run_cmd("g");
     CHECK(s_seq_state == SQ_OFF && turn_target_deg() == -92.0f && strstr(last_message, "comp=2deg") != NULL);
     reset_fixture(); run_cmd("22"); run_cmd("g");
     CHECK(turn_target_deg() == 180.0f && s_seq_state == SQ_OFF);
+    reset_fixture(); run_cmd("20"); run_cmd("g");
+    CHECK(turn_target_deg() == 90.0f && s_seq_state == SQ_OFF);
+    CHECK(wire_boot() == 0); run_cmd("43"); run_cmd("g");
+    static const unsigned legacy_right_stages[] = {2u, ROUTE31_HOSTAGE_TURN_STAGE};
+    for (unsigned n=0u;n<2u;++n) {
+        s_seq_stage = (uint8_t)legacy_right_stages[n]; route_seq_prepare();
+        CHECK(sequence_start_stage() == 0);
+        CHECK(turn_target_deg() == 90.0f && s_seq_mode == 43u);
+    }
+    run_cmd("g");
     CHECK(wire_boot() == 0); run_cmd("36"); run_cmd("g");
     s_seq_stage = 8u; route_seq_prepare(); CHECK(sequence_start_stage() == 0);
     CHECK(s_msel == 30 && turn_target_deg() == -92.0f);
     run_cmd("g");
-    puts("turn scope:31 active route right90/left90 with0comp; standalone30 and36 keep calibratedleft92,22 keeps180 passed");
+    puts("turn scope:31 pre-cross right90/comp0, hostage right93/comp3 and left90/comp0;43 both right entries and standalone20 keep right90;standalone30 and36 keep calibratedleft92,22 keeps180 passed");
     return 0;
 }
 
@@ -267,7 +281,7 @@ static int check_real_qr_gate_and_request_separation(void)
     wire_ack(integrated_qr_request, 2u, 0u); bucket_object(integrated_qr_request, 4u, 9, 506u, 640u, 0);
     integrated_qr53(integrated_qr_request, 7u, "123", 0);
     CHECK(s_seq_state == SQ_STOPPED && stopped() && !s_receiving && bucket_wire_calls == requests);
-    puts("integrated31 QR53: R1 waits indefinitely until matching61 + legal complete331; preACK/wrongrequest/badCRC/illegal rejected; afterright800 no bucket63 or WAIT_D; locallyclosed oldQR/bucket packets cannot drive; cancel drains late packets without STOP/IDLE passed");
+    puts("integrated31 QR53: R1 waits indefinitely until matching61 + legal complete331; preACK/wrongrequest/badCRC/illegal rejected; afterright780 no bucket63 or WAIT_D; locallyclosed oldQR/bucket packets cannot drive; cancel drains late packets without STOP/IDLE passed");
     return 0;
 }
 

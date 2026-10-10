@@ -162,6 +162,22 @@ void motion_vel_set_precise(float vx, float vy, float w)
     for (int i = 0; i < MOTOR_NUM; i++) ctrl_set_speed_precise(i, rpm[i]);
 }
 
+void motion_vel_set_creep(float vx, float vy, float w)
+{
+    float rpm[4];
+    motion_ik_precise(vx, vy, w, rpm);
+    for (int i = 0; i < MOTOR_NUM; i++) {
+        if (!isfinite(rpm[i])) { motion_brake(); return; }
+    }
+    /* Compute first; mask only the four small target writes, not IK maths.
+     * This prevents the1ms controller from reading a partly updated command.
+     * It cannot guarantee synchronous physical motor breakaway. */
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    for (int i = 0; i < MOTOR_NUM; i++) ctrl_set_speed_creep(i, rpm[i]);
+    __set_PRIMASK(pm);
+}
+
 /* 刹停全轮(即 ctrl_stop_all):步骤收尾/超时/中止的统一停车出口 */
 void motion_brake(void)
 {

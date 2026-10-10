@@ -10,6 +10,7 @@
 #include "motion.h"
 #include "board_pins.h"
 #include "imu.h"
+#include "route_test_plan.h"
 
 enum { HOST_SET, HOST_BRAKE, HOST_COAST };
 typedef struct {
@@ -144,6 +145,55 @@ static int check_legacy_dispatch(void)
     return 0;
 }
 
+/* Real IK and PI dispatch: larger yaw targets reach all four wheels with
+ * mirrored signs, not an integer-rounded or translation command. The probe
+ * tune only makes software output differences visible; it is not a measured
+ * loaded-chassis tune or proof of available motor torque. */
+static int check_route31_yaw_power_dispatch(void)
+{
+    static const float speeds[] = {
+        ROUTE43_POST_YAW_MIN_W,
+        ROUTE31_POST_YAW_MIN_W,
+        ROUTE31_POST_YAW_MAX_W
+    };
+    static const float wheel_sign[] = { 1.0f, -1.0f, -1.0f, 1.0f };
+    const CtrlTune probe = { 2.0f, 0.0f, 1.0f, 0u };
+    int previous_duty[4] = { 0, 0, 0, 0 };
+    CHECK(ROUTE31_TURN_MIN_W == ROUTE31_POST_YAW_MIN_W);
+    for (unsigned c = 0; c < sizeof speeds / sizeof speeds[0]; ++c) {
+        int positive_duty[4];
+        for (int direction = 1; direction >= -1; direction -= 2) {
+            float expected[4];
+            host_reset();
+            CHECK(ctrl_tune_set(&probe));
+            motion_ik_precise(0.0f, 0.0f, direction * speeds[c], expected);
+            motion_vel_set_precise(0.0f, 0.0f, direction * speeds[c]);
+            host_tick();
+            for (int m = 0; m < 4; ++m) {
+                CHECK(s_target[m] == expected[m]);
+                CHECK(s_target[m] * wheel_sign[m] * direction > 0.0f);
+                CHECK(host_motor[m].action == HOST_SET);
+                CHECK(host_motor[m].duty > 0);
+                CHECK(host_motor[m].dir ==
+                      (expected[m] > 0.0f ? BP_DIR_FWD : BP_DIR_REV));
+                if (direction > 0) {
+                    CHECK(host_motor[m].duty > previous_duty[m]);
+                    positive_duty[m] = host_motor[m].duty;
+                } else CHECK(host_motor[m].duty == positive_duty[m]);
+            }
+            CHECK(fabsf(expected[0] + expected[1] + expected[2] + expected[3]) < 0.0001f);
+            CHECK(fabsf(-expected[0] + expected[1] - expected[2] + expected[3]) < 0.0001f);
+            motion_brake();
+            for (int m = 0; m < 4; ++m) {
+                CHECK(s_target[m] == 0.0f);
+                CHECK(host_motor[m].action == HOST_BRAKE);
+            }
+        }
+        for (int m = 0; m < 4; ++m) previous_duty[m] = positive_duty[m];
+    }
+    return 0;
+}
+
 static int check_integer_controller_compatibility(void)
 {
     enum { TICKS = 128 };
@@ -219,8 +269,9 @@ int main(void)
 {
     CHECK(check_precision() == 0);
     CHECK(check_legacy_dispatch() == 0);
+    CHECK(check_route31_yaw_power_dispatch() == 0);
     CHECK(check_integer_controller_compatibility() == 0);
     CHECK(check_stop_and_open_loop() == 0);
-    puts("precise velocity: fractional yaw/FFF reach real PI; legacy integer targets/PWM, open-loop, brake/coast and history reset passed");
+    puts("precise velocity: fractional yaw/FFF and route31 0.30/0.60 yaw reach real IK/PI/PWM; legacy integer targets/PWM, open-loop, brake/coast and history reset passed");
     return 0;
 }

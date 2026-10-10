@@ -113,6 +113,9 @@ try {
     # Real IK/ctrl target plumbing: keep the legacy unused pose local warning visible.
     Invoke-HostCase 'eod_forward_ff_ik_test' @('tests/forward_ff_ik_test.c', 'App/motion.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_precise_velocity_test' @('tests/precise_velocity_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-lm')
+    Invoke-HostCase 'eod_route31_creep_drive_test' @('tests/route31_creep_drive_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-lm')
+    Invoke-HostCase 'eod_route31_creep_drive_optimized_test' @('tests/route31_creep_drive_test.c') @('tests/stubs', 'App') @('-O2', '-Wno-error=unused-variable', '-lm')
+    Invoke-HostCase 'eod_route31_creep_report_test' @('tests/route31_creep_report_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_speed_yaw_tuning_test' @('tests/speed_yaw_tuning_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_translation_post_yaw_test' @('tests/translation_post_yaw_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_translation_feedforward_test' @('tests/translation_feedforward_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
@@ -134,9 +137,21 @@ try {
     Invoke-HostCase 'eod_vision_align_fastmath_test' @('tests/vision_align_test_test.c', 'App/vision_align_test.c', 'App/proto.c') @('tests/stubs', 'App') @('-DVAT_Y_ALIGN_ENABLE=1', '-O2', '-ffast-math', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_vision_align_x_only_test' @('tests/vision_align_x_only_test.c', 'App/vision_align_test.c', 'App/proto.c') @('tests/stubs', 'App') @('-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_vision_align_x_only_fastmath_test' @('tests/vision_align_x_only_test.c', 'App/vision_align_test.c', 'App/proto.c') @('tests/stubs', 'App') @('-O2', '-ffast-math', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_route31_continuous_x_test' @('tests/route31_continuous_x_test.c', 'App/vision_align_test.c', 'App/proto.c') @('tests/stubs', 'App') @('-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_route31_continuous_x_optimized_test' @('tests/route31_continuous_x_test.c', 'App/vision_align_test.c', 'App/proto.c') @('tests/stubs', 'App') @('-O2', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    # Historical enabled correction candidate; production31 defaults to OFF.
+    # Current OFF behavior is exercised by the X-only and real task-chain cases.
+    Invoke-HostCase 'eod_route31_ball_yaw_power_legacy_enabled_test' @('tests/route31_ball_yaw_power_test.c', 'App/vision_align_test.c', 'App/proto.c') @('tests/stubs', 'App') @('-DVAT_ROUTE31_BALL_HOSTAGE_STOP_YAW_ENABLE=1', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_route31_ball_yaw_power_legacy_enabled_optimized_test' @('tests/route31_ball_yaw_power_test.c', 'App/vision_align_test.c', 'App/proto.c') @('tests/stubs', 'App') @('-DVAT_ROUTE31_BALL_HOSTAGE_STOP_YAW_ENABLE=1', '-O2', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_vision_align_bluetooth_test' @('tests/vision_align_bluetooth_test.c') @('tests/stubs', 'App') @('-DVAT_Y_ALIGN_ENABLE=1', '-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_route31_task_chain_test' @('tests/route31_task_chain_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_route31_fast_timing_test' @('tests/route31_fast_timing_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_route31_mid_yaw_test' @('tests/route31_mid_yaw_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_route31_mid_yaw_optimized_test' @('tests/route31_mid_yaw_test.c') @('tests/stubs', 'App') @('-O2', '-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_route31_target_mid_yaw_test' @('tests/route31_target_mid_yaw_test.c') @('tests/stubs', 'App') @('-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_route31_target_mid_yaw_optimized_test' @('tests/route31_target_mid_yaw_test.c') @('tests/stubs', 'App') @('-O2', '-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_route31_search_mid_yaw_test' @('tests/route31_search_mid_yaw_test.c', 'App/vision_align_test.c', 'App/proto.c') @('tests/stubs', 'App') @('-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
+    Invoke-HostCase 'eod_route31_search_mid_yaw_optimized_test' @('tests/route31_search_mid_yaw_test.c', 'App/vision_align_test.c', 'App/proto.c') @('tests/stubs', 'App') @('-O2', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_route31_fast_timing_fastmath_test' @('tests/route31_fast_timing_test.c') @('tests/stubs', 'App') @('-O2', '-ffast-math', '-Wno-error=unused-variable', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     Invoke-HostCase 'eod_route31_bucket_search_loss_test' @('tests/route31_bucket_search_loss_test.c', 'App/vision_align_test.c', 'App/proto.c') @('tests/stubs', 'App') @('-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-lm')
     if ($SkipRoute43) {

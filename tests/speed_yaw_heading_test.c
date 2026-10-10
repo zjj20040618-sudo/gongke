@@ -25,6 +25,8 @@ void ctrl_set_speed(int motor, int16_t rpm)
 { (void)motor; (void)rpm; integer_calls++; }
 void ctrl_set_speed_precise(int motor, float rpm)
 { delivered[motor] = rpm; delivered_mask |= 1u << (unsigned)motor; precise_calls++; }
+void ctrl_set_speed_creep(int motor, float rpm)
+{ ctrl_set_speed_precise(motor, rpm); }
 
 /* MinGW PE still resolves dependencies in discarded functions. These inert
  * peripheral stubs satisfy linkage and fail if a heading-only test enters any

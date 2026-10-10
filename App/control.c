@@ -1,5 +1,6 @@
 #include "control.h"
 #include "board_pins.h"
+#include <math.h>
 
 #define CTRL_RPM_EST_PERIOD  10u      /* 转速估计窗口：每 10ms 结算一次(日志/整定用) */
 /* CTRL_ENCODER_CPR 已挪到 control.h（motion.c 做里程换算也要用） */
@@ -24,6 +25,7 @@ static uint32_t s_tick;
 static uint8_t  s_open[MOTOR_NUM];
 static int16_t  s_raw_duty[MOTOR_NUM];
 static uint8_t  s_coast[MOTOR_NUM];
+static uint8_t  s_creep[MOTOR_NUM]; /* Opt-in visual fine translation, never the default control path. */
 
 /* 速度环 1ms 状态(每轮) */
 static float s_rpm_lp[MOTOR_NUM];   /* 低通后的快速 rpm(喂 PID,不喂 10ms 慢估) */
@@ -40,6 +42,7 @@ void ctrl_init(void)
         s_open[m] = 0;
         s_raw_duty[m] = 0;
         s_coast[m] = 0;
+        s_creep[m] = 0;
         s_rpm_lp[m] = 0.0f;
         s_e_prev[m] = 0.0f;
         s_ei[m] = 0.0f;
@@ -59,6 +62,21 @@ void ctrl_set_speed_precise(int m, float rpm)
     s_target[m] = rpm;
     s_open[m] = 0;                 /* 命令转速 → 回到闭环 */
     s_coast[m] = 0;
+    s_creep[m] = 0;
+}
+
+void ctrl_set_speed_creep(int m, float rpm)
+{
+    if (m < 0 || m >= MOTOR_NUM) return;
+    if (!isfinite(rpm)) { ctrl_stop_all(); return; }
+    if (!s_creep[m] || rpm == 0.0f ||
+        (rpm > 0.0f && s_target[m] <= 0.0f) ||
+        (rpm < 0.0f && s_target[m] >= 0.0f)) {
+        s_ei[m] = 0.0f; s_e_prev[m] = 0.0f;
+    }
+    s_target[m] = rpm;
+    s_open[m] = s_coast[m] = 0u;
+    s_creep[m] = 1u;
 }
 
 /* 开环直通 duty(带符号,±199 内;验单路驱动/方向用,不走 PID/不依赖编码器) */
@@ -68,6 +86,7 @@ void ctrl_set_duty_open(int m, int16_t duty)
     s_raw_duty[m] = duty;
     s_open[m] = 1;
     s_coast[m] = 0;
+    s_creep[m] = 0;
 }
 
 void ctrl_stop_all(void)
@@ -78,6 +97,7 @@ void ctrl_stop_all(void)
                                * 仍按 s_raw_duty 给 PWM,轮子停不下来 */
         s_raw_duty[m] = 0;
         s_coast[m] = 0;
+        s_creep[m] = 0;
         s_ei[m] = 0.0f;
         s_e_prev[m] = 0.0f;
         bp_motor_brake(m);
@@ -93,6 +113,7 @@ void ctrl_coast_all(void)
         s_open[m] = 0;
         s_raw_duty[m] = 0;
         s_coast[m] = 1;
+        s_creep[m] = 0;
         s_ei[m] = 0.0f;
         s_e_prev[m] = 0.0f;
         bp_motor_stop(m);
@@ -126,6 +147,23 @@ static void ctrl_run_wheel(int m)
     float dout = s_kp * e + s_ki * s_ei[m]
                + CTRL_KD * (e - s_e_prev[m]);
     s_e_prev[m] = e;
+
+    if (s_creep[m]) {
+        /* A positive target does not authorize a negative torque pulse when
+         * a sparse encoder sample temporarily reports overspeed (and vice
+         * versa). Reduce drive to zero, preserving explicit motor direction;
+         * do not carry a wrong-sign integral into the next low-speed start. */
+        if ((t > 0.0f && dout <= 0.0f) || (t < 0.0f && dout >= 0.0f)) {
+            s_ei[m] = 0.0f;
+            bp_motor_set(m, t > 0.0f ? BP_DIR_FWD : BP_DIR_REV, 0);
+            return;
+        }
+        float mag = fabsf(dout);
+        if (mag > 0.0f && mag < (float)s_dead_min) mag = (float)s_dead_min;
+        if (mag > (float)MOTOR_PWM_PERIOD) mag = (float)MOTOR_PWM_PERIOD;
+        bp_motor_set(m, t > 0.0f ? BP_DIR_FWD : BP_DIR_REV, (int)mag);
+        return;
+    }
 
     int duty = (int)dout;
     int dir  = (duty >= 0) ? BP_DIR_FWD : BP_DIR_REV;

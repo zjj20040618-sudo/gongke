@@ -158,12 +158,18 @@ static uint32_t s_dist_still_t0;
 static int32_t  s_dist_last[4];
 static uint8_t  s_dist_reason;   /* 0=人工停止，1=到目标，2=IMU失效，3=纠角超时，4=中止，5=靠板超时 */
 static uint8_t  s_dist_align_enabled, s_dist_align_started, s_dist_align_hold, s_dist_end_saved;
+static uint8_t  s_dist_align_timeout_accepted; /*31-only user-authorized2s continuation, not measured yaw success. */
 static uint32_t s_dist_align_t0, s_dist_align_stable_t0;
 static YawProgressBoost s_dist_yaw_progress;
 static float    s_dist_align_stable_yaw, s_dist_pre_align_yaw, s_dist_end_mm;
 static int32_t  s_dist_end_counts[4]; /* translation counts BEFORE in-place yaw correction */
 static char     s_dist_report[512];
 static MotionRamp s_dist_ramp;
+/*31-only interrupted straight: freeze translation after braking, exclude
+ * in-place correction counts, and resume the SAME signed total/heading. */
+static uint8_t s_dist_mid_pause; /*1=braking,2=correcting,3=timeout-final-brake; never leg-DONE. */
+static float s_dist_progress_mm, s_dist_mid_orth_stop;
+static int32_t s_dist_progress_counts[4], s_dist_count_base[4];
 static struct {
     float pitch0, roll0, dpitch, droll;
     uint32_t sample_ms, confirm_t0;
@@ -187,7 +193,7 @@ static int32_t s_fwd_open_count[4];
  * Preparation is non-blocking so g can cancel even between legs. */
 enum { SQ_OFF = 0, SQ_READY, SQ_STILL, SQ_WAIT, SQ_RUN, SQ_DONE, SQ_STOPPED,
        SQ_QR_WAIT, SQ_BUCKET_ALIGN, SQ_MANUAL_D_WAIT, SQ_TASK, SQ_ARM_PREP,
-       SQ_STEP_WAIT }; /* Append: old state numbers are unchanged. */
+       SQ_STEP_WAIT, SQ_TASK_YAW, SQ_CROSS_YAW }; /* Append: old state numbers are unchanged. */
 static volatile uint8_t s_seq_state; /* DefaultTask owns route progression; proto owns the QR cache. */
 static uint8_t s_seq_stage, s_seq_prepared;
 #define ROUTE_NO_QR_MODE 34
@@ -204,9 +210,9 @@ static int32_t s_seq_last[4];
 static int32_t s_seq_qr[3];
 static uint32_t s_seq_qr_report_t0;
 static uint8_t s_seq_pair_turn; /* Internal +180 belongs to pair stage, not another node. */
-static uint8_t s_seq_pair_offset; /*43-only LEFT40;31 notifies VAT directly after the completed180 hold. */
-static uint8_t s_seq_return_offset; /*43-only LEFT20 after return180;31 retains the turn hold with no offset. */
-static uint8_t s_seq_contact_post; /* Stage4:0=tilt approach,1=BACK10,2=FWD15; then re-zero before BACK190. */
+static uint8_t s_seq_pair_offset; /*31 LEFT15 / legacy43 LEFT40 after first180; VAT waits for owned turn/offset. */
+static uint8_t s_seq_return_offset; /*31 return offset disabled; legacy43 LEFT20 after return180. */
+static uint8_t s_seq_contact_post; /*43 stage4:0=contact,1=BACK10,2=FWD15;31 skips both. Re-zero before BACK190. */
 static uint32_t s_seq_task_report_t0;
 /* Route31 owns one finite TIM7 job at a time; rack predeploy is BEFORE entry.
  * Hold grip through the first180/bucket aim; release only AFTER bucket aim.
@@ -226,11 +232,22 @@ static float route31_straight_speed(void)
 { return s_seq_mode == ROUTE_STEP_MODE ? s_route43_tune.straight_v : s_route31_straight_v; }
 static float route31_lateral_speed(void)
 { return s_seq_mode == ROUTE_STEP_MODE ? s_route43_tune.lateral_v : s_route31_lateral_v; }
+static float route31_hostage_exit_ff(void)
+{ return s_seq_mode == ROUTE_STEP_MODE ? ROUTE43_HOSTAGE_EXIT_RIGHT_FF_RATIO : ROUTE31_HOSTAGE_EXIT_RIGHT_FF_RATIO; }
 static uint32_t s_route31_lift_wait_t0;
 static RouteTestLeg s_route31_corner_leg; /* Persistent selected-color distance snapshot. */
 static RouteTestLeg s_route31_hostage_exit_leg;
 static uint8_t s_route31_hostage_rank, s_route31_hostage_hold;
 static uint8_t s_route31_hostage_opened;
+static uint8_t s_seq_hostage_offset, s_route31_hostage_offset_done;
+static float s_route31_hostage_offset_heading; /* Continuous original IMU goal. */
+static float s_route31_task_yaw_goal, s_route31_task_yaw_stable_heading;
+static uint8_t s_route31_task_yaw_stable;
+static uint32_t s_route31_task_yaw_t0, s_route31_task_yaw_stable_t0, s_route31_task_yaw_still_t0;
+static int32_t s_route31_task_yaw_counts[4];
+static YawProgressBoost s_route31_task_yaw_progress;
+static float s_route31_cross_heading; /* Continuous absolute goal captured BEFORE reverse crossing. */
+static uint8_t s_route31_cross_heading_valid, s_route31_cross_yaw_done;
 static uint32_t s_route31_hostage_hold_t0;
 static int32_t s_route31_hostage_hold_counts[4];
 static const RouteTestLeg s_route31_pair_turn_leg = {
@@ -239,8 +256,17 @@ static const RouteTestLeg s_route31_pair_turn_leg = {
 static const RouteTestLeg s_route31_pair_offset_leg = {
     17u, ROUTE31_PAIR_LEFT_MM, ROUTE31_LATERAL_V_MMS, "BALL_TO_BUCKET_LEFT40", 1u
 };
+static const RouteTestLeg s_route31_ball_to_bucket_offset_leg = {
+    17u, ROUTE31_BALL_TO_BUCKET_LEFT_MM, ROUTE31_BALL_TO_BUCKET_LEFT_V_MMS, "BALL_TO_BUCKET_LEFT15", 1u
+};
+static const RouteTestLeg s_route31_hostage_offset_leg = {
+    17u, ROUTE31_HOSTAGE_PREGRAB_LEFT_MM, ROUTE31_LATERAL_V_MMS, "HOSTAGE_PREGRAB_LEFT_DISABLED", 1u
+};
 static const RouteTestLeg s_route31_return_offset_leg = {
     17u, ROUTE31_RETURN_LEFT_MM, ROUTE31_LATERAL_V_MMS, "BUCKET_RETURN_LEFT20", 1u
+};
+static const RouteTestLeg s_route31_return_right_offset_leg = {
+    18u, ROUTE31_RETURN_RIGHT_MM, ROUTE31_BALL_TO_BUCKET_LEFT_V_MMS, "BUCKET_RETURN_RIGHT", 1u
 };
 static const RouteTestLeg s_route31_contact_post_legs[2] = {
     {16u, ROUTE31_BOARD_NUDGE_BACK_MM, ROUTE31_BOARD_CONTACT_V_MMS, "CONTACT_NUDGE_BACK10", 0u},
@@ -275,12 +301,20 @@ static uint16_t s_target35_sequence;
 static uint8_t s_target35_good, s_target35_seen;
 static float s_target35_heading, s_target35_kp, s_target35_cmd;
 static volatile uint8_t s_target35_route; /* Shared X controller;31 fires2s,35 keeps its own hold. */
-static volatile uint8_t s_target31_fine; /*31 only: fresh selected x<=350 latches fine until stage end. */
+static volatile uint8_t s_target31_fine; /* Fresh selected x<=owner gate latches fine until stage end. */
 static volatile uint8_t s_target31_gate_seen; /* RX evidence only; never writes motors in ISR. */
 static uint8_t s_target31_coarse_have;
 static uint16_t s_target31_coarse_sequence;
 static uint16_t s_target31_request; /* Bound63 task2 session, independent of result freshness. */
 static uint32_t s_target31_coarse_packet;
+static uint8_t s_target31_mid_phase; /*31 coarse search only: brake/correct/still, not target arrival. */
+static uint8_t s_target31_mid_need_new;
+static uint8_t s_target31_mid_guarded, s_target31_mid_have_sequence;
+static uint16_t s_target31_mid_sequence;
+static uint32_t s_target31_mid_packet;
+static uint32_t s_target31_mid_t0, s_target31_mid_still_t0;
+static float s_target31_mid_stable_yaw;
+static YawProgressBoost s_target31_mid_boost;
 
 /* Independent38..41 retain their owner while mode22 runs the shared +180.
  * QR and all waits stay in DefaultTask; never call a blocking step here. */
@@ -354,6 +388,8 @@ static void target35_g(void);
 static void target35_poll(void);
 static void target35_stop(const char *status);
 static void target35_report(void);
+static int target35_high(void);
+static int target35_fine_enter(void);
 static int xy_trial_selected(void);
 static int xy_trial_active(void);
 static void xy_trial_g(void);
@@ -386,12 +422,17 @@ void test_vision_feed_frame(const ProtoFrame *f)
     if (s_target35_phase >= TA_TASK_WAIT && s_target35_phase <= TA_SETTLE &&
         f->type == PF_OBJ && f->cls == CLS_TARGET && f->label == s_target35_qr[1] - 1) {
         proto_stats_get(&stats);
+        if (s_target35_route && s_seq_mode == ROUTE_TEST_MODE && s_target31_mid_guarded) {
+            uint16_t delta = (uint16_t)(f->sequence - s_target31_mid_sequence);
+            if (s_target31_mid_have_sequence && (!delta || delta >= 0x8000u)) return;
+            s_target31_mid_have_sequence = 1u; s_target31_mid_sequence = f->sequence;
+        }
         s_target35_sample.frame = *f;
         s_target35_sample.tick = HAL_GetTick();
         s_target35_sample.packet_index = stats.obj;
         s_target35_sample.seen++;
         if (s_target35_route && !s_target31_fine && s_target35_phase == TA_SEEK &&
-            f->img_w > ROUTE31_TARGET_HIGH_CX &&
+            f->img_w > target35_high() &&
             f->img_h && f->cx >= 0 && f->cx < f->img_w &&
             f->cy >= 0 && f->cy < f->img_h) {
             ProtoWireDiag diag;
@@ -407,7 +448,7 @@ void test_vision_feed_frame(const ProtoFrame *f)
                 s_target31_coarse_have = 1u;
                 s_target31_coarse_sequence = f->sequence;
                 s_target31_coarse_packet = stats.obj;
-                if (f->cx <= ROUTE31_FINE_ENTER_CX) s_target31_gate_seen = 1u;
+                if (f->cx <= target35_fine_enter()) s_target31_gate_seen = 1u;
             }
         }
     }
@@ -888,6 +929,12 @@ static float board_tilt_delta(float angle, float baseline)
     return delta;
 }
 
+static float route_contact_tilt_deg(void)
+{
+    return s_seq_mode == ROUTE_STEP_MODE ? ROUTE43_BOARD_CONTACT_TILT_DEG
+        : ROUTE31_BOARD_CONTACT_TILT_DEG;
+}
+
 /*1: sustained fresh tilt observations;0: not yet;-1: invalid sensor sample.
  * Freeze the baseline only AFTER the stationary preparation wait. Startup
  * motion must not reset it. Neither yaw nor distance proves board contact. */
@@ -912,8 +959,8 @@ static int board_contact_observe(void)
     }
     /* Sensor angles are centidegrees. Tolerate only float-roundoff at the
      * exact configured threshold, far below one sensor count. */
-    if (fabsf(s_board_contact.dpitch) + 0.0001f >= ROUTE31_BOARD_CONTACT_TILT_DEG ||
-        fabsf(s_board_contact.droll) + 0.0001f >= ROUTE31_BOARD_CONTACT_TILT_DEG) {
+    if (fabsf(s_board_contact.dpitch) + 0.0001f >= route_contact_tilt_deg() ||
+        fabsf(s_board_contact.droll) + 0.0001f >= route_contact_tilt_deg()) {
         if (!s_board_contact.confirming) {
             s_board_contact.confirming = 1u;
             s_board_contact.confirm_t0 = sample_ms;
@@ -982,12 +1029,43 @@ static int dist_ordinary_leg(void)
            (s_seq_stage < route_seq_stage_count() && route_seq_leg()->heading_hold);
 }
 
+static float dist_travel_mm(void)
+{
+    return s_dist_progress_mm + dist_odo() - s_dist_odo0;
+}
+
+static int dist_mid_yaw_enabled(void)
+{
+    /*31 only, R2 onward: this stage is reached only after the QR latch.
+     * R1 stays unchanged; heading_hold excludes crossing/contact, while
+     * all applicable straight legs keep their existing moving hold. */
+    return s_seq_mode == ROUTE_TEST_MODE && s_seq_state == SQ_RUN &&
+           s_seq_stage >= 1u &&
+           (s_msel == 15 || s_msel == 16) && dist_ordinary_leg() && !s_board_contact.active;
+}
+
+static void dist_mid_begin(void)
+{
+    motion_brake();
+    s_dist_mid_pause = 1u;
+    s_dist_reason = 1u;
+    s_dist_brake_mm = dist_travel_mm();
+    s_dist_brake_yaw = imu_leg_heading_deg();
+    s_dist_brake_t0 = HAL_GetTick();
+    s_dist_run_ms = HAL_GetTick() - s_meas_t0;
+    s_dist_still_t0 = HAL_GetTick();
+    for (int i = 0; i < 4; ++i) s_dist_last[i] = ctrl_enc_total(i);
+    s_round = R_BRAKE;
+    send("OK DIST_MID_YAW brake=1 limit_deg=1.5 original_heading_and_remaining_distance_preserved=1; g/a/0 cancels");
+}
+
 static void dist_save_translation_end(void)
 {
     if (s_dist_end_saved) return;
-    s_dist_end_mm = dist_odo() - s_dist_odo0;
+    s_dist_end_mm = dist_travel_mm();
     s_dist_pre_align_yaw = imu_ok() ? imu_leg_heading_deg() : 9999.0f;
-    for (int i = 0; i < 4; ++i) s_dist_end_counts[i] = ctrl_enc_total(i);
+    for (int i = 0; i < 4; ++i)
+        s_dist_end_counts[i] = s_dist_progress_counts[i] + ctrl_enc_total(i) - s_dist_count_base[i];
     s_dist_end_saved = 1u;
 }
 
@@ -1016,6 +1094,16 @@ static uint32_t dist_align_stable_ms(void)
     return dist_align_route31() && s_seq_mode == ROUTE_TEST_MODE
         ? ROUTE31_STABLE_MS : T_DIST_ALIGN_STABLE_MS;
 }
+static float dist_align_min_w(void)
+{
+    if (!dist_align_route31()) return T_DIST_ALIGN_MIN_W;
+    return s_seq_mode == ROUTE_TEST_MODE ? ROUTE31_POST_YAW_MIN_W : ROUTE43_POST_YAW_MIN_W;
+}
+static float dist_align_max_w(void)
+{
+    return dist_align_route31() && s_seq_mode == ROUTE_TEST_MODE
+        ? ROUTE31_POST_YAW_MAX_W : T_DIST_ALIGN_MAX_W;
+}
 static uint32_t turn_settle_ms(void)
 {
     return s_seq_mode == ROUTE_TEST_MODE && route_seq_active()
@@ -1030,10 +1118,11 @@ static uint32_t route_contact_zero_wait_ms(void)
 /* 到目标或人工暂停后先刹车，等待真实轮子不再产生计数，再报告最终值。 */
 static void dist_begin_finish(uint8_t reason)
 {
-    s_dist_brake_mm = dist_odo() - s_dist_odo0;
+    s_dist_brake_mm = dist_travel_mm();
     s_dist_brake_yaw = imu_ok() ? imu_leg_heading_deg() : 9999.0f;
     motion_brake();
     s_dist_reason = reason;
+    s_dist_mid_pause = 0u;
     s_dist_run_ms = (uint32_t)(HAL_GetTick() - s_meas_t0);
     s_dist_brake_t0 = HAL_GetTick();
     s_dist_still_t0 = s_dist_brake_t0;
@@ -1047,15 +1136,20 @@ static void dist_finish_report(void)
     uint32_t settle_ms = (uint32_t)(HAL_GetTick() - s_dist_brake_t0);
     uint32_t align_ms = s_dist_align_started ? HAL_GetTick() - s_dist_align_t0 : 0u;
     dist_save_translation_end();
-    /* Never erase a failed/stopped heading and never continue a failed chain. */
+    /*31 may explicitly ACCEPT a2s endpoint timeout. Log the real residual
+     * below before any zero; faults and manual stops are still failures.
+     * Crossing keeps its yaw until the separate pre-contact correction. */
     if (s_dist_reason == 1u) {
         if (run_aborted()) s_dist_reason = 4u;
         else if (!imu_ok() || !isfinite(yaw) ||
-                 (!(route31_owner() && s_seq_stage == 4u) && !imu_zero_leg_heading()))
+                 (!(route31_owner() && s_seq_stage == 4u) &&
+                  !(s_seq_mode == ROUTE_TEST_MODE && s_seq_state == SQ_RUN && s_seq_stage == 3u) &&
+                  !imu_zero_leg_heading()))
             s_dist_reason = 2u;
     }
+    if (s_dist_reason != 1u) s_dist_align_timeout_accepted = 0u;
     snprintf(s_dist_report, sizeof s_dist_report,
-             "REC type=%s leg=%u test=%lu mode=%u status=%s cmd_mm=%.0f v_mms=%.0f ykp=%.3f precise=%u ff_ratio=%.5f brake_mm=%.1f enc_mm=%.1f run_ms=%lu settle_ms=%lu brake_yaw=%.2f yaw_deg=%.2f c0=%ld c1=%ld c2=%ld c3=%ld pre_yaw=%.2f yfix=%u align_ms=%lu",
+             "REC type=%s leg=%u test=%lu mode=%u status=%s cmd_mm=%.0f v_mms=%.0f ykp=%.3f precise=%u ff_ratio=%.5f brake_mm=%.1f enc_mm=%.1f run_ms=%lu settle_ms=%lu brake_yaw=%.2f yaw_deg=%.2f c0=%ld c1=%ld c2=%ld c3=%ld pre_yaw=%.2f yfix=%u align_ms=%lu yaw_timeout_accept=%u residual_err_deg=%.2f",
              s_route_leg ? "ROUTE" : "DIST", (unsigned)s_route_leg,
              (unsigned long)s_active_test, (unsigned)s_msel,
              s_dist_reason == 1u ? "DONE" : (s_dist_reason == 2u ? "IMUERR" :
@@ -1067,7 +1161,8 @@ static void dist_finish_report(void)
              s_dist_brake_yaw, yaw,
              (long)s_dist_end_counts[0], (long)s_dist_end_counts[1],
              (long)s_dist_end_counts[2], (long)s_dist_end_counts[3],
-             s_dist_pre_align_yaw, (unsigned)s_dist_align_started, (unsigned long)align_ms);
+             s_dist_pre_align_yaw, (unsigned)s_dist_align_started, (unsigned long)align_ms,
+             (unsigned)s_dist_align_timeout_accepted, dist_yaw_error(yaw));
     if (s_board_contact.active) {
         static char contact[208];
         snprintf(contact, sizeof contact,
@@ -1075,13 +1170,13 @@ static void dist_finish_report(void)
                  (unsigned long)s_active_test, s_dist_reason == 1u ? "TILT_REACHED" :
                  (s_dist_reason == 5u ? "CONTACT_TIMEOUT" : "STOPPED"),
                  s_board_contact.pitch0, s_board_contact.roll0, s_board_contact.dpitch,
-                 s_board_contact.droll, ROUTE31_BOARD_CONTACT_TILT_DEG,
+                 s_board_contact.droll, route_contact_tilt_deg(),
                  (unsigned)s_board_contact.hits, s_dist_end_mm);
         send(contact);
         s_board_contact.active = 0u;
     }
     ctrl_enc_reset_all();
-    s_dist_align_hold = s_dist_align_enabled = 0u;
+    s_dist_align_hold = s_dist_align_enabled = s_dist_mid_pause = 0u;
     yaw_progress_reset(&s_dist_yaw_progress);
     s_round = R_READY;
     send(s_dist_report);
@@ -1093,6 +1188,53 @@ static void dist_finish_report(void)
     }
 }
 
+static void dist_align_complete(float error, int timed_out)
+{
+    if (!s_dist_mid_pause) { dist_finish_report(); return; }
+    motion_brake();
+    if (run_aborted() || !dist_mid_yaw_enabled()) {
+        s_dist_mid_pause = 0u; s_dist_reason = 4u; dist_finish_report(); return;
+    }
+    if (!imu_ok() || !isfinite(error)) {
+        s_dist_mid_pause = 0u; s_dist_reason = 2u; dist_finish_report(); return;
+    }
+    /* Endpoint2s ACCEPT is not permission to resume a long straight with
+     * the same >1.5deg deviation that requested this brake. */
+    if (fabsf(error) > ROUTE31_MID_YAW_LIMIT_DEG) {
+        s_dist_align_timeout_accepted = 0u;
+        s_dist_mid_pause = 0u; s_dist_reason = 3u;
+        send("ERR DIST_MID_YAW timeout_residual_gt1.5 stopped=1 no_auto_resume=1");
+        dist_finish_report(); return;
+    }
+    if (timed_out && s_dist_mid_pause == 2u) {
+        /* A timed-out correction might still have angular momentum. Do not
+         * rebase translation or restart until the wheels really stop. */
+        s_dist_mid_pause = 3u; s_round = R_BRAKE;
+        s_dist_still_t0 = HAL_GetTick();
+        for (int i = 0; i < 4; ++i) s_dist_last[i] = ctrl_enc_total(i);
+        return;
+    }
+    /* Correction wheel travel must not consume remaining straight distance
+     * or appear as a new orthogonal displacement. No zero/reset is issued. */
+    s_dist_odo0 = dist_odo();
+    s_dist_orth0 += (dist_lateral() ? motion_odo_mm() : motion_lateral_odo_mm()) - s_dist_mid_orth_stop;
+    for (int i = 0; i < 4; ++i) s_dist_count_base[i] = ctrl_enc_total(i);
+    s_dist_mid_pause = s_dist_align_started = s_dist_align_hold = 0u;
+    s_dist_align_timeout_accepted = 0u;
+    s_dist_end_saved = 0u;
+    yaw_progress_reset(&s_dist_yaw_progress);
+    motion_ramp_init(&s_dist_ramp, ROUTE_TEST_ACC_MMS2, ROUTE_TEST_DEC_MMS2);
+    s_round = R_RUN;
+    {
+        static char b[224];
+        snprintf(b, sizeof b,
+                 "REC type=DIST_MID_YAW test=%lu result=RESUME same_leg=1 done_mm=%.1f remaining_mm=%.1f residual_deg=%.2f timeout_accept=%u zeroed=0",
+                 (unsigned long)s_active_test, s_dist_progress_mm,
+                 s_dist_target - s_dist_progress_mm, error, (unsigned)timed_out);
+        send(b);
+    }
+}
+
 /* Post-DONE correction uses the ORIGINAL target, not a newly zeroed yaw.
  * It is separate from the validated 90/180 profile and never translates. */
 static void dist_align_poll(void)
@@ -1101,7 +1243,7 @@ static void dist_align_poll(void)
     float yaw = imu_leg_heading_deg(), e, w;
     float tolerance = dist_align_tolerance_deg();
     int route31 = dist_align_route31();
-    float min_w = route31 ? ROUTE31_POST_YAW_MIN_W : T_DIST_ALIGN_MIN_W;
+    float min_w = dist_align_min_w(), max_w = dist_align_max_w();
     int accepted;
     int changed = 0;
     if (run_aborted() || !bench_ok()) {
@@ -1110,12 +1252,18 @@ static void dist_align_poll(void)
     if (!imu_ok() || !isfinite(yaw) || !isfinite(s_dist_heading0)) {
         motion_brake(); s_dist_reason = 2u; dist_finish_report(); return;
     }
-    if ((uint32_t)(now - s_dist_align_t0) >= T_DIST_ALIGN_MAX_MS) {
-        motion_brake(); s_dist_reason = 3u; dist_finish_report(); return;
-    }
     e = dist_yaw_error(yaw);
     if (!isfinite(e)) {
         motion_brake(); s_dist_reason = 2u; dist_finish_report(); return;
+    }
+    if ((uint32_t)(now - s_dist_align_t0) >=
+        (route31 && s_seq_mode == ROUTE_TEST_MODE ? ROUTE31_POST_YAW_MAX_MS : T_DIST_ALIGN_MAX_MS)) {
+        motion_brake();
+        if (route31 && s_seq_mode == ROUTE_TEST_MODE) {
+            s_dist_align_timeout_accepted = 1u;
+            s_dist_reason = 1u; /* Explicit trial policy; residual stays in REC. */
+        } else s_dist_reason = 3u;
+        dist_align_complete(e, 1); return;
     }
     for (int i = 0; i < 4; ++i) {
         int32_t count = ctrl_enc_total(i);
@@ -1126,14 +1274,14 @@ static void dist_align_poll(void)
     if (!accepted) {
         s_dist_align_hold = 0u;
         if (route31 && s_seq_mode == ROUTE_TEST_MODE)
-            min_w = yaw_progress_floor(&s_dist_yaw_progress, e, now, min_w, T_DIST_ALIGN_MAX_W);
+            min_w = yaw_progress_floor(&s_dist_yaw_progress, e, now, min_w, max_w);
         else yaw_progress_reset(&s_dist_yaw_progress);
         /* Correct continuously toward true zero. No forced crossing and no
          * near-zero pause; the31-only floor helps its small-error actuation. */
         w = T_DIST_ALIGN_KP * e;
         if (fabsf(w) < min_w) w = e > 0.0f ? min_w : -min_w;
-        if (w > T_DIST_ALIGN_MAX_W) w = T_DIST_ALIGN_MAX_W;
-        if (w < -T_DIST_ALIGN_MAX_W) w = -T_DIST_ALIGN_MAX_W;
+        if (w > max_w) w = max_w;
+        if (w < -max_w) w = -max_w;
         motion_vel_set_precise(0.0f, 0.0f, w);
     } else {
         yaw_progress_reset(&s_dist_yaw_progress);
@@ -1147,7 +1295,7 @@ static void dist_align_poll(void)
             s_dist_align_stable_yaw = yaw;
         }
         if ((uint32_t)(now - s_dist_align_stable_t0) >= dist_align_stable_ms()) {
-            dist_finish_report(); return;
+            dist_align_complete(e, 0); return;
         }
     }
     if ((uint32_t)(now - s_dist_trace_t0) >= T_DIST_TRACE_MS) {
@@ -1155,7 +1303,7 @@ static void dist_align_poll(void)
         s_dist_trace_t0 = now;
         snprintf(b, sizeof b, "YFIX test=%lu phase=%s target_deg=%.2f yaw_deg=%.2f error_deg=%.2f tol=%.2f zeroed=0 continuous=1 min_w=%.2f max_w=%.2f stable_ms=%lu boost=%u",
                  (unsigned long)s_active_test, s_dist_align_hold ? "SETTLE" : "CORRECT",
-                 s_dist_heading0, yaw, e, tolerance, min_w, T_DIST_ALIGN_MAX_W,
+                 s_dist_heading0, yaw, e, tolerance, min_w, max_w,
                  (unsigned long)dist_align_stable_ms(), (unsigned)s_dist_yaw_progress.boosted);
         send(b);
     }
@@ -1213,19 +1361,34 @@ static float turn_speed_scale(float error_deg)
 static float turn_velocity(float error_deg)
 {
     float w = T_TURN_KP * error_deg;
+    float min_w = s_seq_mode == ROUTE_TEST_MODE && route_seq_active()
+        ? ROUTE31_TURN_MIN_W : T_TURN_MIN_W;
     if (w > T_TURN_MAX_W) w = T_TURN_MAX_W;
     if (w < -T_TURN_MAX_W) w = -T_TURN_MAX_W;
-    if (w > 0.0f && w < T_TURN_MIN_W) w = T_TURN_MIN_W;
-    if (w < 0.0f && w > -T_TURN_MIN_W) w = -T_TURN_MIN_W;
+    if (w > 0.0f && w < min_w) w = min_w;
+    if (w < 0.0f && w > -min_w) w = -min_w;
     return w * turn_speed_scale(error_deg);
 }
 static float turn_target_deg(void)
 {
-    if (s_msel == 22) return 180.0f;
+    if (s_msel == 22) {
+        /* Only the second turn AFTER31 bucket release gets the user's +5deg
+         * trial. Retained owner/stage must not leak into standalone22,43,
+         * or the first ball-to-bucket internal turn. */
+        if (s_seq_mode == ROUTE_TEST_MODE && route_seq_active() &&
+            s_seq_stage == ROUTE31_RETURN180_STAGE && !s_seq_pair_turn)
+            return ROUTE31_RETURN_TARGET_DEG;
+        return 180.0f;
+    }
     /* Cover PREP/RUN/brake/report while the route owner stays31; selecting
      * standalone20/30 sets SQ_OFF, so retained owner31 cannot leak here. */
-    if (route31_owner() && route_seq_active())
-        return s_msel == 30 ? ROUTE31_LEFT_TARGET_DEG : ROUTE31_RIGHT_TARGET_DEG;
+    if (route31_owner() && route_seq_active()) {
+        if (s_msel == 30) return ROUTE31_LEFT_TARGET_DEG;
+        if (s_seq_mode == ROUTE_TEST_MODE)
+            return s_seq_stage == ROUTE31_HOSTAGE_TURN_STAGE
+                ? ROUTE31_HOSTAGE_RIGHT_TARGET_DEG : ROUTE31_RIGHT_TARGET_DEG;
+        return ROUTE43_RIGHT_TARGET_DEG;
+    }
     return s_msel == 30 ? T_TURN_LEFT_TARGET_DEG : T_TURN_RIGHT_TARGET_DEG;
 }
 static const char *turn_record_type(void)
@@ -1273,6 +1436,12 @@ static void turn_report(void)
                  turn_record_type(), (unsigned long)s_active_test,
                  valid ? s_turn_result : "IMUERR", (int)turn_target_deg(),
                  yaw, err, (unsigned long)(HAL_GetTick() - s_meas_t0));
+        if (s_seq_mode == ROUTE_TEST_MODE && route_seq_active()) {
+            size_t used = strlen(b);
+            format_deg2(err, valid ? imu_heading_deg() : 0.0f);
+            snprintf(b + used, sizeof b - used, " abs_yaw_deg=%s route_step=%u",
+                     err, (unsigned)(s_seq_stage + 1u));
+        }
     }
     s_round = R_DONE;
     send(b);
@@ -1360,6 +1529,7 @@ void test_init(void)
     s_seq_qr_report_t0 = 0u;
     s_seq_pair_turn = s_seq_pair_offset = s_seq_return_offset = s_seq_contact_post = 0u; s_seq_task_report_t0 = 0u;
     s_route31_hostage_opened = 0u;
+    s_seq_hostage_offset = s_route31_hostage_offset_done = 0u;
     s_route31_lift_phase = R31_LIFT_OFF; s_route31_lift_wait_t0 = 0u;
     s_route31_rack_deployed = 0u; s_route31_straight_v = ROUTE31_STRAIGHT_V_MMS;
     s_route31_lateral_v = ROUTE31_LATERAL_V_MMS;
@@ -1379,6 +1549,8 @@ void test_init(void)
     memset(s_vdiag_qr, 0, sizeof s_vdiag_qr);
     memset(&s_vdiag_base, 0, sizeof s_vdiag_base);
     s_target35_phase = TA_OFF;
+    s_target31_mid_phase = 0u;
+    yaw_progress_reset(&s_target31_mid_boost);
     s_target35_route = 0u;
     s_target31_fine = s_target31_gate_seen = s_target31_coarse_have = 0u;
     s_target31_coarse_sequence = 0u; s_target31_coarse_packet = 0u;
@@ -1402,6 +1574,9 @@ void test_init(void)
     s_target35_heading = s_target35_cmd = 0.0f;
     s_target35_kp = step_heading_kp_deg();
     s_dist_odo0 = 0.0f; s_dist_heading0 = 0.0f; s_dist_orth0 = 0.0f; s_dist_target = 0.0f;
+    s_dist_mid_pause = 0u; s_dist_progress_mm = s_dist_mid_orth_stop = 0.0f;
+    memset(s_dist_progress_counts, 0, sizeof s_dist_progress_counts);
+    memset(s_dist_count_base, 0, sizeof s_dist_count_base);
     s_dist_ff_ratio = 0.0f;
     s_dist_heading_kp = step_heading_kp_deg();
     s_dist_heading_profile = s_dist_precise = 0u;
@@ -1411,6 +1586,9 @@ void test_init(void)
     s_dist_brake_mm = 0.0f; s_dist_brake_yaw = 0.0f;
     s_dist_reason = 0u;
     s_dist_align_enabled = s_dist_align_started = s_dist_align_hold = s_dist_end_saved = 0u;
+    s_dist_align_timeout_accepted = 0u;
+    s_route31_cross_heading = 0.0f;
+    s_route31_cross_heading_valid = s_route31_cross_yaw_done = 0u;
     yaw_progress_reset(&s_dist_yaw_progress);
     s_dist_align_t0 = s_dist_align_stable_t0 = 0u;
     s_dist_align_stable_yaw = s_dist_pre_align_yaw = s_dist_end_mm = 0.0f;
@@ -1455,6 +1633,8 @@ static void target35_clear_sample(void)
     __disable_irq();
     memset(&s_target35_sample, 0, sizeof s_target35_sample);
     s_target35_good = s_target35_seen = 0u;
+    s_target31_mid_need_new = 0u;
+    s_target31_mid_guarded = s_target31_mid_have_sequence = 0u;
     s_target31_fine = 0u;
     s_target31_gate_seen = s_target31_coarse_have = 0u;
     s_target31_coarse_sequence = 0u; s_target31_coarse_packet = 0u;
@@ -1470,20 +1650,136 @@ static float target35_fine_speed(void)
     return s_target35_route ? ROUTE31_TARGET_FINE_V_MMS : T_TARGET35_V_MMS;
 }
 static int target35_point(void)
-{ return s_target35_route ? ROUTE31_TARGET_CX : T_TARGET35_CX; }
+{ return s_target35_route ? (s_seq_mode == ROUTE_STEP_MODE ? ROUTE43_TARGET_CX : ROUTE31_TARGET_CX) : T_TARGET35_CX; }
 static int target35_low(void)
-{ return s_target35_route ? ROUTE31_TARGET_LOW_CX : T_TARGET35_LOW_CX; }
+{ return s_target35_route ? (s_seq_mode == ROUTE_STEP_MODE ? ROUTE43_TARGET_LOW_CX : ROUTE31_TARGET_LOW_CX) : T_TARGET35_LOW_CX; }
 static int target35_high(void)
-{ return s_target35_route ? ROUTE31_TARGET_HIGH_CX : T_TARGET35_HIGH_CX; }
+{ return s_target35_route ? (s_seq_mode == ROUTE_STEP_MODE ? ROUTE43_TARGET_HIGH_CX : ROUTE31_TARGET_HIGH_CX) : T_TARGET35_HIGH_CX; }
+static int target35_fine_enter(void)
+{ return s_seq_mode == ROUTE_STEP_MODE ? ROUTE43_FINE_ENTER_CX : ROUTE31_FINE_ENTER_CX; }
+
+static float target35_search_ff(void)
+{
+    return s_seq_mode == ROUTE_STEP_MODE ? ROUTE43_TARGET_SEARCH_RIGHT_FF_RATIO
+        : ROUTE31_TARGET_SEARCH_RIGHT_FF_RATIO;
+}
 
 static void target35_move(float vx)
 {
     /* Rightward translation feed-forward is ONLY for31's initial approach.
      * Fine forward/backward aim and independent35 never inherit this trial. */
     float vy = s_target35_route && !s_target31_fine && vx > 0.0f
-             ? ROUTE31_TARGET_SEARCH_RIGHT_FF_RATIO * vx : 0.0f;
+             ? target35_search_ff() * vx : 0.0f;
     s_target35_cmd = vx;
     motion_vel_set_precise(vx, vy, step_heading_hold_w_kp(s_target35_heading, s_target35_kp));
+}
+
+static float target31_mid_error(void)
+{
+    float error = fmodf(s_target35_heading - imu_leg_heading_deg(), 360.0f);
+    if (error > 180.0f) error -= 360.0f;
+    if (error < -180.0f) error += 360.0f;
+    return error;
+}
+
+static void target31_mid_resume(float error, int timeout)
+{
+    ProtoStats stats;
+    uint8_t have;
+    uint16_t sequence;
+    uint32_t pm;
+    /* RX continues, but images/good-frame evidence taken while turning must
+     * not authorize fine arrival or firing after the correction. */
+    motion_brake();
+    pm = __get_PRIMASK(); __disable_irq();
+    have = s_target31_coarse_have; sequence = s_target31_coarse_sequence;
+    proto_stats_get(&stats);
+    target35_clear_sample();
+    /* Maintain accepted sequence history so delayed/replayed turning frames
+     * cannot cross the fine gate as if they were a NEW stationary image. */
+    s_target31_coarse_have = have; s_target31_coarse_sequence = sequence;
+    s_target31_coarse_packet = stats.obj;
+    s_target31_mid_packet = stats.obj; s_target31_mid_need_new = 1u;
+    s_target31_mid_guarded = 1u;
+    s_target31_mid_have_sequence = have; s_target31_mid_sequence = sequence;
+    s_target31_mid_phase = 0u;
+    s_target35_phase = TA_SEEK;
+    __set_PRIMASK(pm);
+    yaw_progress_reset(&s_target31_mid_boost);
+    {
+        static char b[192];
+        snprintf(b, sizeof b,
+                 "REC type=TARGET_MID_YAW result=RESUME residual_deg=%.2f timeout_accept=%u original_heading=1 new_coordinates_required=1 zeroed=0",
+                 error, (unsigned)timeout);
+        send(b);
+    }
+    target35_move(route31_straight_speed());
+}
+
+static int target31_mid_poll(uint32_t now)
+{
+    float error, yaw;
+    int changed;
+    if (!(s_target35_route && s_seq_mode == ROUTE_TEST_MODE)) return 0;
+    yaw = imu_leg_heading_deg(); error = target31_mid_error();
+    if (!imu_ok() || !isfinite(yaw) || !isfinite(error)) {
+        target35_stop("IMUERR"); return 1;
+    }
+    if (!s_target31_mid_phase) {
+        if (s_target31_fine || s_target35_phase != TA_SEEK ||
+            fabsf(error) <= ROUTE31_MID_YAW_LIMIT_DEG) return 0;
+        motion_brake(); s_target35_cmd = 0.0f;
+        s_target31_mid_phase = 1u;
+        target35_counts_start(); s_target31_mid_still_t0 = now;
+        send("OK TARGET_MID_YAW brake=1 limit_deg=1.5 original_heading=1; g/a/0 cancels");
+        return 1;
+    }
+    changed = target35_counts_changed();
+    if (changed) s_target31_mid_still_t0 = now;
+    if (s_target31_mid_phase == 1u) {
+        motion_brake();
+        if ((uint32_t)(now - s_target31_mid_still_t0) < T_DIST_STILL_MS) return 1;
+        s_target31_mid_phase = 2u; s_target31_mid_t0 = now;
+        yaw_progress_reset(&s_target31_mid_boost);
+    }
+    if (s_target31_mid_phase == 4u) {
+        motion_brake();
+        if (fabsf(error) > ROUTE31_MID_YAW_LIMIT_DEG) {
+            target35_stop("TARGET_MID_YAW_TIMEOUT_GT1P5"); return 1;
+        }
+        if ((uint32_t)(now - s_target31_mid_still_t0) >= T_DIST_STILL_MS)
+            target31_mid_resume(error, 1);
+        return 1;
+    }
+    if ((uint32_t)(now - s_target31_mid_t0) >= ROUTE31_POST_YAW_MAX_MS) {
+        motion_brake(); s_target35_cmd = 0.0f;
+        if (fabsf(error) > ROUTE31_MID_YAW_LIMIT_DEG) {
+            target35_stop("TARGET_MID_YAW_TIMEOUT_GT1P5"); return 1;
+        }
+        s_target31_mid_phase = 4u; s_target31_mid_still_t0 = now;
+        return 1;
+    }
+    if (fabsf(error) >= ROUTE31_POST_YAW_TOL_DEG) {
+        float min_w = yaw_progress_floor(&s_target31_mid_boost, error, now,
+                                        ROUTE31_POST_YAW_MIN_W, ROUTE31_POST_YAW_MAX_W);
+        float w = T_DIST_ALIGN_KP * error;
+        if (fabsf(w) < min_w) w = error > 0.0f ? min_w : -min_w;
+        if (w > ROUTE31_POST_YAW_MAX_W) w = ROUTE31_POST_YAW_MAX_W;
+        if (w < -ROUTE31_POST_YAW_MAX_W) w = -ROUTE31_POST_YAW_MAX_W;
+        s_target31_mid_phase = 2u;
+        motion_vel_set_precise(0.0f, 0.0f, w);
+    } else {
+        motion_brake();
+        if (s_target31_mid_phase != 3u) {
+            s_target31_mid_phase = 3u; s_target31_mid_still_t0 = now;
+            s_target31_mid_stable_yaw = yaw;
+        } else if (fabsf(yaw - s_target31_mid_stable_yaw) > T_DIST_ALIGN_STILL_DEG) {
+            s_target31_mid_still_t0 = now; s_target31_mid_stable_yaw = yaw;
+        }
+        if ((uint32_t)(now - s_target31_mid_still_t0) >= ROUTE31_STABLE_MS)
+            target31_mid_resume(error, 0);
+    }
+    return 1;
 }
 
 static void target35_report(void)
@@ -1505,9 +1801,9 @@ static void target35_report(void)
              (unsigned)s_target35_good, s_target35_cmd,
              (unsigned)(s_target35_phase == TA_FIRE), target35_point(), target35_low(), target35_high(), target35_fine_speed(),
              (unsigned)(s_target35_route ? s_target31_fine : s_target35_seen),
-             (unsigned)(s_target35_route ? ROUTE31_FINE_ENTER_CX : 0u),
+             (unsigned)(s_target35_route ? target35_fine_enter() : 0),
              s_target35_route && !s_target31_fine && s_target35_cmd > 0.0f
-                 ? ROUTE31_TARGET_SEARCH_RIGHT_FF_RATIO : 0.0f,
+                 ? target35_search_ff() : 0.0f,
              imu_ok() ? imu_leg_heading_deg() : 9999.0f, s_target35_heading);
     send(b);
 }
@@ -1602,7 +1898,9 @@ static void target35_poll(void)
         target35_clear_sample(); /* only post-preparation images count toward aim */
         s_target35_phase = TA_SEEK;
         send(s_target35_route
-             ? "OK TARGET31_SEARCH initial=route_v/right6.5pct until_selected_x<=350; fine_latched=30; x<237 backward; x>243 forward; point240 band237-243 5_new_frames_in_band brakes_then_fire2s"
+             ? (s_seq_mode == ROUTE_STEP_MODE
+                ? "OK TARGET43_SEARCH initial=route_v/right6.5pct until_selected_x<=350; fine_latched=30; x<237 backward; x>243 forward; point240 band237-243 5_new_frames_in_band brakes_then_fire2s"
+                : "OK TARGET31_SEARCH initial=route_v/right4.5pct until_selected_x<=360; fine_latched=30; x<247 backward; x>253 forward; point250 band247-253 5_new_frames_in_band brakes_then_fire2s")
              : "OK TARGET35_SEARCH no_coordinates=forward50mm/s; x<250 backward; x>260 forward; 5_new_frames_in_band brakes_then_1s_laser_hold");
         /* Fall through: start forward search in this same nonblocking tick. */
     }
@@ -1613,6 +1911,7 @@ static void target35_poll(void)
         return;
     }
     if (proto_scene_status() < 0) { target35_stop("TARGET_LINK_ERROR"); return; }
+    if (target31_mid_poll(now)) return;
     pm = __get_PRIMASK();
     __disable_irq();
     sample = s_target35_sample; proto_stats_get(&stats); now = HAL_GetTick();
@@ -1622,6 +1921,13 @@ static void target35_poll(void)
     __set_PRIMASK(pm); /* sample.tick cannot be newer than this snapshot's now */
     fresh = sample.seen && sample.packet_index == stats.obj &&
             (uint32_t)(now - sample.tick) <= T_TARGET35_FRESH_MS;
+    if (s_target35_route && s_seq_mode == ROUTE_TEST_MODE && s_target31_mid_need_new) {
+        if (fresh && sample.packet_index != s_target31_mid_packet &&
+            sample.packet_index == s_target31_coarse_packet &&
+            sample.frame.sequence == s_target31_coarse_sequence)
+            s_target31_mid_need_new = 0u;
+        else fresh = 0;
+    }
     if (!fresh) {
         s_target35_good = 0u;
         /* No selected target coordinate: resume forward search, even after
@@ -1645,7 +1951,7 @@ static void target35_poll(void)
         } else s_target35_good = 0u;
     }
     if (s_target35_route && !s_target31_fine) {
-        /* First sightings above350 do not start micro-control. Once latched,
+        /* First sightings above the owner gate do not start micro-control. Once latched,
          * neither a larger x nor missing coordinates can reopen coarse100. */
         s_target35_phase = TA_SEEK;
         target35_move(route31_straight_speed());
@@ -1979,7 +2285,8 @@ void test_poll(void)
     if (route_seq_active()) route_seq_poll();
     if (s_seq_state != SQ_STILL && s_seq_state != SQ_WAIT && s_seq_state != SQ_QR_WAIT &&
         s_seq_state != SQ_BUCKET_ALIGN && s_seq_state != SQ_MANUAL_D_WAIT && s_seq_state != SQ_TASK &&
-        s_seq_state != SQ_ARM_PREP && s_seq_state != SQ_STEP_WAIT)
+        s_seq_state != SQ_ARM_PREP && s_seq_state != SQ_STEP_WAIT &&
+        s_seq_state != SQ_TASK_YAW && s_seq_state != SQ_CROSS_YAW)
         tick();         /* 段走/回程/步进的非阻塞推进(g 随时可插) */
     bench_auto_tick();  /* 仅在显式开启 BENCH_AUTO 时执行 */
     imu_mon();          /* IMU 读数(若开着) */
@@ -2149,7 +2456,7 @@ static void tick(void)
                 dist_begin_finish(2u);
                 return;
             }
-            d = dist_odo() - s_dist_odo0;
+            d = dist_travel_mm();
             if (s_board_contact.active) {
                 int contact = board_contact_observe();
                 if (run_aborted() || !route31_contact_active()) { motion_brake(); return; }
@@ -2166,6 +2473,10 @@ static void tick(void)
                 dist_begin_finish(1u);
                 return;
             } else {
+                if (dist_mid_yaw_enabled() &&
+                    fabsf(dist_yaw_error(imu_leg_heading_deg())) > ROUTE31_MID_YAW_LIMIT_DEG) {
+                    dist_mid_begin(); return;
+                }
                 remain = s_dist_target - d;
                 if (s_seq_state == SQ_RUN)
                     cmd = motion_linear_ramp_step(&s_dist_ramp,
@@ -2278,13 +2589,38 @@ static void tick(void)
         if (changed) s_dist_still_t0 = HAL_GetTick();
         if ((uint32_t)(HAL_GetTick() - s_dist_still_t0) >= T_DIST_STILL_MS) {
             dist_save_translation_end();
+            if (s_dist_mid_pause) {
+                if (s_dist_mid_pause == 3u) {
+                    dist_align_complete(dist_yaw_error(imu_leg_heading_deg()), 1);
+                    return;
+                }
+                /* Include braking coast, but freeze before yaw wheel motion. */
+                s_dist_progress_mm = s_dist_end_mm;
+                for (int i = 0; i < 4; ++i) {
+                    s_dist_progress_counts[i] = s_dist_end_counts[i];
+                    s_dist_count_base[i] = ctrl_enc_total(i);
+                }
+                s_dist_odo0 = dist_odo();
+                s_dist_mid_orth_stop = dist_lateral() ? motion_odo_mm() : motion_lateral_odo_mm();
+                if (run_aborted() || !imu_ok() || !isfinite(imu_leg_heading_deg())) {
+                    s_dist_reason = run_aborted() ? 4u : 2u;
+                    dist_finish_report(); return;
+                }
+                s_dist_align_t0 = HAL_GetTick(); s_dist_align_started = 1u;
+                s_dist_align_hold = 0u; s_dist_mid_pause = 2u;
+                yaw_progress_reset(&s_dist_yaw_progress);
+                s_round = R_ALIGN;
+                return; /* Never finish/reset/advance this interrupted leg. */
+            }
             if (s_dist_reason == 1u && s_dist_align_enabled && !run_aborted() && imu_ok() &&
                 isfinite(imu_leg_heading_deg()) && isfinite(s_dist_heading0)) {
                 s_dist_align_t0 = HAL_GetTick(); s_dist_align_started = 1u;
                 yaw_progress_reset(&s_dist_yaw_progress);
                 s_dist_align_hold = 0u; s_round = R_ALIGN;
                 send(dist_align_route31()
-                     ? "OK DIST_YFIX original_heading_preserved;31 continuous_abs_lt0.4/still400(43=700) min_w0.18 max_w0.30 no_cross_required; g/a/0 cancels"
+                     ? (s_seq_mode == ROUTE_TEST_MODE
+                        ? "OK DIST_YFIX original_heading_preserved;31 continuous_abs_lt0.4/still400 min_w0.30 max_w0.60 boost_after400ms no_cross_required; g/a/0 cancels"
+                        : "OK DIST_YFIX original_heading_preserved;43 continuous_abs_lt0.4/still700 min_w0.18 max_w0.30 no_cross_required; g/a/0 cancels")
                      : "OK DIST_YFIX original_heading_preserved; g/a/0 cancels");
             } else dist_finish_report();
         }
@@ -2416,7 +2752,11 @@ static void mode_start(void)
                      (int)(turn_abs(turn_target_deg()) - TURN90_TARGET_DEG));
             send(turn_msg);
         } else {
-            send("OK TURN180 target=+180deg hold_tol=0.3deg; g/a stop");
+            static char turn180_msg[80];
+            snprintf(turn180_msg, sizeof turn180_msg,
+                     "OK TURN180 target=%+ddeg hold_tol=0.3deg; g/a stop",
+                     (int)turn_target_deg());
+            send(turn180_msg);
         }
         if (s_msel != 19 && route31_owner() && route_seq_active()) {
             static char profile[160];
@@ -2473,7 +2813,7 @@ static void mode_start(void)
             snprintf(cb, sizeof cb,
                      "REC type=BOARD_ZERO test=%lu pitch0=%.2f roll0=%.2f zero_wait_ms=%u; v40 threshold=%.2f start_guard_ms=%u confirm_ms=%u no_yaw_fix max10s_abort",
                      (unsigned long)s_active_test, s_board_contact.pitch0, s_board_contact.roll0,
-                     (unsigned)route_contact_zero_wait_ms(), ROUTE31_BOARD_CONTACT_TILT_DEG,
+                     (unsigned)route_contact_zero_wait_ms(), route_contact_tilt_deg(),
                      (unsigned)ROUTE31_BOARD_CONTACT_START_GUARD_MS, (unsigned)ROUTE31_BOARD_CONTACT_CONFIRM_MS);
             send(cb);
         } else memset(&s_board_contact, 0, sizeof s_board_contact);
@@ -2483,7 +2823,23 @@ static void mode_start(void)
         else                    { s_rvx =  0.0f; s_rvy =  1.0f; }
         ctrl_enc_reset_all();
         s_dist_odo0 = dist_odo();
+        s_dist_mid_pause = 0u; s_dist_progress_mm = 0.0f;
+        for (int i = 0; i < 4; ++i) {
+            s_dist_progress_counts[i] = 0;
+            s_dist_count_base[i] = ctrl_enc_total(i);
+        }
         s_dist_heading0 = imu_leg_heading_deg();
+        if (s_seq_mode == ROUTE_TEST_MODE && s_seq_state == SQ_RUN && s_seq_stage == 3u) {
+            s_route31_cross_heading = imu_heading_deg();
+            if (!isfinite(s_route31_cross_heading)) { route_seq_end("IMUERR"); return; }
+            s_route31_cross_heading_valid = 1u;
+            s_route31_cross_yaw_done = 0u;
+        }
+        if (s_seq_mode == ROUTE_TEST_MODE && s_seq_hostage_offset) {
+            /* Keep the hostage task's original goal through offset/yaw-fix. */
+            s_dist_heading0 += s_route31_hostage_offset_heading - imu_heading_deg();
+            if (!isfinite(s_dist_heading0)) { route_seq_end("IMUERR"); return; }
+        }
         s_dist_orth0 = dist_lateral() ? motion_odo_mm() : motion_lateral_odo_mm();
         s_dist_target = s_board_contact.active ? 0.0f : (s_msel == 16 || s_msel == 17) ? -s_d : s_d;
         /* Normal straight trials: independent fff/bff at EVERY supported v.
@@ -2500,12 +2856,14 @@ static void mode_start(void)
          * The distance executor uses vy=-ff*abs(vx), hence negative is right. */
         if (route31_owner() && s_seq_state == SQ_RUN &&
             s_seq_stage == ROUTE31_TARGET_CORNER_STAGE && s_msel == 15)
-            s_dist_ff_ratio = -ROUTE31_CORNER_RIGHT_FF_RATIO;
+            s_dist_ff_ratio = -(s_seq_mode == ROUTE_TEST_MODE
+                ? ROUTE31_CORNER_RIGHT_FF_RATIO : ROUTE43_CORNER_RIGHT_FF_RATIO);
         if (route31_owner() && s_seq_state == SQ_RUN &&
             s_seq_stage == ROUTE31_HOSTAGE_EXIT_STAGE && s_msel == 15)
-            s_dist_ff_ratio = -ROUTE31_HOSTAGE_EXIT_RIGHT_FF_RATIO;
+            s_dist_ff_ratio = -route31_hostage_exit_ff();
         s_dist_align_enabled = (uint8_t)(s_dist_align_on && dist_ordinary_leg());
         s_dist_align_started = s_dist_align_hold = s_dist_end_saved = 0u;
+        s_dist_align_timeout_accepted = 0u;
         s_dist_align_t0 = s_dist_align_stable_t0 = 0u;
         if (s_seq_state == SQ_RUN)
             motion_ramp_init(&s_dist_ramp, ROUTE_TEST_ACC_MMS2, ROUTE_TEST_DEC_MMS2);
@@ -2582,7 +2940,7 @@ static int route_seq_active(void)
            s_seq_state == SQ_RUN || s_seq_state == SQ_QR_WAIT ||
            s_seq_state == SQ_BUCKET_ALIGN || s_seq_state == SQ_MANUAL_D_WAIT ||
            s_seq_state == SQ_TASK || s_seq_state == SQ_ARM_PREP ||
-           s_seq_state == SQ_STEP_WAIT;
+           s_seq_state == SQ_STEP_WAIT || s_seq_state == SQ_TASK_YAW || s_seq_state == SQ_CROSS_YAW;
 }
 
 static int route_seq_selected(void)
@@ -2620,8 +2978,9 @@ static const RouteTestLeg *route_seq_leg(void)
         return &s_route43_leg;
     }
     if (s_seq_mode == ROUTE_TEST_MODE) {
-        if (s_seq_return_offset) return &s_route31_return_offset_leg;
-        if (s_seq_pair_offset) return &s_route31_pair_offset_leg;
+        if (s_seq_hostage_offset) return &s_route31_hostage_offset_leg;
+        if (s_seq_return_offset) return &s_route31_return_right_offset_leg;
+        if (s_seq_pair_offset) return &s_route31_ball_to_bucket_offset_leg;
         if (s_seq_pair_turn) return &s_route31_pair_turn_leg;
         if (s_seq_stage == ROUTE31_TARGET_CORNER_STAGE) return &s_route31_corner_leg;
         if (s_seq_stage == ROUTE31_HOSTAGE_EXIT_STAGE) return &s_route31_hostage_exit_leg;
@@ -2635,6 +2994,10 @@ static const RouteTestLeg *route_seq_leg(void)
 static float route_seq_speed_mms(void)
 {
     const RouteTestLeg *leg = route_seq_leg();
+    /* Only the15mm internal offsets AFTER31's two turns. Keep RAM pv lower
+     * requests,43's40mm offset and all other route strafes independent. */
+    if (s_seq_mode == ROUTE_TEST_MODE && (s_seq_pair_offset || s_seq_return_offset) && !s_seq_pair_turn)
+        return fminf(route31_lateral_speed(), ROUTE31_BALL_TO_BUCKET_LEFT_V_MMS);
     if (route31_owner() && !s_seq_pair_turn &&
         (leg->mode == 17u || leg->mode == 18u))
         return route31_lateral_speed();
@@ -2665,7 +3028,9 @@ static unsigned route_seq_bucket_back_stage(void)
 
 static int route31_xy_active(void)
 {
-    return route31_owner() && s_seq_state == SQ_TASK &&
+    return route31_owner() && (s_seq_state == SQ_TASK ||
+           (s_seq_mode == ROUTE_TEST_MODE && s_seq_hostage_offset &&
+            (s_seq_state == SQ_STILL || s_seq_state == SQ_WAIT || s_seq_state == SQ_RUN))) &&
            (s_seq_stage == ROUTE31_PAIR_STAGE || s_seq_stage == ROUTE31_HOSTAGE_STAGE);
 }
 
@@ -2673,15 +3038,22 @@ static void route43_defaults(void)
 {
     for (unsigned i = 0u; i < ROUTE31_STAGES; ++i)
         s_route43_tune.road_mm[i] = s_route31_plan[i].distance_mm;
+    /*43 is deferred: freeze the pre-2026-10-10 distance seeds rather than
+     * inheriting this round's31-only road changes. Its RAM editing stays on. */
+    s_route43_tune.road_mm[0] = 535u;
+    s_route43_tune.road_mm[1] = 630u;
+    s_route43_tune.road_mm[3] = ROUTE_CROSS_BACK_MM;
+    s_route43_tune.road_mm[6] = 800u;
+    s_route43_tune.road_mm[7] = 760u;
     s_route43_tune.pair_left_mm = ROUTE31_PAIR_LEFT_MM;
     s_route43_tune.return_left_mm = ROUTE31_RETURN_LEFT_MM;
-    s_route43_tune.corner_mm[0] = ROUTE31_RED_TO_CORNER_MM;
-    s_route43_tune.corner_mm[1] = ROUTE31_GREEN_TO_CORNER_MM;
-    s_route43_tune.corner_mm[2] = ROUTE31_BLUE_TO_CORNER_MM;
-    s_route43_tune.rank_mm[0] = ROUTE31_HOSTAGE_RANK1_MM;
-    s_route43_tune.rank_mm[1] = ROUTE31_HOSTAGE_RANK2_MM;
-    s_route43_tune.rank_mm[2] = ROUTE31_HOSTAGE_RANK3_MM;
-    s_route43_tune.rack_steps = ROUTE31_RACK_EXTEND_STEPS;
+    s_route43_tune.corner_mm[0] = 520u;
+    s_route43_tune.corner_mm[1] = 420u;
+    s_route43_tune.corner_mm[2] = 320u;
+    s_route43_tune.rank_mm[0] = ROUTE43_HOSTAGE_RANK1_MM;
+    s_route43_tune.rank_mm[1] = ROUTE43_HOSTAGE_RANK2_MM;
+    s_route43_tune.rank_mm[2] = ROUTE43_HOSTAGE_RANK3_MM;
+    s_route43_tune.rack_steps = ROUTE43_RACK_EXTEND_STEPS;
     s_route43_tune.rack_pps = ROUTE31_RACK_PPS;
     s_route43_tune.straight_v = ROUTE31_STRAIGHT_V_MMS;
     s_route43_tune.lateral_v = ROUTE31_LATERAL_V_MMS;
@@ -2783,6 +3155,16 @@ static int route31_arm_job(uint8_t phase, int axis, int dir, uint32_t count, uin
     return 1;
 }
 
+static uint16_t route31_ball_grip_us(void)
+{
+    return s_seq_mode == ROUTE_STEP_MODE ? ROUTE43_BALL_GRIP_US : ROUTE31_BALL_GRIP_US;
+}
+
+static uint16_t route31_hostage_grip_us(void)
+{
+    return s_seq_mode == ROUTE_STEP_MODE ? ROUTE43_HOSTAGE_GRIP_US : ROUTE31_HOSTAGE_GRIP_US;
+}
+
 static int route31_lift_begin(int action)
 {
     if (s_route31_lift_phase != R31_LIFT_OFF) return 0;
@@ -2839,11 +3221,11 @@ static void route31_lift_poll(void)
         return;
     case R31_HOSTAGE_RACK_EXTEND_WAIT:
         if ((uint32_t)(HAL_GetTick() - s_route31_lift_wait_t0) < ROUTE31_RACK_SETTLE_MS) return;
-        arm_claw_set_us(ROUTE31_HOSTAGE_GRIP_US);
+        arm_claw_set_us(route31_hostage_grip_us());
         s_route31_rack_deployed = 1u;
         s_route31_lift_wait_t0 = HAL_GetTick();
         s_route31_lift_phase = R31_HOSTAGE_GRIP_WAIT;
-        route31_lift_report("HOSTAGE_GRIP1900_WAIT250", s_route31_lift_phase);
+        route31_lift_report(s_seq_mode == ROUTE_TEST_MODE ? "HOSTAGE_GRIP2100_WAIT250" : "HOSTAGE_GRIP1900_WAIT250", s_route31_lift_phase);
         return;
     case R31_HOSTAGE_GRIP_WAIT:
         if ((uint32_t)(HAL_GetTick() - s_route31_lift_wait_t0) < ROUTE31_HOSTAGE_GRIP_SETTLE_MS) return;
@@ -2861,7 +3243,7 @@ static void route31_lift_poll(void)
         return;
     case R31_HOSTAGE_RACK_RETRACT_WAIT:
         if ((uint32_t)(HAL_GetTick() - s_route31_lift_wait_t0) < ROUTE31_RACK_SETTLE_MS) return;
-        route31_lift_report("HOSTAGE_GRIP1900_RETRACT3000_HOLD_TO_END", phase);
+        route31_lift_report(s_seq_mode == ROUTE_TEST_MODE ? "HOSTAGE_GRIP2100_RETRACT3000_HOLD_TO_END" : "HOSTAGE_GRIP1900_RETRACT3000_HOLD_TO_END", phase);
         break; /* Partial return complete; retain grip and remaining extension through final route. */
     case R31_RACK_EXTEND:
     case R31_RACK_RETRACT:
@@ -2887,10 +3269,10 @@ static void route31_lift_poll(void)
         if (clock.axis != ROUTE31_LIFT_AXIS || clock.completed != ROUTE31_LIFT_DOWN_STEPS) {
             route_seq_end("LIFT_COUNT_ERROR"); return;
         }
-        arm_claw_set_us(ROUTE31_BALL_GRIP_US);
+        arm_claw_set_us(route31_ball_grip_us());
         s_route31_lift_phase = R31_LIFT_BALL_WAIT;
         s_route31_lift_wait_t0 = HAL_GetTick(); /* Grip must hold2s AFTER the command, not last STEP. */
-        route31_lift_report("GRIP1900_WAIT2", s_route31_lift_phase);
+        route31_lift_report(s_seq_mode == ROUTE_TEST_MODE ? "GRIP2100_WAIT2" : "GRIP1900_WAIT2", s_route31_lift_phase);
         return;
     case R31_LIFT_BALL_WAIT:
         if ((uint32_t)(HAL_GetTick() - s_route31_lift_wait_t0) < ROUTE31_BALL_GRIP_WAIT_MS) return;
@@ -2902,7 +3284,7 @@ static void route31_lift_poll(void)
         if (clock.axis != ROUTE31_LIFT_AXIS || clock.completed != ROUTE31_LIFT_BALL_UP_STEPS) {
             route_seq_end("LIFT_COUNT_ERROR"); return;
         }
-        break; /* Signal ball action done, retain1900 and rack extension through180. */
+        break; /* Signal ball action done, retain selected grip and rack extension through180. */
     case R31_LIFT_BUCKET_DOWN:
         if (clock.axis != ROUTE31_LIFT_AXIS || clock.completed != ROUTE31_LIFT_BUCKET_DOWN_STEPS) {
             route_seq_end("LIFT_COUNT_ERROR"); return;
@@ -2955,7 +3337,7 @@ static void route31_lift_poll(void)
 
 static void route31_task_report(void)
 {
-    static char b[768];
+    static char b[896];
     ProtoWireDiag wire;
     if (s_route31_lift_phase != R31_LIFT_OFF) {
         route31_lift_report("ACTIVE", s_route31_lift_phase); return;
@@ -2965,7 +3347,7 @@ static void route31_task_report(void)
     proto_wire_diag_get(&wire);
     if ((s_xy_snapshot.state == VAT_BRAKE || s_xy_snapshot.state == VAT_ALIGN ||
          s_xy_snapshot.state == VAT_RECHECK || s_xy_snapshot.state == VAT_ROUTE_SEARCH ||
-         s_xy_snapshot.state == VAT_ROUTE_BUCKET_SEARCH) &&
+         s_xy_snapshot.state == VAT_ROUTE_BUCKET_SEARCH || s_xy_snapshot.state == VAT_FINE_CONTINUOUS) &&
         (!wire.receiving || !wire.ack || wire.failed || wire.request != s_xy_snapshot.request ||
          wire.mode != 2u || wire.task != s_xy_snapshot.task || wire.selection != s_xy_snapshot.digit)) {
         /* Replace, rather than append to, the long XY record while handshake
@@ -2981,7 +3363,7 @@ static void route31_task_report(void)
         send(b); return;
     }
     snprintf(b, sizeof b,
-             "XY31 run=%lu step=%u/%u test=%lu align=%u task=%u digit=%u req=%u x=%d y=%d goal_x=%d tol_x=%u seq=%u rank=%u rank_seq=%u ball_rank=%u img=%u,%u latest=%u age=%lu good=%u/5 axis=%u vx=%.0f vy=%.0f w=%.3f reason=%s rx=%d,%d rx_seq=%u rx_img=%u,%u rx_fresh=%u yaw_err=%.2f yfix=%u step_mm=%.2f step_ms=%lu cap=%u grab_loss=%u grab_seen=%u grab_age=%lu bucket_loss=%u bucket_seen=%u bucket_age=%lu temporary_points=1",
+             "XY31 run=%lu step=%u/%u test=%lu align=%u task=%u digit=%u req=%u x=%d y=%d goal_x=%d tol_x=%u seq=%u rank=%u rank_seq=%u ball_rank=%u img=%u,%u latest=%u age=%lu good=%u/5 axis=%u vx=%.0f vy=%.0f w=%.3f reason=%s rx=%d,%d rx_seq=%u rx_img=%u,%u rx_fresh=%u yaw_err=%.2f yfix=%u step_mm=%.2f step_ms=%lu cap=%u grab_loss=%u grab_seen=%u grab_age=%lu bucket_loss=%u bucket_seen=%u bucket_age=%lu ball_loss=%u ball_seen=%u ball_age=%lu temporary_points=1",
              (unsigned long)s_seq_run, (unsigned)(s_seq_stage + 1u), route_seq_stage_count(), (unsigned long)s_active_test,
              (unsigned)s_xy_snapshot.state, (unsigned)s_xy_snapshot.task,
              (unsigned)s_xy_snapshot.digit, (unsigned)s_xy_snapshot.request,
@@ -3000,7 +3382,26 @@ static void route31_task_report(void)
              (unsigned)s_xy_snapshot.hostage_fallback, (unsigned)s_xy_snapshot.hostage_seen,
              (unsigned long)s_xy_snapshot.hostage_age_ms,
              (unsigned)s_xy_snapshot.bucket_fallback, (unsigned)s_xy_snapshot.bucket_seen,
-             (unsigned long)s_xy_snapshot.bucket_age_ms);
+             (unsigned long)s_xy_snapshot.bucket_age_ms,
+             (unsigned)s_xy_snapshot.ball_fallback, (unsigned)s_xy_snapshot.ball_seen,
+             (unsigned long)s_xy_snapshot.ball_age_ms);
+    if (s_seq_mode == ROUTE_TEST_MODE && s_xy_snapshot.state == VAT_FINE_CONTINUOUS) {
+        float wheel_rpm[MOTOR_NUM];
+        int32_t enc[MOTOR_NUM];
+        uint32_t pm = __get_PRIMASK();
+        __disable_irq();
+        ctrl_get_rpm_fast_all(wheel_rpm);
+        for (int m = 0; m < MOTOR_NUM; ++m) enc[m] = ctrl_enc_total(m);
+        __set_PRIMASK(pm);
+        /* Append to the existing500ms record only. Wheel order is the control
+         * order: LR,RR,RF,LF. These are encoder evidence, not chassis motion. */
+        size_t used = strlen(b);
+        if (used < sizeof b - 1u)
+            snprintf(b + used, sizeof b - used,
+                     " fine_ctrl=creep wheels=LR,RR,RF,LF c=%ld,%ld,%ld,%ld rpm=%.1f,%.1f,%.1f,%.1f",
+                     (long)enc[0], (long)enc[1], (long)enc[2], (long)enc[3],
+                     wheel_rpm[0], wheel_rpm[1], wheel_rpm[2], wheel_rpm[3]);
+    }
     send(b);
 }
 
@@ -3037,13 +3438,16 @@ static void route31_task_begin(void)
             proto_wire_diag_get(&diag); s_target31_request = diag.request;
         }
         send(s_seq_mode == ROUTE_TEST_MODE
-             ? "SEQ phase=TARGET31_REQUEST task2=latched_QR_second; search_ROUTE31_V/right6.5_until_x350/fine_v30 x240+/-3 band237-243; five_fresh_brake_then_laser2s_off_no_extra_wait"
+             ? "SEQ phase=TARGET31_REQUEST task2=latched_QR_second; search_ROUTE31_V/right4.5_until_x360/fine_v30 x250+/-3 band247-253; five_fresh_brake_then_laser2s_off_no_extra_wait"
              : "SEQ phase=TARGET43_REQUEST task2=latched_QR_second; brake_1s_then_laser2s_off");
         target35_report(); return;
     }
     mode = s_seq_stage == ROUTE31_PAIR_STAGE ? 41u : 40u;
-    if (mode == 40u) s_route31_hostage_opened = 0u;
-    if (!vision_align_test_start_route(mode, s_seq_qr)) {
+    if (mode == 40u) {
+        s_route31_hostage_opened = 0u;
+        s_seq_hostage_offset = s_route31_hostage_offset_done = 0u;
+    }
+    if (!vision_align_test_start_route_scoped(mode, s_seq_qr, s_seq_mode)) {
         route_seq_end("ALIGN_START_ERROR"); return;
     }
     if (!vision_align_test_route_search_kp_set(s_route_heading_kp)) {
@@ -3056,15 +3460,122 @@ static void route31_task_begin(void)
         !vision_align_test_route_yaw_settle_ms_set(ROUTE31_STABLE_MS)) {
         route_seq_end("YAW_TIMING_ERROR"); return;
     }
-    if (mode == 40u && !vision_align_test_route_search_ff_set(ROUTE31_HOSTAGE_SEARCH_RIGHT_FF_RATIO)) {
+    if (mode == 40u && !vision_align_test_route_search_ff_set(s_seq_mode == ROUTE_TEST_MODE
+            ? ROUTE31_HOSTAGE_SEARCH_RIGHT_FF_RATIO : ROUTE43_HOSTAGE_SEARCH_RIGHT_FF_RATIO)) {
         route_seq_end("SEARCH_FF_ERROR"); return;
+    }
+    if (mode == 41u && s_seq_mode == ROUTE_TEST_MODE &&
+        !vision_align_test_route_search_ff_set(ROUTE31_BALL_SEARCH_RIGHT_FF_RATIO)) {
+        route_seq_end("BALL_SEARCH_FF_ERROR"); return;
     }
     if (s_seq_mode == ROUTE_STEP_MODE && mode == 41u)
         route43_report("BALL_GRAB_START_rack_return_uses_issued");
+    else if (s_seq_mode == ROUTE_STEP_MODE)
+        send("SEQ phase=HOSTAGE43_START task3=latched_QR_third; search_ROUTE43_V_then_X230_or_seen_loss2s/open1150_extend_grip1900_no_lift/rank_forward_to_end_hold_grip Y_OFF");
     else send(mode == 41u
-         ? "SEQ phase=BALL_BUCKET31_START rack3200_f5000; ballX135_nr32000_grip1900_wait2_nl32000/+180/no_pair_offset/bucketX125_or_seen_loss2s_nr20000_release1150_after1s_u1500_wait2_total_nl20000_no_extra_wait_rackBack3200; return180_no_offset_yawfix; lift_f10000 Y_OFF"
-         : "SEQ phase=HOSTAGE31_START task3=latched_QR_third; search_ROUTE31_V_then_X215_or_seen_loss2s/open1150_extend_grip1900_no_lift/rank_forward_no_extra_hold_to_end_hold_grip Y_OFF");
+         ? "SEQ phase=BALL_BUCKET31_START rack3400_f5000; ballX135_nr32000_grip2100_wait2_nl32000/+180/LEFT15_yawfix/bucketX105_or_seen_loss300ms_nr20000_release1150_after1s_u1500_wait2_total_nl20000_no_extra_wait_rackBack3400; return185_stable_direct_target; lift_f10000 Y_OFF"
+         : "SEQ phase=HOSTAGE31_START task3=latched_QR_third; search_ROUTE31_V_then_X215_or_seen_loss300ms/no_body_offset/open1150_extend_grip2100_no_lift/rank_forward_no_extra_hold_to_end_hold_grip Y_OFF");
     route31_task_report();
+}
+
+/*31 endpoint correction: target uses the original local search goal; crossing
+ * converts its captured continuous goal before contact can establish a zero.
+ * Laser is OFF, and neither phase permits simultaneous generic tick motion. */
+static void route31_task_yaw_begin(float goal)
+{
+    motion_brake(); bp_laser_set(0);
+    s_route31_task_yaw_goal = goal;
+    s_route31_task_yaw_t0 = s_route31_task_yaw_still_t0 = HAL_GetTick();
+    s_route31_task_yaw_stable = 0u;
+    yaw_progress_reset(&s_route31_task_yaw_progress);
+    for (int i = 0; i < 4; ++i) s_route31_task_yaw_counts[i] = ctrl_enc_total(i);
+    s_seq_state = s_seq_stage == 4u ? SQ_CROSS_YAW : SQ_TASK_YAW;
+    s_round = R_RUN;
+    send(s_seq_state == SQ_CROSS_YAW
+         ? "SEQ phase=CROSS31_PRE_CONTACT_YAW_START pre_cross_heading_preserved=1 zeroed=0 tol_lt0.4 stable400 max2000_accept min_w0.30 max_w0.60; then_stopped_tilt_zero; g/a/0 stops"
+         : "SEQ phase=TARGET31_POST_YAW_START laser=0 original_heading_preserved=1 zeroed=0 tol_lt0.4 stable400 max2000_accept min_w0.30 max_w0.60; g/a/0 stops");
+}
+
+static void route31_task_yaw_finish(uint8_t timeout_accepted, float error)
+{
+    static char result[224];
+    int crossing = s_seq_state == SQ_CROSS_YAW;
+    motion_brake();
+    yaw_progress_reset(&s_route31_task_yaw_progress);
+    snprintf(result, sizeof result,
+             "SEQ phase=%s_%s yaw_timeout_accept=%u reached=%u residual_err_deg=%.2f elapsed_ms=%lu zeroed=0",
+             crossing ? "CROSS31_PRE_CONTACT_YAW" : "TARGET31_POST_YAW",
+             timeout_accepted ? "TIMEOUT_CONTINUE" : "DONE",
+             (unsigned)timeout_accepted, timeout_accepted ? 0u : 1u, error,
+             (unsigned long)(HAL_GetTick() - s_route31_task_yaw_t0));
+    send(result);
+    if (crossing) {
+        s_route31_cross_yaw_done = 1u;
+        route_seq_prepare(); /* Only NOW may still/zero/tilt-baseline run. */
+    } else {
+        s_seq_state = SQ_TASK;
+        route_seq_next();
+    }
+}
+
+static void route31_task_yaw_poll(void)
+{
+    uint32_t now = HAL_GetTick();
+    float yaw = imu_leg_heading_deg(), e, w, min_w = ROUTE31_POST_YAW_MIN_W;
+    const float max_w = ROUTE31_POST_YAW_MAX_W;
+    int changed = 0;
+    int crossing = s_seq_state == SQ_CROSS_YAW;
+    if (s_seq_mode != ROUTE_TEST_MODE ||
+        (crossing ? s_seq_stage != 4u || !s_route31_cross_heading_valid
+                  : s_seq_stage != ROUTE31_TARGET_STAGE)) {
+        route_seq_end("TASK_YAW_OWNER_ERROR"); return;
+    }
+    if (!imu_ok() || !isfinite(yaw) || !isfinite(s_route31_task_yaw_goal)) {
+        route_seq_end("IMUERR"); return;
+    }
+    e = fmodf(s_route31_task_yaw_goal - yaw, 360.0f);
+    if (!isfinite(e)) { route_seq_end("IMUERR"); return; }
+    if (e > 180.0f) e -= 360.0f;
+    if (e < -180.0f) e += 360.0f;
+    if ((uint32_t)(now - s_route31_task_yaw_t0) >= ROUTE31_POST_YAW_MAX_MS) {
+        route31_task_yaw_finish(1u, e); return;
+    }
+    for (int i = 0; i < 4; ++i) {
+        int32_t count = ctrl_enc_total(i);
+        if (count != s_route31_task_yaw_counts[i]) changed = 1;
+        s_route31_task_yaw_counts[i] = count;
+    }
+    if (changed) s_route31_task_yaw_still_t0 = now;
+    if (fabsf(e) >= ROUTE31_POST_YAW_TOL_DEG) {
+        s_route31_task_yaw_stable = 0u;
+        min_w = yaw_progress_floor(&s_route31_task_yaw_progress, e, now, min_w, max_w);
+        w = T_DIST_ALIGN_KP * e;
+        if (fabsf(w) < min_w) w = e > 0.0f ? min_w : -min_w;
+        if (w > max_w) w = max_w;
+        if (w < -max_w) w = -max_w;
+        motion_vel_set_precise(0.0f, 0.0f, w);
+    } else {
+        motion_brake(); yaw_progress_reset(&s_route31_task_yaw_progress);
+        if (!s_route31_task_yaw_stable || changed ||
+            fabsf(yaw - s_route31_task_yaw_stable_heading) > T_DIST_ALIGN_STILL_DEG) {
+            s_route31_task_yaw_stable = 1u;
+            s_route31_task_yaw_stable_t0 = now;
+            s_route31_task_yaw_stable_heading = yaw;
+        }
+        if ((uint32_t)(now - s_route31_task_yaw_stable_t0) >= ROUTE31_STABLE_MS &&
+            (uint32_t)(now - s_route31_task_yaw_still_t0) >= T_DIST_STILL_MS) {
+            route31_task_yaw_finish(0u, e); return;
+        }
+    }
+    if ((uint32_t)(now - s_seq_task_report_t0) >= T_TARGET35_REPORT_MS) {
+        static char report[192];
+        s_seq_task_report_t0 = now;
+        snprintf(report, sizeof report, "SEQ phase=%s_%s yaw_deg=%.2f goal_deg=%.2f err_deg=%.2f zeroed=0 laser=0 stable_ms=400 max_ms=2000 min_w=%.2f max_w=%.2f boost=%u",
+                 crossing ? "CROSS31_PRE_CONTACT_YAW" : "TARGET31_POST_YAW",
+                 s_route31_task_yaw_stable ? "SETTLE" : "CORRECT", yaw, s_route31_task_yaw_goal, e,
+                 min_w, max_w, (unsigned)s_route31_task_yaw_progress.boosted);
+        send(report);
+    }
 }
 
 static void route31_task_poll(void)
@@ -3092,6 +3603,11 @@ static void route31_task_poll(void)
             motion_brake(); bp_laser_set(0); step_vision_receive_end();
             s_target35_phase = TA_OFF; s_target35_route = 0u; s_target35_cmd = 0.0f;
             send("SEQ phase=TARGET31_FIRE_DONE laser=0; next_distance_from_this_stopped_target_pose=1 trial_unmeasured=1");
+            if (s_seq_mode == ROUTE_TEST_MODE && ROUTE31_TARGET_STOP_YAW_ENABLE) {
+                route31_task_yaw_begin(s_target35_heading); return;
+            }
+            if (s_seq_mode == ROUTE_TEST_MODE)
+                send("SEQ phase=TARGET31_POST_YAW_SKIPPED keep_moving_heading_hold=1 laser=0");
             route_seq_next();
         }
         return;
@@ -3101,6 +3617,16 @@ static void route31_task_poll(void)
     if (s_xy_snapshot.state == VAT_STOPPED) { route_seq_end(s_xy_snapshot.reason); return; }
     if (s_route31_lift_phase == R31_LIFT_OFF) {
         int action = vision_align_test_take_route_action();
+        if (ROUTE31_HOSTAGE_PREGRAB_LEFT_MM > 0u &&
+            action == VAT_ROUTE_ACTION_HOSTAGE && s_seq_mode == ROUTE_TEST_MODE &&
+            !s_route31_hostage_offset_done) {
+            vision_align_test_status(&s_xy_snapshot);
+            if (!isfinite(s_xy_snapshot.yaw_target)) { route_seq_end("IMUERR"); return; }
+            s_route31_hostage_offset_heading = s_xy_snapshot.yaw_target;
+            s_seq_hostage_offset = s_route31_hostage_offset_done = 1u;
+            send("SEQ phase=HOSTAGE31_PREGRAB_LEFT_START arm_wait=1 keep_task3_request=1 then_yawfix_NEW_X; Y_OFF");
+            route_seq_prepare(); return;
+        }
         if (action != VAT_ROUTE_ACTION_NONE && !route31_lift_begin(action)) {
             if (s_seq_state == SQ_TASK) route_seq_end("LIFT_START_ERROR");
             return;
@@ -3127,8 +3653,8 @@ static void route31_task_poll(void)
             motion_brake(); bp_laser_set(0);
             s_route31_hostage_hold = 1u; s_route31_hostage_hold_t0 = HAL_GetTick();
             for (int i = 0; i < 4; ++i) s_route31_hostage_hold_counts[i] = ctrl_enc_total(i);
-            snprintf(hold, sizeof hold, "SEQ phase=HOSTAGE31_RANK_READY rank=%u grip1900_retained=1 extra_wait_ms=0; then_forward_v=%.0f_to_end; g/a/0 stops",
-                     (unsigned)s_route31_hostage_rank, route31_straight_speed());
+            snprintf(hold, sizeof hold, "SEQ phase=HOSTAGE31_RANK_READY rank=%u grip_u=%u_retained extra_wait_ms=0; then_forward_v=%.0f_to_end; g/a/0 stops",
+                     (unsigned)s_route31_hostage_rank, (unsigned)route31_hostage_grip_us(), route31_straight_speed());
             send(hold); return;
         }
         route_seq_next(); return;
@@ -3155,14 +3681,21 @@ static void route_seq_end(const char *status)
     motion_brake();                     /* cancel chain before any later correction */
     s_board_contact.active = 0u;
     s_board_contact.zeroed = 0u;
+    s_route31_cross_heading_valid = s_route31_cross_yaw_done = 0u;
     s_dist_align_enabled = s_dist_align_hold = 0u;
+    s_dist_mid_pause = 0u;
+    s_target31_mid_phase = 0u; yaw_progress_reset(&s_target31_mid_boost);
     if (route31_owner()) {
         s_route31_hostage_hold = 0u;
         s_route31_hostage_opened = 0u;
+        s_seq_hostage_offset = s_route31_hostage_offset_done = 0u;
+        s_route31_task_yaw_stable = 0u;
+        yaw_progress_reset(&s_route31_task_yaw_progress);
         s_seq_pair_turn = s_seq_pair_offset = s_seq_return_offset = 0u;
         s_seq_contact_post = 0u;
         if (s_target35_route) {
             s_target35_phase = TA_OFF; s_target35_route = 0u; s_target35_cmd = 0.0f;
+            s_target31_mid_phase = 0u; yaw_progress_reset(&s_target31_mid_boost);
         }
         vision_align_test_cancel(); /* Close local task RX; camera need not stop. */
         bp_laser_set(0);
@@ -3193,7 +3726,25 @@ static void route_seq_prepare(void)
     static char b[256];
     const RouteTestLeg *leg;
     motion_brake();
-    if (route31_owner() && !s_seq_pair_turn && !s_seq_pair_offset && !s_seq_return_offset) {
+    if (s_seq_mode == ROUTE_TEST_MODE && s_seq_stage == 4u &&
+        !s_seq_contact_post && !s_route31_cross_yaw_done) {
+        uint32_t pm = __get_PRIMASK();
+        float local, absolute, goal;
+        /* Both getters share the ISR-updated continuous heading. A split
+         * snapshot could introduce a whole new frame's delta into the goal. */
+        __disable_irq();
+        local = imu_leg_heading_deg();
+        absolute = imu_heading_deg();
+        __set_PRIMASK(pm);
+        goal = local + s_route31_cross_heading - absolute;
+        if (!s_route31_cross_heading_valid || !imu_ok() || !isfinite(goal)) {
+            route_seq_end("CROSS_HEADING_INVALID"); return;
+        }
+        s_msel = s_seq_mode; s_route_leg = (uint8_t)(s_seq_stage + 1u);
+        route31_task_yaw_begin(goal);
+        return;
+    }
+    if (route31_owner() && !s_seq_pair_turn && !s_seq_pair_offset && !s_seq_return_offset && !s_seq_hostage_offset) {
         if (s_seq_stage == ROUTE31_PREDEPLOY_STAGE && !s_route31_rack_deployed) {
             if (s_route31_lift_phase != R31_LIFT_OFF) { route_seq_end("RACK_OWNER_ERROR"); return; }
             s_msel = s_seq_mode; s_round = R_RUN; s_seq_state = SQ_ARM_PREP;
@@ -3203,7 +3754,7 @@ static void route_seq_prepare(void)
                 s_route43_rack_issued = s_route43_tune.rack_steps;
                 s_route43_rack_pps_issued = s_route43_tune.rack_pps;
                 route43_report("RACK_PREDEPLOY_START");
-            } else send("SEQ phase=RACK31_PREDEPLOY before_LEFT90_AND_BALL_CAMERA; nl3200 f5000 rack_dir=0; body_stopped=1 no_repeat_at_ball=1");
+            } else send("SEQ phase=RACK31_PREDEPLOY before_LEFT90_AND_BALL_CAMERA; nl3400 f5000 rack_dir=0; body_stopped=1 no_repeat_at_ball=1");
             if (!route31_arm_job(R31_RACK_EXTEND, ROUTE31_RACK_AXIS, ROUTE31_RACK_EXTEND_DIR,
                                  route31_rack_return_steps(), route31_rack_return_pps()))
                 route_seq_end("LIFT_START_ERROR");
@@ -3232,9 +3783,9 @@ static void route_seq_prepare(void)
                 case 3: s_route31_hostage_exit_leg.distance_mm = ROUTE31_HOSTAGE_RANK3_MM; break;
                 default: route_seq_end("HOSTAGE_RANK_INVALID"); return;
             }
-            snprintf(exit, sizeof exit, "SEQ phase=HOSTAGE31_TO_END rank=%u d=%u v=%.0f right_ff=%.3f from_hostage_grab_stop=1 grip1900_retained=1",
+            snprintf(exit, sizeof exit, "SEQ phase=HOSTAGE31_TO_END rank=%u d=%u v=%.0f right_ff=%.3f from_hostage_grab_stop=1 grip_u=%u_retained",
                      (unsigned)s_route31_hostage_rank, (unsigned)route_seq_leg()->distance_mm,
-                     route31_straight_speed(), ROUTE31_HOSTAGE_EXIT_RIGHT_FF_RATIO);
+                     route31_straight_speed(), route31_hostage_exit_ff(), (unsigned)route31_hostage_grip_us());
             send(exit);
         }
     }
@@ -3273,8 +3824,18 @@ static void route_seq_next(void)
 {
     static char b[96];
     if (s_seq_state != SQ_RUN && s_seq_state != SQ_TASK) return;
+    if (s_seq_mode == ROUTE_TEST_MODE && s_seq_hostage_offset) {
+        s_seq_hostage_offset = 0u;
+        s_msel = s_seq_mode; s_round = R_RUN; s_seq_state = SQ_TASK;
+        if (!vision_align_test_route_hostage_offset_resume()) {
+            route_seq_end("HOSTAGE_OFFSET_RESUME_ERROR"); return;
+        }
+        send("SEQ phase=HOSTAGE31_PREGRAB_LEFT_DONE yawfix_done=1 NEW_X_or_existing_seen_loss300ms_before_grab=1 no_repeat_offset=1");
+        return; /* Stay on hostage stage; do NOT report the arm complete. */
+    }
     if (route31_owner() && s_seq_stage == 4u) {
-        if (s_seq_contact_post < 2u) {
+        unsigned post_count = s_seq_mode == ROUTE_TEST_MODE ? 0u : 2u;
+        if (s_seq_contact_post < post_count) {
             ++s_seq_contact_post;
             send(s_seq_contact_post == 1u
                  ? "SEQ phase=BOARD_CONTACT_DONE next_BACK10_v40 no_yaw_or_ff=1"
@@ -3282,26 +3843,30 @@ static void route_seq_next(void)
             route43_prepare_or_wait(); return;
         }
         s_seq_contact_post = 0u;
-        send("SEQ phase=BOARD_FORWARD15_DONE next_still_rezero_settle_then_BACK190");
+        send(s_seq_mode == ROUTE_TEST_MODE
+             ? "SEQ phase=BOARD_CONTACT_DONE post_nudges_removed=1 next_still_rezero_settle_then_BACK190"
+             : "SEQ phase=BOARD_FORWARD15_DONE next_still_rezero_settle_then_BACK190");
     }
     if (route31_owner() && s_seq_pair_turn) {
         s_seq_pair_turn = 0u;
-        if (s_seq_mode == ROUTE_TEST_MODE) {
-            /*31 now aligns the bucket directly after the completed180 hold.
-             * Do not turn a zero-distance offset into an unlimited drive;
-             * start a NEW bucket request, discarding all turn-time pixels. */
-            s_seq_pair_offset = 0u;
+        if (s_seq_mode == ROUTE_TEST_MODE && ROUTE31_BALL_TO_BUCKET_LEFT_MM == 0u) {
+            /* The180 executor already reversed overshoot and held the target
+             * for400ms. Cancelled offset must never start a zero-distance leg.
+             * Notify VAT only here, to request new bucket pixels after the turn. */
             s_msel = s_seq_mode; s_round = R_RUN; s_seq_state = SQ_TASK;
             vision_align_test_notify_turn_result(1);
             vision_align_test_status(&s_xy_snapshot);
             if (s_xy_snapshot.state == VAT_STOPPED) { route_seq_end(s_xy_snapshot.reason); return; }
-            send(VAT_Y_ALIGN_ENABLE
-                 ? "SEQ phase=BALL_BUCKET31_TURN_DONE no_offset=1 new_bucket_request=1; fresh_joint_XY_required=1"
-                 : "SEQ phase=BALL_BUCKET31_TURN_DONE no_offset=1 new_bucket_request=1; fresh_X_required=1 Y_OFF");
-            return; /* Bucket alignment still belongs to the same pair stage. */
+            send("SEQ phase=BALL_BUCKET31_TURN_DONE no_offset=1 turn_stability_done=1 new_bucket_request=1 fresh_coordinates_required=1");
+            return; /* Internal180 does not consume the next route stage. */
         }
-        s_seq_pair_offset = 1u; /*43 retains its separately gated legacy offset. */
-        send("SEQ phase=BALL_BUCKET31_TURN_DONE prepare_LEFT40_before_bucket; VAT_paused=1 new_bucket_request_after_offset=1");
+        /* Keep VAT paused through the finite left offset and its yaw-fix/still
+         * gates. Only then start a new bucket request, discarding old pixels.
+         *43 retains its independently gated40mm offset. */
+        s_seq_pair_offset = 1u;
+        send(s_seq_mode == ROUTE_TEST_MODE
+             ? "SEQ phase=BALL_BUCKET31_TURN_DONE prepare_LEFT15_cap80_before_bucket; VAT_paused=1 new_bucket_request_after_offset=1"
+             : "SEQ phase=BALL_BUCKET31_TURN_DONE prepare_LEFT40_before_bucket; VAT_paused=1 new_bucket_request_after_offset=1");
         route43_prepare_or_wait(); return; /* Same pair stage; no VAT notification yet. */
     }
     if (route31_owner() && s_seq_pair_offset) {
@@ -3312,21 +3877,26 @@ static void route_seq_next(void)
         vision_align_test_status(&s_xy_snapshot);
         if (s_xy_snapshot.state == VAT_STOPPED) { route_seq_end(s_xy_snapshot.reason); return; }
         send(VAT_Y_ALIGN_ENABLE
-             ? "SEQ phase=BALL_BUCKET31_LEFT40_DONE new_bucket_request=1; fresh_joint_XY_required=1"
-             : "SEQ phase=BALL_BUCKET31_LEFT40_DONE new_bucket_request=1; fresh_X_required=1 Y_OFF");
+             ? "SEQ phase=BALL_BUCKET31_LEFT15_DONE new_bucket_request=1; fresh_joint_XY_required=1"
+             : "SEQ phase=BALL_BUCKET31_LEFT15_DONE new_bucket_request=1; fresh_X_required=1 Y_OFF");
         return; /* Internal offset must NOT consume the next route stage. */
     }
-    if (s_seq_mode == ROUTE_STEP_MODE && s_seq_stage == ROUTE31_RETURN180_STAGE && !s_seq_return_offset) {
+    if (route31_owner() && s_seq_stage == ROUTE31_RETURN180_STAGE && !s_seq_return_offset &&
+        (s_seq_mode == ROUTE_STEP_MODE || ROUTE31_RETURN_RIGHT_MM > 0u)) {
         s_seq_return_offset = 1u;
-        send("SEQ phase=BUCKET_RETURN180_DONE prepare_LEFT20; turn_stability_done=1 endpoint_yawfix_retained=1");
-        route43_prepare_or_wait(); return; /* Keep stage10 until the left offset also finishes. */
+        send(s_seq_mode == ROUTE_TEST_MODE
+             ? "SEQ phase=BUCKET_RETURN185_DONE prepare_RIGHT_OFFSET_cap80 yawfix_required=1"
+             : "SEQ phase=BUCKET_RETURN180_DONE prepare_LEFT20; turn_stability_done=1 endpoint_yawfix_retained=1");
+        route43_prepare_or_wait(); return; /* Only an enabled offset keeps stage10 here. */
     }
     if (route31_owner() && s_seq_return_offset) {
         s_seq_return_offset = 0u;
-        send("SEQ phase=BUCKET_RETURN_LEFT20_DONE yawfix_done=1 next_selected_target=1");
+        send(s_seq_mode == ROUTE_TEST_MODE
+             ? "SEQ phase=BUCKET_RETURN_RIGHT_OFFSET_DONE yawfix_done=1 next_selected_target=1"
+             : "SEQ phase=BUCKET_RETURN_LEFT20_DONE yawfix_done=1 next_selected_target=1");
     }
     if (s_seq_mode == ROUTE_TEST_MODE && s_seq_stage == ROUTE31_RETURN180_STAGE)
-        send("SEQ phase=BUCKET_RETURN180_DONE no_offset=1 turn_stability_done=1 next_selected_target=1");
+        send("SEQ phase=BUCKET_RETURN185_DONE turn_stability_done=1 lateral_offset_disabled=1 next_selected_target=1");
     snprintf(b, sizeof b, "SEQ run=%lu step=%u/%u phase=DONE test=%lu",
              (unsigned long)s_seq_run, (unsigned)(s_seq_stage + 1u), route_seq_stage_count(),
              (unsigned long)s_active_test);
@@ -3352,6 +3922,10 @@ static void route_seq_poll(void)
     if (!route_seq_active()) return;
     if (!bench_ok() || run_aborted()) { route_seq_end("ABORT"); return; }
     if (!imu_ok()) { route_seq_end("IMUERR"); return; }
+    if (s_seq_state == SQ_TASK_YAW || s_seq_state == SQ_CROSS_YAW) {
+        route31_task_yaw_poll(); return;
+    }
+    if (s_seq_hostage_offset && proto_scene_status() < 0) { route_seq_end("HOSTAGE_LINK_ERROR"); return; }
     if (s_seq_state == SQ_ARM_PREP) {
         route31_lift_poll();
         if (s_seq_state == SQ_ARM_PREP &&
@@ -3403,14 +3977,14 @@ static void route_seq_poll(void)
         if (changed) s_seq_still_t0 = now;
         if ((uint32_t)(now - s_seq_still_t0) < T_DIST_STILL_MS) return;
         if (route31_owner() && s_seq_contact_post) {
-            /* Keep the contact pose through both nudges; only the following
+            /* Keep the contact pose through the selected nudge(s); only the following
              * BACK190 preparation may establish a new leg heading. */
             s_seq_state = SQ_RUN; s_seq_prepared = 1u;
             mode_start(); s_seq_prepared = 0u;
             if (s_seq_state == SQ_RUN && s_round != R_RUN) route_seq_end("START_FAILED");
             return;
         }
-        if (!imu_zero_leg_heading()) { route_seq_end("IMUERR"); return; }
+        if (!s_seq_hostage_offset && !imu_zero_leg_heading()) { route_seq_end("IMUERR"); return; }
         s_seq_state = SQ_WAIT; s_seq_wait_t0 = HAL_GetTick();
         return;
     }
@@ -3479,7 +4053,9 @@ static void route_seq_g(void)
     if (s_seq_run == 0u) s_seq_run = 1u;
     s_seq_stage = 0u;
     s_seq_pair_turn = s_seq_pair_offset = s_seq_return_offset = s_seq_contact_post = 0u; s_seq_task_report_t0 = 0u;
+    s_route31_cross_heading_valid = s_route31_cross_yaw_done = 0u;
     s_route31_hostage_opened = 0u;
+    s_seq_hostage_offset = s_route31_hostage_offset_done = 0u;
     s_route31_rack_deployed = 0u; /* A new run requires manually restored arm origins. */
     s_route31_corner_leg = s_route31_plan[ROUTE31_TARGET_CORNER_STAGE];
     s_route31_hostage_exit_leg = s_route31_plan[ROUTE31_HOSTAGE_EXIT_STAGE];
@@ -4032,6 +4608,7 @@ static void cmd_select(int32_t m, int quiet)
     s_seq_pair_turn = s_seq_pair_offset = s_seq_return_offset = s_seq_contact_post = 0u; s_seq_task_report_t0 = 0u;
     s_route43_pending = R43_PENDING_NONE;
     s_route31_hostage_opened = 0u;
+    s_seq_hostage_offset = s_route31_hostage_offset_done = 0u;
     s_route31_corner_leg = s_route31_plan[ROUTE31_TARGET_CORNER_STAGE];
     s_route_leg = 0u;
     s_steps = 0; s_back = 0; s_leg_ms = 0; s_leg_run = 0;
@@ -4084,8 +4661,8 @@ static void cmd_select(int32_t m, int quiet)
         if (s_seq_mode == ROUTE_TEST_MODE) {
             proto_qr_begin();
             s_v = s_route31_straight_v;
-            send("OK MODE=31 GRAB_TASK_TRIAL 16_stages; LEFT535/R1_yawfix_QR/R2_BACK630; BACK650-v300/contact_zero300ms_tilt1.5-v40/BACK10/FWD15; RIGHT800/BACK760/rack3200-f5000/LEFT90; BALL135/+180/no_offset/BUCKET125_or_seen_loss2s/RETURN180/no_offset_yawfix/TARGET240_band237-243_fire2s/color_d/RIGHT90/HOSTAGE215_GRAB_RETRACT3000_RANK_FORWARD_END Y_OFF; g/a/0 stops");
-            send("31 ARM_START: manually_restore_both_axis_origins; rack STEP_PA9 DIR_PA10 nl_extend/nr_retract f5000; lift STEP_PA11 DIR_PA12 nr_down/nl_up f10000; open1150/ball_hostage_grip1900; interrupted_run_requires_manual_origin_reset");
+            send("OK MODE=31 GRAB_TASK_TRIAL 16_stages; LEFT575/R1_yawfix_QR/R2_BACK610/RIGHT90; BACK620-v300/PRE_CROSS_YAW_restore_max2s_accept/contact_zero300ms_tilt1.0-v40/no_post_contact_nudges; RIGHT780/BACK805/rack3400-f5000/LEFT90; BALL135/+180/LEFT15_yawfix/BUCKET105/RETURN185_stable_direct_TARGET250_band247-253_fire2s/color_d/RIGHT93/HOSTAGE215_GRAB_RETRACT3000_RANK_FORWARD_END Y_OFF; after_QR_straight_mid_yawGT1.5_brake_fix_resume cross_contact_exempt g/a/0 stops");
+            send("31 ARM_START: manually_restore_both_axis_origins; rack STEP_PA9 DIR_PA10 nl_extend/nr_retract f5000; lift STEP_PA11 DIR_PA12 nr_down/nl_up f10000; open1150/ball_hostage_grip2100; interrupted_run_requires_manual_origin_reset");
             cmd_param_report();
         } else if (s_seq_mode == ROUTE_STEP_MODE) {
             motion_brake(); bp_laser_set(0); proto_qr_begin();
@@ -4179,7 +4756,7 @@ static void cmd_route31_lateral_speed(int32_t val)
     if (val < 1 || val > T_V_MAX) { send("ERR ROUTE31_PV_RANGE pv1..pv600"); return; }
     s_route31_lateral_v = (float)val;
     snprintf(speed, sizeof speed,
-             "OK ROUTE31 lateral_v=%.0f RAM-only route_left_right=1; straight_v=%.0f cross300/contact40_tilt1.5/turn/fine20_target30 unchanged",
+             "OK ROUTE31 lateral_v=%.0f RAM-only route_left_right=1 task_area_offsets_disabled; straight_v=%.0f cross300/contact40_tilt1.0/turn/fine20_target30 unchanged",
              s_route31_lateral_v, s_route31_straight_v);
     send(speed); cmd_param_report();
 }
@@ -4194,7 +4771,7 @@ static void cmd_set(char key, int32_t val)
         if (val < 1 || val > T_V_MAX) { send("ERR ROUTE31_V_RANGE v1..v600"); return; }
         s_route31_straight_v = (float)val;
         snprintf(speed, sizeof speed,
-                 "OK ROUTE31 straight_v=%.0f RAM-only ordinary_forward_back_and_initial_search=1; lateral_v=%.0f cross300/contact40_tilt1.5/turn/fine20_target30 unchanged",
+                 "OK ROUTE31 straight_v=%.0f RAM-only ordinary_forward_back_and_initial_search=1; lateral_v=%.0f cross300/contact40_tilt1.0/turn/fine20_target30 unchanged",
                  s_route31_straight_v, s_route31_lateral_v);
         send(speed); cmd_param_report(); return;
     }
@@ -4249,20 +4826,23 @@ static void cmd_help(void)
     send("  38..41: X20,w0,3mm encoder step/cap250ms->brake250ms->NEW_X; +/-10px,5 new frames; X+ forward/X- backward; Y micro disabled via VAT_Y_ALIGN_ENABLE.");
     send("  Select38/40/41 starts freshQR, g arms motion;39 waits for g then requests bucket directly. nextg/a/0 cancels; no arm/laser/auto-return. XY logs each500ms.");
     send("  30 turn LEFT -92 hold within 0.3deg (90 + 2deg trial compensation).");
-    send("  31 GRAB_TASK_TRIAL16: LEFT535/BACK630/RIGHT90/BACK650-v300/FWDv40_tilt1.5/BACK10/FWD15/IMUzero/BACK190/RIGHT800-xkp3/BACK760/rack_predeploy3200/LEFT90.");
-    send("  Then ballX135/down32000/grip1900_wait2/up32000/+180/no_offset/bucketX125_or_seen_loss2s/down20000/release1150_after1s_u1500_wait2_total/up20000/rack_retract3200/+180/no_offset_yawfix/targetX240_band237-243_fire2s/target_to_corner/RIGHT90/hostageX215_or_loss2s/extend_grip1900_rank/forward_to_end_hold_grip.");
-    send("  31 rack axis0 f5000 nl_extend/nr_retract; lift axis1 f10000 nr_down/nl_up. Manually restored origins required; no home_feedback. Temporary ballX135 bucketX125 hostageX215 +/-10, Y_OFF.");
-    send("  31/43 stopped RAM speeds: v1..600 ordinary_forward/back_and_initial_search boot200; pv1..600 route_left/right boot250. Cross300/contact40_tilt1.5/fine unchanged.");
-    send("  31/43 turns +/-90 and +180: coarse angular command2x, error5..10deg smooth blend, last5deg original slow correction; endpoint yawfix unchanged.");
-    send("  31 ball/hostage search_route_v after_ACK until_fresh_selected_x<=350; latch/brake/settle/NEW_X then X20 micro. Route ball54 required before paired180.");
-    send("  31 target search_route_v/right6.5 until_fresh_selected_x<=350, latched_fine30 after; ball/bucket/hostage fine_latch_abs_x_error_LT30 then arrival+/-10; no_return_scan/no_bucket_anchor_wait_d.");
-    send("  31 body-rightFF: target_search6.5%/target_to_corner6.5%/hostage_forward_search3%/final_to_end2%; no newFF on reverse search or bucket; all_right_angles90.");
-    send("  31 hostage aligned OR seen_then_loss2s -> open1150/extend3200/grip1900/retract3000(no_lift); rank1/2/3 -> forward1415/1315/1215 route_v right2% STOP; no_extra2s rank0 waits RX; hold_grip_to_end.");
-    send("  31 bucket: coarse_route_v rank1BACK/rank3FWD/rank2freshCX_only; noNEW01 waits2s before blind rank1/3. Only abs(cx-125)<40 latches fine20. Only post-fine lost2s releases; never coarse lost release.");
-    send("  31/43 xkp0..5: RIGHT800-only yaw gain seed3, stopped RAM adjustment. Other legs retain ykp; no physical drift acceptance from encoders alone.");
-    send("  Cross/board yaw_hold=0; fresh stopped heading before BACK190;31 uses selected task requests, not USER camera activation.");
+    send("  31 GRAB_TASK_TRIAL16: LEFT575/BACK610/RIGHT90/BACK620-v300/restore_pre_cross_yaw/FWDv40_tilt1.0/no_post_contact_nudges/IMUzero/BACK190/RIGHT780-xkp3/BACK805/rack_predeploy3400/LEFT90; after_QR_straight_yawGT1.5_brake_fix_remaining_resume_cross_contact_exempt.");
+    send("  Then ballX135/down32000/grip2100_wait2/up32000/+180/LEFT15_yawfix/bucketX105/down20000/release1150_after1s_u1500_wait2_total/up20000/rack_retract3400/+185_stable_direct_targetX250_band247-253_fire2s/target_to_corner/RIGHT93/hostageX215/extend_grip2100_rank/forward_to_end_hold_grip.");
+    send("  31 rack axis0 f5000 nl_extend/nr_retract; lift axis1 f10000 nr_down/nl_up. Manually restored origins required; no home_feedback. Temporary ballX135 bucketX105 hostageX215 +/-10, Y_OFF; deferred43 bucketX125 unchanged.");
+    send("  31/43 stopped RAM speeds: v1..600 ordinary_forward/back_and_initial_search boot200; pv1..600 route_left/right boot250. Cross300/contact40(31_tilt1.0/43_tilt1.5)/fine unchanged.");
+    send("  31/43 turns +/-90 and +180: coarse angular command2x;31 end_min_w0.30,43 retains0.18; original_target/tolerance/still_hold retained.");
+    send("  31 ball/hostage search_route_v after_ACK until_fresh_abs(cx-goal)<15; latch/brake/settle/NEW_X then continuous_v20. Reverse/arrival brake250_then_NEW_X. Route ball54 required before paired180.");
+    send("  31 target search_route_v/right4.5 until_fresh_selected_x<=360, latched_fine30 after; ball/bucket/hostage fine_latch_abs_x_error_LT15 then arrival+/-10; no_return_scan/no_bucket_anchor_wait_d.");
+    send("  31 body-rightFF: ball_forward_search3%/target_search6.5%/target_to_corner9.5%/hostage_forward_search5%/final_to_end7.5%; lateral_velocity_only/yaw_hold_separate; no newFF on reverse search or bucket; right95/left90.");
+    send("  31 hostage aligned OR seen_then_loss300ms -> open1150/extend3400/grip2100/retract3000(no_lift); rank1/2/3 -> forward1415/1315/1215 route_v right7.5% STOP; no_extra2s rank0 waits RX; hold_grip_to_end.");
+    send("  31 ball/bucket/hostage: first_NEW_legal_selected01_then_loss_GT300ms -> brake/still250_then_next_action; never_seen cannot trigger; no fake_alignment. NEW01_before_take cancels loss_action.");
+    send("  31 bucket: coarse_route_v rank1BACK/rank3FWD/rank2freshCX_only; never_seen waits2s before blind rank1/3. abs(cx-105)<15 latches continuous_v20; final95..115. After_seen loss_GT300ms may release in coarse or fine.");
+    send("  31 endpoint_yawfix: min_w0.30/max_w0.60 boost_after400ms; original_heading_lt0.4/still400 OR2s_accept_with_logged_residual; after_laser_OFF before_corner too. Visual_confirm unchanged.");
+    send("  31 hostage_alignment_then_direct_rack3400/grip2100/retract3000; no_body_offset; visual original_yaw/fresh_frame gates retained.");
+    send("  31/43 xkp0..5: exit_RIGHT-only yaw gain seed3 (31d780,43d800), stopped RAM adjustment. Other legs retain ykp; no physical drift acceptance from encoders alone.");
+    send("  Cross/board translation yaw_hold=0;31 restores captured pre_cross yaw BEFORE stopped contact zero/300ms tilt baseline; fresh stopped heading before BACK190.");
     send("  31 scans QR from boot/R1; R1 must finish and QR must be legal before R2; no timed release; g/a/0 cancels.");
-    send("  31 local acc700/dec350 soft start/stop, r1=535/r2=630; select31 startsQR beforeg; final brake and manual g remain immediate.");
+    send("  31 local acc700/dec350 soft start/stop, r1=575/r2=610; select31 startsQR beforeg; final brake and manual g remain immediate.");
     send("  32 no-arm single-pass mission: QR/vision/two+180/laser; ball/bucket/hostage hold10s; next g/a/0 aborts.");
     send("  33 receive-only: g requests QR then OBJECT; ASCII VD33 snapshots each second; g/a/0 closes local RX, no camera STOP.");
     send("  34 retains old15 without QR: LEFT530/BACK650/RIGHT90/BACK650-v300/FWD80-v20/BACK190/LEFT92/bucket4/0 x500/WAIT_D.");
@@ -4352,7 +4932,7 @@ static int route43_command(const char *buf)
     if (key == 'x') {
         float gain;
         if (!parse_float(arg, &gain) || !isfinite(gain) || gain < 0.0f || gain > 5.0f) {
-            send("ERR R43_XKP_RANGE 0..5 RIGHT800_only"); return 1;
+            send("ERR R43_XKP_RANGE 0..5 exit_RIGHT_only"); return 1;
         }
         s_route43_tune.exit_yaw_kp = gain;
         route43_report("XKP_SET"); return 1;
@@ -4448,10 +5028,12 @@ static void cmd_param_report(void)
     }
     if (s_seq_state != SQ_OFF) {
         if (route31_owner()) {
-            snprintf(b, sizeof b, "ROUTE31_EXIT_YAW xkp=%.3f only_RIGHT800; ordinary_ykp=%.3f independent_RAM; right_ff_target=%.3f corner=%.3f hostage=%.3f final=%.3f",
+            snprintf(b, sizeof b, "ROUTE31_EXIT_YAW xkp=%.3f only_exit_RIGHT; ordinary_ykp=%.3f independent_RAM; right_ff_target=%.3f corner=%.3f hostage=%.3f final=%.3f",
                      s_seq_mode == ROUTE_STEP_MODE ? s_route43_tune.exit_yaw_kp : s_route31_exit_yaw_kp,
-                     s_route_heading_kp, ROUTE31_TARGET_SEARCH_RIGHT_FF_RATIO, ROUTE31_CORNER_RIGHT_FF_RATIO,
-                     ROUTE31_HOSTAGE_SEARCH_RIGHT_FF_RATIO, ROUTE31_HOSTAGE_EXIT_RIGHT_FF_RATIO);
+                     s_route_heading_kp, ROUTE31_TARGET_SEARCH_RIGHT_FF_RATIO,
+                     s_seq_mode == ROUTE_TEST_MODE ? ROUTE31_CORNER_RIGHT_FF_RATIO : ROUTE43_CORNER_RIGHT_FF_RATIO,
+                     s_seq_mode == ROUTE_TEST_MODE ? ROUTE31_HOSTAGE_SEARCH_RIGHT_FF_RATIO : ROUTE43_HOSTAGE_SEARCH_RIGHT_FF_RATIO,
+                     route31_hostage_exit_ff());
             send(b);
         }
         snprintf(b, sizeof b,
@@ -4462,7 +5044,7 @@ static void cmd_param_report(void)
         send(b);
         if (s_seq_mode == ROUTE_TEST_MODE) {
             snprintf(b, sizeof b,
-                     "ROUTE31_SPEED straight_v=%.0f lateral_v=%.0f RAM-only v1..600 forward_back_and_initial_search pv1..600 route_left_right; cross300 contact40_tilt1.5 fine_X20 target30 unchanged",
+                     "ROUTE31_SPEED straight_v=%.0f lateral_v=%.0f RAM-only v1..600 forward_back_and_initial_search pv1..600 route_left_right; task_area_offsets_disabled; cross300 contact40_tilt1.0 fine_X20 target30 unchanged",
                      s_route31_straight_v, s_route31_lateral_v);
             send(b);
         }
@@ -4922,9 +5504,9 @@ static void run_cmd(const char *ln)
         send("ROUTE no-obstacle: r1 left; r2 backward; separate LEFT90; r3 forward STOP before bump.");
         send("Each leg: select r1/r2/r3 FIRST, then set measured d<mm>, then g.");
         send("No automatic next leg; QR/tasks/bump crossing are not run.");
-        send("Mode31 grab trial16: left535/back630/RIGHT90/BACK650-v300/FWDv40_tilt1.5/BACK10/FWD15/IMUzero/BACK190/RIGHT800-xkp3/BACK760/rack3200-f5000/LEFT90; bootv200/pv250 turns_coarse2x_end_original.");
-        send("Then ballX135_fineErrorLT30/down32000-grip1900-wait2-up32000/rank54/+180/no_offset/bucketX125_fineErrorLT30_or_fine_loss2s/down20000-release1150-after1s-u1500-wait2-total-up20000-rackBack3200/return180/no_offset_yawfix,targetX240_band237-243_fine30_fire2s,color520/420/320_right6.5%,RIGHT90,hostageX215_fineErrorLT30_or_loss2s_grip1900_retract3000_rank_forward1415/1315/1215_right2%_STOP; Y_OFF.");
-        send("Mode31/43 stopped: v1..600 sets ordinary_forward/back_and_initial_search boot200; pv1..600 sets route_left/right boot250. RAM-only. Cross300/contact40_tilt1.5/fine unchanged; coarse turns2x/end original.");
+        send("Mode31 grab trial16: left575/back610/RIGHT90/BACK620-v300/restore_pre_cross_yaw_max2s_accept/FWDv40_tilt1.0/no_post_contact_nudges/IMUzero/BACK190/RIGHT780-xkp3/BACK805/rack3400-f5000/LEFT90; after_QR_mid_straight_yawGT1.5_brake_fix_resume_cross_contact_exempt; bootv200/pv250 turns_coarse2x_end_original.");
+        send("Then ballX135/down32000-grip2100-wait2-up32000/rank54/+180/LEFT15_yawfix/bucketX105/down20000-release1150-after1s-u1500-wait2-total/up20000-rackBack3400/return185_stable_direct_targetX250_band247-253_fine30_fire2s,color525/445/365_right9.5%,RIGHT93,hostageX215_grip2100_retract3000_rank_forward1415/1315/1215_right7.5%_STOP; fineErrorLT15_arrival10_or_seen_lossGT300ms Y_OFF.");
+        send("Mode31/43 stopped: v1..600 sets ordinary_forward/back_and_initial_search boot200; pv1..600 sets route_left/right boot250. RAM-only. Cross300/contact40(31_tilt1.0/43_tilt1.5)/fine unchanged; coarse turns2x/end original.");
         send("Mode31 gates R2 with legal QR; turns90; no OLD bucket_anchor/NEW_d/return_scan; target_tail_distances_UNMEASURED; g/a/0 cancels.");
         send("Mode34 old15 remainsleft530/FWD80/LEFT92/bucket500/WAIT_D with its original tail; currentleg reported bySEQ PREP.");
         send("Mode36 noQR/noBucket: LEFT530/BACK650/RIGHT90/BACK650-v300/FWD80-v20/BACK190/RIGHT730/BACK780/LEFT92/FWD200 STOP.");

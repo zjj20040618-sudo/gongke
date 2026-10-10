@@ -158,10 +158,12 @@ static int check_route_search_first_brake_new_x_and_no_y(void)
         tick(20u); CHECK(st.state==VAT_BRAKE&&stopped()&&!st.good);
         tick(240u); CHECK(st.state==VAT_BRAKE&&stopped());
         tick(20u); CHECK(st.state==VAT_RECHECK&&stopped()&&!st.good&&!st.latest);
-        tick(1000u); CHECK(st.state==VAT_RECHECK&&stopped());
+        tick(20u); CHECK(st.state==VAT_RECHECK&&stopped());
         xonly_frame(models[kind],x_goals[kind]+11,150,180u);
-        CHECK(st.state==VAT_STEP_MOVE&&vx==20.0f&&vy==0.0f&&st.axis==1u);
-        CHECK(end_step_by_odometry()); CHECK(stop_recheck());
+        CHECK(st.state==VAT_FINE_CONTINUOUS&&vx==20.0f&&vy==0.0f&&st.axis==1u);
+        xonly_frame(models[kind],x_goals[kind],20,180u);
+        CHECK(st.state==VAT_BRAKE&&stopped()&&!st.good);
+        CHECK(stop_recheck());
         for(unsigned i=0u;i<VAT_GOOD_FRAMES;i++){
             xonly_frame(models[kind],x_goals[kind],20,180u);
             CHECK(stopped()&&vy==0.0f&&!st.yaw_dirty&&st.step==1u);
@@ -185,26 +187,77 @@ static int check_route_search_first_brake_new_x_and_no_y(void)
         }
         vision_align_test_cancel(); CHECK(stopped());
     }
-    /* SEARCH-induced late heading restoration is independent of Y enable. */
+    /* Shared helper branches explicitly between default/no stopped-yaw and
+     * the historical opt-in, while always retaining the moving-heading test. */
     CHECK(check_route_search_gain_and_late_yaw_recheck());
     CHECK(check_route_action_failure_and_cancel());
-    puts("defaultX route:matchingACK acc700 search0/14/28/clamp100,stickyfirstframe brake250/newX,X20microsteps/noY;explicit HOSTAGE takeonce/result thenDONE or rankWAIT/real54;privategain/postsearchyaw/freshX beforelift retained passed");
+    puts("defaultX route:matchingACK acc700 search0/14/28/clamp100,stickyfirstframe brake250/newX,continuousX20/noY;arrival brake250 and fiveNEW;explicit HOSTAGE takeonce/result thenDONE or rankWAIT/real54;privategain/movingyaw/freshX beforelift retained passed");
     return 1;
 }
 
-static int check_route_relative30_search_direction_and_sticky_fine(void)
+static int check_route31_stopped_yaw_disabled_new_images_retained(void)
+{
+    if (VAT_ROUTE31_BALL_HOSTAGE_STOP_YAW_ENABLE) {
+        puts("historical stopped-yaw candidate explicitly enabled; default-disabled assertions not claimed");
+        return 1;
+    }
+    const unsigned modes[]={41u,40u}; const int models[]={4,0};
+    const int goals[]={135,215};
+    for (unsigned kind=0u;kind<2u;kind++) {
+        CHECK(reset_route_scoped(modes[kind],31u));
+        CHECK(vision_align_test_route_search_kp_set(3.0f));
+        CHECK(ready());tick(20u);CHECK(route_ramp100(0.0f));
+        yaw=37.5f;leg_yaw=5.0f;tick(20u);
+        CHECK(vx==100.0f && heading_hold_kp==3.0f &&
+              fabsf(w+0.5f*3.0f*0.0174533f)<0.00001f);
+        xonly_frame(models[kind],goals[kind],20,180u);
+        CHECK(st.state==VAT_BRAKE&&stopped()&&!st.good&&st.yaw_ever);
+        tick(240u);CHECK(st.state==VAT_BRAKE&&stopped()&&!st.good);
+        /* Encoder coasting restarts the same250ms stopped-wheel barrier. */
+        counts[0]++;tick(20u);CHECK(st.state==VAT_BRAKE&&stopped());
+        xonly_frame(models[kind],goals[kind],20,180u);
+        CHECK(st.state==VAT_BRAKE&&stopped()&&!st.good);
+        tick(220u);CHECK(st.state==VAT_BRAKE&&stopped());
+        tick(20u);CHECK(st.state==VAT_RECHECK&&stopped()&&!st.good&&!st.latest&&!st.yaw_dirty);
+        CHECK(fabsf(st.yaw_error+0.5f)<0.00001f);
+        uint16_t cached=(uint16_t)(seq-1u);
+        for (unsigned duplicate=0u;duplicate<2u;duplicate++) {
+            object(request(),models[kind],goals[kind],20,640u,180u,cached);tick(20u);
+            CHECK(st.state==VAT_RECHECK&&stopped()&&!st.good&&!st.yaw_dirty);
+        }
+        for (unsigned fresh=1u;fresh<=VAT_GOOD_FRAMES;fresh++) {
+            xonly_frame(models[kind],goals[kind],20,180u);
+            CHECK(stopped()&&!st.yaw_dirty&&fabsf(st.yaw_error+0.5f)<0.00001f);
+            if (fresh<VAT_GOOD_FRAMES) CHECK(st.state==VAT_ALIGN&&st.good==fresh);
+        }
+        CHECK(st.state==(kind?VAT_WAIT_HOSTAGE_ACTION:VAT_WAIT_BALL_ACTION));
+        if (kind) CHECK(st.alignment_confirmed&&!st.hostage_fallback);
+        else CHECK(!st.ball_fallback);
+        vision_align_test_cancel();CHECK(stopped());
+    }
+    /* Deferred43 still turns back to its original heading before NEW images. */
+    CHECK(reset_route_scoped(40u,43u));CHECK(ready());tick(20u);CHECK(route_ramp100(0.0f));
+    yaw=37.5f;xonly_frame(0,215,20,180u);CHECK(st.state==VAT_BRAKE&&stopped());
+    tick(260u);CHECK(st.state==VAT_YAW_FIX&&st.yaw_dirty&&stopped());
+    tick(20u);CHECK(vx==0.0f&&vy==0.0f&&w<0.0f);CHECK(yaw_settle());
+    vision_align_test_cancel();CHECK(stopped());
+    puts("default31 ball/hostage:moving yaw unchanged,residual0.5 accepted only after stopped250/coast restart/5NEW;cached coordinates cannot count;no stopped pureyaw;43 originalheading fix retained passed");
+    return 1;
+}
+
+static int check_route31_relative15_search_direction_and_sticky_fine(void)
 {
     const unsigned modes[]={41u,40u}; const int models[]={4,0};
     const int goals[]={135,215};
-    CHECK(VAT_ROUTE_FINE_ERROR_PX==30&&VAT_ROUTE_BUCKET_FINE_ERROR_PX==30);
-    CHECK(VAT_ROUTE_BALL_X_PX==135&&VAT_ROUTE_BUCKET_X_PX==125&&VAT_ROUTE_HOSTAGE_X_PX==215);
+    CHECK(VAT_ROUTE_FINE_ERROR_PX==15&&VAT_ROUTE_BUCKET_FINE_ERROR_PX==15);
+    CHECK(VAT_ROUTE_BALL_X_PX==135&&VAT_ROUTE_BUCKET_X_PX==105&&VAT_ROUTE43_BUCKET_X_PX==125&&VAT_ROUTE_HOSTAGE_X_PX==215);
     for(unsigned kind=0u;kind<2u;kind++)for(unsigned side=0u;side<2u;side++){
         int direction=side?1:-1;
         CHECK(reset_route(modes[kind]));CHECK(vision_align_test_route_search_ff_set(0.03f));
         CHECK(ready());
-        /* Exact +/-30 is still coarse; the observed error controls direction.
+        /* Exact +/-15 is still coarse; the observed error controls direction.
          * Restarted coarse ramps begin at0, not the prior full-speed command. */
-        xonly_frame(models[kind],goals[kind]+direction*30,20,180u);
+        xonly_frame(models[kind],goals[kind]+direction*15,20,180u);
         CHECK(st.state==VAT_ROUTE_SEARCH&&vx==0.0f&&vy==0.0f&&!st.good);
         tick(20u);CHECK(fabsf(vx-direction*14.0f)<0.0001f);
         CHECK(fabsf(vy-(direction>0?14.0f*0.03f:0.0f))<0.00001f);
@@ -213,25 +266,27 @@ static int check_route_relative30_search_direction_and_sticky_fine(void)
         tick(200u);CHECK(vx==direction*100.0f&&st.state==VAT_ROUTE_SEARCH);
         CHECK(fabsf(vy-(direction>0?3.0f:0.0f))<0.00001f);
         uint16_t accepted=(uint16_t)(seq-1u);
-        object(request(),models[kind],goals[kind]-direction*30,20,640u,180u,accepted);
+        object(request(),models[kind],goals[kind]-direction*15,20,640u,180u,accepted);
         tick(20u);CHECK(st.state==VAT_ROUTE_SEARCH&&vx==direction*100.0f);
-        object(request(),models[kind],goals[kind]-direction*30,20,640u,180u,(uint16_t)(accepted-1u));
+        object(request(),models[kind],goals[kind]-direction*15,20,640u,180u,(uint16_t)(accepted-1u));
         tick(20u);CHECK(st.state==VAT_ROUTE_SEARCH&&vx==direction*100.0f);
         /* A fresh far frame on the other side resets the acceleration clock. */
         direction=-direction;
-        xonly_frame(models[kind],goals[kind]+direction*30,150,180u);
+        xonly_frame(models[kind],goals[kind]+direction*15,150,180u);
         CHECK(st.state==VAT_ROUTE_SEARCH&&vx==0.0f&&vy==0.0f);
         tick(20u);CHECK(fabsf(vx-direction*14.0f)<0.0001f);
         CHECK(fabsf(vy-(direction>0?14.0f*0.03f:0.0f))<0.00001f);
-        /* +/-29 latches fine even if an empty packet follows before polling. */
-        object(request(),models[kind],goals[kind]+direction*29,20,640u,180u,seq++);
+        /* +/-14 latches fine even if an empty packet follows before polling. */
+        object(request(),models[kind],goals[kind]+direction*14,20,640u,180u,seq++);
         object(request(),-1,0,0,640u,180u,seq++);tick(20u);
         CHECK(st.state==VAT_BRAKE&&stopped()&&!st.good);
         CHECK(stop_recheck());
         xonly_frame(models[kind],goals[kind]+direction*40,150,180u);
-        CHECK(st.state==VAT_STEP_MOVE&&vx==direction*20.0f&&vy==0.0f&&st.axis==1u);
-        CHECK(end_step_by_odometry());CHECK(stop_recheck());
-        /* Arrival stays +/-10 inclusive, not the new30px coarse/fine gate. */
+        CHECK(st.state==VAT_FINE_CONTINUOUS&&vx==direction*20.0f&&vy==0.0f&&st.axis==1u);
+        xonly_frame(models[kind],goals[kind],20,180u);
+        CHECK(st.state==VAT_BRAKE&&stopped()&&!st.good);
+        CHECK(stop_recheck());
+        /* Arrival stays +/-10 inclusive, not the new15px coarse/fine gate. */
         for(unsigned i=0u;i<VAT_GOOD_FRAMES;i++){
             xonly_frame(models[kind],goals[kind]+(i&1u?10:-10),20,180u);
             CHECK(stopped()&&vy==0.0f);
@@ -242,11 +297,13 @@ static int check_route_relative30_search_direction_and_sticky_fine(void)
     }
     /* No selected image retains forward search; reverse motion has no FF. */
     CHECK(reset_route(41u));CHECK(vision_align_test_route_search_ff_set(0.03f));CHECK(ready());
-    xonly_frame(4,105,20,180u);tick(20u);CHECK(vx<0.0f&&vy==0.0f);
+    xonly_frame(4,115,20,180u);tick(20u);CHECK(vx<0.0f&&vy==0.0f);
     xonly_frame(-1,0,0,180u);CHECK(st.state==VAT_ROUTE_SEARCH&&vx==0.0f&&vy==0.0f);
+    tick(20u);CHECK(st.state==VAT_ROUTE_SEARCH&&vx==0.0f&&vy==0.0f);
+    xonly_frame(4,155,20,180u);CHECK(st.state==VAT_ROUTE_SEARCH&&vx==0.0f&&vy==0.0f);
     tick(20u);CHECK(fabsf(vx-14.0f)<0.0001f&&fabsf(vy-0.42f)<0.00001f);
     vision_align_test_cancel();CHECK(stopped());
-    puts("defaultX route: relative +/-30 remains signedcoarse, +/-29 latchesstickyfine20, arrival +/-10/5fresh; reverseacc700 restarts0/14/28, forwardFFonly, missingimageforward passed");
+    puts("defaultX route31: relative +/-15 remains signedcoarse, +/-14 latchesstickyfine20, arrival +/-10/5fresh; reverseacc700 restarts0/14/28, forwardFFonly, missingimageforward passed");
     return 1;
 }
 
@@ -257,8 +314,10 @@ int main(void)
        ||!check_ack_fresh_invalid_cy_and_cancel()
        ||!check_standalone41_hold_and_turn_no_y()
        ||!check_route_search_first_brake_new_x_and_no_y()
-       ||!check_route_relative30_search_direction_and_sticky_fine()
+       ||!check_route31_stopped_yaw_disabled_new_images_retained()
+       ||!check_route31_relative15_search_direction_and_sticky_fine()
        ||!check_route_search_threshold_right_ff_and_isolation()
+       ||!check_route31_gate15_scoped43_gate30_isolation()
        ||!check_route_task_x_goals_and_standalone_isolation()
        ||!check_route_bucket_wait_search_sticky_and_loss()||!check_route_bucket_faults_and_cancel()
        ||!check_route_rank_wait_capture_and_independent())return 1;

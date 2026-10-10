@@ -24,13 +24,21 @@ static void board_finish_guard(void)
         board_sample(host_pitch, host_roll, ROUTE31_BOARD_CONTACT_START_GUARD_MS - elapsed);
 }
 
+static int board_prepare_contact(unsigned owner)
+{
+    if (owner == 31u) CHECK(fixture_prepare_route31_board() == 0);
+    else { s_seq_stage = 4u; route_seq_prepare(); }
+    CHECK(s_seq_state == SQ_STILL && !s_board_contact.active && !s_board_contact.zeroed);
+    return 0;
+}
+
 static int board_start(unsigned owner, float pitch, float roll)
 {
     char command[8];
     reset_fixture();
     host_pitch = pitch; host_roll = roll;
     snprintf(command, sizeof command, "%u", owner); run_cmd(command); run_cmd("g");
-    s_seq_stage = 4u; route_seq_prepare();
+    CHECK(board_prepare_contact(owner) == 0);
     CHECK(s_seq_state == SQ_STILL && s_d == -1.0f && !s_board_contact.active);
     CHECK(sequence_start_stage() == 0);
     CHECK(route31_contact_active() && s_board_contact.active && s_board_contact.zeroed && s_msel == 15 &&
@@ -45,6 +53,7 @@ static int board_start(unsigned owner, float pitch, float roll)
 
 static int board_nudge_start(unsigned owner, unsigned post, unsigned zeros)
 {
+    CHECK(owner == 43u); /* Current31 has no post-contact distance nudges. */
     CHECK(s_seq_stage == 4u && s_seq_contact_post == post && !s_board_contact.active &&
           board_stopped() && (unsigned)zero_calls == zeros);
     if (owner == 43u) {
@@ -108,15 +117,25 @@ static int board_success_finish(unsigned owner)
     host_tick += 249u; test_poll();
     CHECK(s_seq_stage == 4u && s_round == R_BRAKE && (unsigned)zero_calls == zeros);
     host_tick += 1u; test_poll();
-    CHECK(s_seq_stage == 4u && s_seq_contact_post == 1u && !s_board_contact.active && board_stopped() &&
+    CHECK(!s_board_contact.active && board_stopped() &&
           (unsigned)zero_calls == zeros && strstr(host_messages, "result=TILT_REACHED"));
-    CHECK(strstr(host_messages, "SEQ phase=BOARD_CONTACT_DONE next_BACK10_v40 no_yaw_or_ff=1"));
-    CHECK(board_nudge_start(owner, 1u, zeros) == 0 && board_nudge_finish(zeros) == 0);
-    CHECK(s_seq_stage == 4u && s_seq_contact_post == 2u);
-    CHECK(strstr(host_messages, "SEQ phase=BOARD_BACK10_DONE next_FORWARD15_v40 no_yaw_or_ff=1"));
-    CHECK(board_nudge_start(owner, 2u, zeros) == 0 && board_nudge_finish(zeros) == 0);
+    if (owner == 43u) {
+        CHECK(s_seq_stage == 4u && s_seq_contact_post == 1u);
+        CHECK(strstr(host_messages, "SEQ phase=BOARD_CONTACT_DONE next_BACK10_v40 no_yaw_or_ff=1"));
+        CHECK(board_nudge_start(owner, 1u, zeros) == 0 && board_nudge_finish(zeros) == 0);
+        CHECK(s_seq_stage == 4u && s_seq_contact_post == 2u);
+        CHECK(strstr(host_messages, "SEQ phase=BOARD_BACK10_DONE next_FORWARD15_v40 no_yaw_or_ff=1"));
+        CHECK(board_nudge_start(owner, 2u, zeros) == 0 && board_nudge_finish(zeros) == 0);
+        CHECK(strstr(host_messages, "SEQ phase=BOARD_FORWARD15_DONE next_still_rezero_settle_then_BACK190"));
+    } else {
+        CHECK(s_seq_stage == 5u && s_seq_state == SQ_STILL && !s_seq_contact_post);
+        CHECK(strstr(host_messages, "SEQ phase=BOARD_CONTACT_DONE post_nudges_removed=1 next_still_rezero_settle_then_BACK190"));
+        CHECK(!strstr(host_messages, "next_BACK10_v40") &&
+              !strstr(host_messages, "CONTACT_NUDGE_BACK10") &&
+              !strstr(host_messages, "next_FORWARD15_v40") &&
+              !strstr(host_messages, "CONTACT_NUDGE_FORWARD15"));
+    }
     CHECK(s_seq_stage == 5u && !s_seq_contact_post);
-    CHECK(strstr(host_messages, "SEQ phase=BOARD_FORWARD15_DONE next_still_rezero_settle_then_BACK190"));
     if (owner == 43u) {
         CHECK(s_seq_state == SQ_STEP_WAIT && s_route43_pending == R43_PENDING_PREP);
         host_tick += 1000u; test_poll();
@@ -141,7 +160,8 @@ static int check_stopped_rezero_and_rolling_restart(void)
     for (unsigned owner = 31u; owner <= 43u; owner += 12u) {
         char command[8];
         reset_fixture(); snprintf(command, sizeof command, "%u", owner); run_cmd(command); run_cmd("g");
-        host_pitch = 1.0f; host_roll = 2.0f; s_seq_stage = 4u; route_seq_prepare();
+        host_pitch = 1.0f; host_roll = 2.0f;
+        CHECK(board_prepare_contact(owner) == 0);
         host_tick += T_DIST_STILL_MS - 1u; test_poll();
         CHECK(s_seq_state == SQ_STILL && board_stopped() && !s_board_contact.zeroed);
         host_tick++; test_poll();
@@ -174,7 +194,7 @@ static int check_startup_log_and_guard(void)
 {
     CHECK(board_start(31u, 1.71f, 1.72f) == 0);
     /* User log: +0.56degrees at100ms and1.7mm previously caused immediate
-     * success. It is below1.5 and inside the startup guard now. */
+     * success. It is below1.0 and inside the startup guard now. */
     host_fore = s_dist_odo0 + 1.7f;
     board_sample(2.27f, 1.73f, 80u); board_sample(2.27f, 1.73f, 20u);
     CHECK(s_round == R_RUN && !s_board_contact.hits && last_x == 40.0f);
@@ -197,12 +217,15 @@ static int check_startup_log_and_guard(void)
 
 static int check_threshold_and_axes(void)
 {
+    CHECK(ROUTE31_BOARD_CONTACT_TILT_DEG == 1.0f && ROUTE43_BOARD_CONTACT_TILT_DEG == 1.5f);
     for (unsigned owner = 31u; owner <= 43u; owner += 12u) {
         for (unsigned axis = 0u; axis < 2u; ++axis) {
             for (int sign = -1; sign <= 1; sign += 2) {
                 CHECK(board_start(owner, 0.0f, 0.0f) == 0); board_finish_guard();
-                float near = (float)sign * (ROUTE31_BOARD_CONTACT_TILT_DEG - 0.01f);
-                float at = (float)sign * ROUTE31_BOARD_CONTACT_TILT_DEG;
+                const float threshold = owner == 31u ? 1.0f : 1.5f;
+                CHECK(route_contact_tilt_deg() == threshold);
+                float near = (float)sign * (threshold - 0.01f);
+                float at = (float)sign * threshold;
                 board_sample(axis ? 0.0f : near, axis ? near : 0.0f, 20u);
                 board_sample(axis ? 0.0f : near, axis ? near : 0.0f, 20u);
                 CHECK(s_round == R_RUN && s_board_contact.hits == 0u && last_x == 40.0f);
@@ -217,7 +240,7 @@ static int check_threshold_and_axes(void)
             }
         }
     }
-    puts("board tilt:31/43 +/-pitch/roll1.49reject/1.50 accept ->BACK10/FWD15 fixed40 no yaw/FF/zero/750wait;rolling resets250;43 freshg each;BACK190 only then zero+750 passed");
+    puts("board tilt:+/-pitch/roll31 .99reject/1.00accept directBACK190;43 1.49reject/1.50accept BACK10+FWD15 fixed40 no yaw/FF;rolling resets250;43 freshg each;BACK190 only then zero+750 passed");
     return 0;
 }
 
@@ -318,13 +341,13 @@ static int check_invalid_and_manual_cancel(void)
                 CHECK(s_seq_state == SQ_STOPPED && board_stopped() && (unsigned)zero_calls == zeros);
             }
             char command[8]; reset_fixture(); snprintf(command, sizeof command, "%u", owner);
-            run_cmd(command); run_cmd("g"); s_seq_stage = 4u; route_seq_prepare();
+            run_cmd(command); run_cmd("g"); CHECK(board_prepare_contact(owner) == 0);
             host_tick += T_DIST_STILL_MS; test_poll(); CHECK(s_seq_state == SQ_WAIT);
             run_cmd(keys[key]); host_tick += ROUTE31_BOARD_CONTACT_ZERO_WAIT_MS; test_poll();
             CHECK(s_seq_state == SQ_STOPPED && s_seq_stage == 4u && board_stopped() && !s_board_contact.active);
         }
     }
-    reset_fixture(); run_cmd("31"); run_cmd("g"); s_seq_stage = 4u; route_seq_prepare();
+    reset_fixture(); run_cmd("31"); run_cmd("g"); CHECK(board_prepare_contact(31u) == 0);
     host_tick += T_DIST_STILL_MS; test_poll(); host_imu_age = 200u;
     host_tick += ROUTE31_BOARD_CONTACT_ZERO_WAIT_MS; test_poll();
     CHECK(s_seq_state == SQ_STOPPED && board_stopped() && !s_board_contact.active);
@@ -332,59 +355,67 @@ static int check_invalid_and_manual_cancel(void)
     return 0;
 }
 
-static int board31_at_nudge(unsigned post)
+static int board31_after_contact(unsigned phase)
 {
+    CHECK(phase < 4u);
     CHECK(board_start(31u, 0.0f, 0.0f) == 0); board_finish_guard();
     board_sample(2.0f, 0.0f, 20u);
     board_sample(2.0f, 0.0f, ROUTE31_BOARD_CONTACT_CONFIRM_MS);
     CHECK(s_round == R_BRAKE);
     unsigned zeros = (unsigned)zero_calls;
     host_tick += T_DIST_STILL_MS; test_poll();
-    CHECK(s_seq_stage == 4u && s_seq_contact_post == 1u && s_seq_state == SQ_STILL &&
-          board_stopped() && (unsigned)zero_calls == zeros);
-    if (post == 2u) {
-        CHECK(board_nudge_start(31u, 1u, zeros) == 0 && board_nudge_finish(zeros) == 0);
-        CHECK(s_seq_stage == 4u && s_seq_contact_post == 2u && s_seq_state == SQ_STILL);
+    CHECK(s_seq_stage == 5u && !s_seq_contact_post && s_seq_state == SQ_STILL &&
+          !s_board_contact.active && board_stopped() && (unsigned)zero_calls == zeros &&
+          !strstr(host_messages, "CONTACT_NUDGE_BACK10") &&
+          !strstr(host_messages, "CONTACT_NUDGE_FORWARD15"));
+    if (phase > 0u) {
+        host_tick += T_DIST_STILL_MS; test_poll();
+        CHECK(s_seq_state == SQ_WAIT && board_stopped() &&
+              (unsigned)zero_calls == zeros + 1u && host_yaw == 0.0f);
+    }
+    if (phase > 1u) {
+        host_tick += NAV_SETTLE_MS; test_poll();
+        CHECK(s_seq_state == SQ_RUN && s_round == R_RUN && s_msel == 16 &&
+              s_dist_target == -190.0f && last_x == -200.0f &&
+              (unsigned)zero_calls == zeros + 1u);
+    }
+    if (phase > 2u) {
+        host_fore = s_dist_odo0 + s_dist_target; test_poll();
+        CHECK(s_seq_state == SQ_RUN && s_round == R_BRAKE && board_stopped());
     }
     return 0;
 }
 
-static int check_route31_nudge_cancellations(void)
+static int check_route31_contact_handoff_cancellations(void)
 {
     const char *const keys[] = {"g", "a", "0"};
-    for (unsigned post = 1u; post <= 2u; ++post) {
-        for (unsigned phase = 0u; phase < 3u; ++phase) {
+    for (unsigned phase = 0u; phase < 4u; ++phase) {
             for (unsigned key = 0u; key < 3u; ++key) {
-                CHECK(board31_at_nudge(post) == 0);
+                CHECK(board31_after_contact(phase) == 0);
                 unsigned zeros = (unsigned)zero_calls;
-                if (phase > 0u) CHECK(board_nudge_start(31u, post, zeros) == 0);
-                if (phase > 1u) {
-                    host_fore = s_dist_odo0 + s_dist_target; test_poll();
-                    CHECK(s_seq_state == SQ_RUN && s_round == R_BRAKE && board_stopped());
-                }
                 run_cmd(keys[key]);
-                CHECK(s_seq_state == SQ_STOPPED && s_seq_stage == 4u && !s_seq_contact_post &&
+                CHECK(s_seq_state == SQ_STOPPED && s_seq_stage == 5u && !s_seq_contact_post &&
                       !s_board_contact.active && board_stopped() && (unsigned)zero_calls == zeros);
                 board_sample(2.0f, 0.0f, 1000u); run_cmd("g");
-                CHECK(s_seq_state == SQ_STOPPED && s_seq_stage == 4u && !s_seq_contact_post &&
+                CHECK(s_seq_state == SQ_STOPPED && s_seq_stage == 5u && !s_seq_contact_post &&
                       board_stopped() && (unsigned)zero_calls == zeros);
             }
-        }
+    }
+    for (unsigned phase = 0u; phase < 3u; ++phase) {
         for (unsigned fault = 0u; fault < 2u; ++fault) {
-            CHECK(board31_at_nudge(post) == 0);
+            CHECK(board31_after_contact(phase) == 0);
             unsigned zeros = (unsigned)zero_calls;
-            CHECK(board_nudge_start(31u, post, zeros) == 0);
             if (fault == 0u) host_imu_valid = 0;
             else host_abort = 1;
             host_tick += 20u; test_poll();
-            CHECK(s_seq_state == SQ_STOPPED && s_seq_stage == 4u && !s_seq_contact_post &&
+            CHECK(s_seq_state == SQ_STOPPED && s_seq_stage == 5u && !s_seq_contact_post &&
                   !s_board_contact.active && board_stopped() && (unsigned)zero_calls == zeros);
             host_imu_valid = 1; host_abort = 0;
             host_tick += 1000u; test_poll(); run_cmd("g");
             CHECK(s_seq_state == SQ_STOPPED && board_stopped() && (unsigned)zero_calls == zeros);
         }
     }
-    puts("31 board nudges:BACK10/FWD15 g/a/0 in preparation/run/braking abort without zero/advance/resume;IMU/abort running stops both passed");
+    puts("31 board directBACK190:no BACK10/FWD15 dispatch;g/a/0 during STILL/WAIT/RUN/BRAKE stop without extra zero/advance/resume;IMU/abort wins during handoff passed");
     return 0;
 }
 
@@ -412,13 +443,174 @@ static int check_legacy_and_noncontact_isolation(void)
     return 0;
 }
 
+static int board_cross_yaw_start(float original, float local_end, float absolute_end)
+{
+    reset_fixture(); run_cmd("31"); run_cmd("g");
+    host_absolute_yaw = original; host_yaw = 9.0f;
+    s_seq_stage = 3u; route_seq_prepare();
+    CHECK(sequence_start_stage() == 0 && s_seq_state == SQ_RUN && s_msel == 16 &&
+          s_dist_target == -620.0f && s_dist_heading_kp == 0.0f && s_dist_ff_ratio == 0.0f);
+    CHECK(s_route31_cross_heading_valid && !s_route31_cross_yaw_done &&
+          s_route31_cross_heading == original && host_yaw == 0.0f);
+    unsigned zeros = (unsigned)zero_calls;
+    host_yaw = local_end; host_absolute_yaw = absolute_end;
+    host_fore = s_dist_odo0 - 620.0f; test_poll();
+    CHECK(s_seq_state == SQ_RUN && s_round == R_BRAKE && board_stopped() &&
+          (unsigned)zero_calls == zeros && s_route31_cross_heading == original);
+    host_tick += 249u; test_poll();
+    CHECK(s_seq_state == SQ_RUN && s_round == R_BRAKE && (unsigned)zero_calls == zeros);
+    host_tick++; test_poll();
+    CHECK(s_seq_state == SQ_CROSS_YAW && s_seq_stage == 4u && s_msel == 31 &&
+          !s_route31_cross_yaw_done && s_route31_cross_heading_valid &&
+          !s_board_contact.active && !s_board_contact.zeroed && board_stopped() &&
+          host_yaw == local_end && (unsigned)zero_calls == zeros);
+    CHECK(strstr(host_messages, "CROSS31_PRE_CONTACT_YAW_START pre_cross_heading_preserved=1 zeroed=0"));
+    return 0;
+}
+
+static int check_cross_original_yaw_before_board(void)
+{
+    static const float originals[] = {37.0f, -37.0f, 179.0f, -179.0f};
+    static const float ends[] = {3.0f, -3.0f, 2.0f, -2.0f};
+    static const float absolute_ends[] = {40.0f, -40.0f, -179.0f, 179.0f};
+    static const float local_goals[] = {0.0f, 0.0f, 360.0f, -360.0f};
+    for (unsigned n = 0u; n < sizeof ends / sizeof ends[0]; ++n) {
+        CHECK(board_cross_yaw_start(originals[n], ends[n], absolute_ends[n]) == 0);
+        unsigned zeros = (unsigned)zero_calls;
+        CHECK(s_route31_task_yaw_goal == local_goals[n]);
+        board_sample(5.0f, -6.0f, 0u);
+        CHECK(s_seq_state == SQ_CROSS_YAW && last_x == 0.0f && last_y == 0.0f &&
+              (ends[n] > 0.0f ? last_w < 0.0f : last_w > 0.0f) &&
+              !s_board_contact.zeroed && (unsigned)zero_calls == zeros);
+        if (n < 2u) {
+            host_yaw = local_goals[n] + 0.4f; board_sample(5.0f, -6.0f, 20u);
+            CHECK(s_seq_state == SQ_CROSS_YAW && !s_route31_task_yaw_stable && last_w < 0.0f);
+        }
+        host_yaw = local_goals[n] + 0.2f;
+        host_absolute_yaw = originals[n] + 0.2f;
+        board_sample(5.0f, -6.0f, 20u);
+        CHECK(s_route31_task_yaw_stable && board_stopped());
+        board_sample(5.0f, -6.0f, 399u);
+        CHECK(s_seq_state == SQ_CROSS_YAW && (unsigned)zero_calls == zeros);
+        host_counts[1]++; board_sample(5.0f, -6.0f, 1u);
+        CHECK(s_seq_state == SQ_CROSS_YAW && (unsigned)zero_calls == zeros);
+        board_sample(5.0f, -6.0f, 399u);
+        CHECK(s_seq_state == SQ_CROSS_YAW && !s_board_contact.zeroed);
+        board_sample(5.0f, -6.0f, 1u);
+        CHECK(s_seq_state == SQ_STILL && s_seq_stage == 4u && s_route31_cross_yaw_done &&
+              board_stopped() && (unsigned)zero_calls == zeros &&
+              s_route31_cross_heading == originals[n] && !s_board_contact.zeroed &&
+              strstr(host_messages, "CROSS31_PRE_CONTACT_YAW_DONE yaw_timeout_accept=0 reached=1"));
+        board_sample(9.0f, -10.0f, 249u);
+        CHECK(s_seq_state == SQ_STILL && !s_board_contact.zeroed && (unsigned)zero_calls == zeros);
+        board_sample(9.0f, -10.0f, 1u);
+        CHECK(s_seq_state == SQ_WAIT && board_stopped() && host_yaw == 0.0f &&
+              (unsigned)zero_calls == zeros + 1u && !s_board_contact.zeroed);
+        board_sample(11.0f, -12.0f, 299u);
+        CHECK(s_seq_state == SQ_WAIT && board_stopped() && !s_board_contact.zeroed);
+        board_sample(13.0f, -14.0f, 1u);
+        CHECK(s_seq_state == SQ_RUN && s_board_contact.active && s_board_contact.zeroed &&
+              s_board_contact.pitch0 == 13.0f && s_board_contact.roll0 == -14.0f &&
+              last_x == 40.0f && last_y == 0.0f && last_w == 0.0f &&
+              (unsigned)zero_calls == zeros + 1u);
+    }
+    puts("31 cross yaw:real stage3 captures absolute heading; +/-/wrapped local conversion, pure rotation, strict0.4/full400+wheel restart; only then still250/zero/300/frozen tilt/forward40 passed");
+    return 0;
+}
+
+static int check_cross_yaw_two_second_accept(void)
+{
+    CHECK(ROUTE31_POST_YAW_MAX_MS == 2000u);
+    for (unsigned wrap = 0u; wrap < 2u; ++wrap) {
+        CHECK(board_cross_yaw_start(37.0f, 3.0f, 40.0f) == 0);
+        unsigned zeros = (unsigned)zero_calls;
+        if (wrap) {
+            host_tick = UINT32_MAX - 999u;
+            s_route31_task_yaw_t0 = s_route31_task_yaw_still_t0 = host_tick;
+        }
+        board_sample(0.0f, 0.0f, 0u);
+        board_sample(0.0f, 0.0f, 1999u);
+        CHECK(s_seq_state == SQ_CROSS_YAW && last_x == 0.0f && last_y == 0.0f &&
+              last_w < 0.0f && !s_route31_cross_yaw_done && (unsigned)zero_calls == zeros);
+        board_sample(0.0f, 0.0f, 1u);
+        CHECK(s_seq_state == SQ_STILL && s_route31_cross_yaw_done && board_stopped() &&
+              !s_board_contact.zeroed && host_yaw == 3.0f && host_absolute_yaw == 40.0f &&
+              s_route31_cross_heading == 37.0f && (unsigned)zero_calls == zeros &&
+              strstr(host_messages, "CROSS31_PRE_CONTACT_YAW_TIMEOUT_CONTINUE yaw_timeout_accept=1 reached=0 residual_err_deg=-3.00 elapsed_ms=2000 zeroed=0"));
+        CHECK(sequence_start_stage() == 0 && s_board_contact.active && last_x == 40.0f &&
+              (unsigned)zero_calls == zeros + 1u);
+    }
+    CHECK(board_cross_yaw_start(37.0f, 3.0f, 40.0f) == 0);
+    unsigned zeros = (unsigned)zero_calls;
+    board_sample(0.0f, 0.0f, 1700u);
+    host_yaw = 0.2f; board_sample(0.0f, 0.0f, 0u);
+    CHECK(s_route31_task_yaw_stable && board_stopped());
+    host_counts[0]++; board_sample(0.0f, 0.0f, 299u);
+    CHECK(s_seq_state == SQ_CROSS_YAW);
+    board_sample(0.0f, 0.0f, 1u);
+    CHECK(s_seq_state == SQ_STILL && s_route31_cross_yaw_done &&
+          (unsigned)zero_calls == zeros && strstr(host_messages, "yaw_timeout_accept=1 reached=0"));
+    puts("31 cross yaw:1999 correcting/2000 accepted with truthful residual and brake, tick wrap and unstable hold cannot extend hard deadline passed");
+    return 0;
+}
+
+static int check_cross_yaw_cancel_fault_and_owner_scope(void)
+{
+    static const char *const keys[] = {"g", "a", "0"};
+    for (unsigned phase = 0u; phase < 4u; ++phase) {
+        for (unsigned key = 0u; key < 3u; ++key) {
+            CHECK(board_cross_yaw_start(37.0f, 3.0f, 40.0f) == 0);
+            unsigned zeros = (unsigned)zero_calls;
+            if (phase > 0u) board_sample(0.0f, 0.0f, 20u);
+            if (phase == 2u) { host_yaw = 0.2f; board_sample(0.0f, 0.0f, 20u); }
+            if (phase == 3u) { host_tick = s_route31_task_yaw_t0 + 1999u; board_sample(0.0f, 0.0f, 0u); }
+            run_cmd(keys[key]);
+            CHECK(s_seq_state == SQ_STOPPED && s_seq_stage == 4u && board_stopped() &&
+                  !s_board_contact.active && !s_route31_cross_heading_valid && !s_route31_cross_yaw_done);
+            unsigned dispatch = host_precise_calls;
+            board_sample(4.0f, 0.0f, 2100u); run_cmd("g");
+            CHECK(s_seq_state == SQ_STOPPED && board_stopped() &&
+                  (unsigned)zero_calls == zeros && host_precise_calls == dispatch && !s_board_contact.active);
+        }
+    }
+    for (unsigned fault = 0u; fault < 5u; ++fault) {
+        CHECK(board_cross_yaw_start(37.0f, 3.0f, 40.0f) == 0);
+        unsigned zeros = (unsigned)zero_calls;
+        if (fault == 0u) host_imu_valid = 0;
+        else if (fault == 1u) host_yaw = NAN;
+        else if (fault == 2u) host_yaw = INFINITY;
+        else if (fault == 3u) s_route31_task_yaw_goal = NAN;
+        else host_abort = 1;
+        host_tick = s_route31_task_yaw_t0 + 2000u; test_poll();
+        CHECK(s_seq_state == SQ_STOPPED && board_stopped() && !s_board_contact.active &&
+              (unsigned)zero_calls == zeros && !strstr(host_messages, "CROSS31_PRE_CONTACT_YAW_TIMEOUT_CONTINUE"));
+        host_imu_valid = 1; host_yaw = 0.0f; host_abort = 0;
+        board_sample(4.0f, 0.0f, 2100u); run_cmd("g");
+        CHECK(s_seq_state == SQ_STOPPED && board_stopped() && (unsigned)zero_calls == zeros);
+    }
+    reset_fixture(); run_cmd("31"); run_cmd("g");
+    unsigned zeros = (unsigned)zero_calls;
+    s_seq_stage = 4u; route_seq_prepare();
+    CHECK(s_seq_state == SQ_STOPPED && board_stopped() && (unsigned)zero_calls == zeros &&
+          !s_board_contact.active && strstr(host_messages, "CROSS_HEADING_INVALID"));
+    CHECK(board_start(43u, 0.0f, 0.0f) == 0 && !s_route31_cross_heading_valid &&
+          !s_route31_cross_yaw_done && !strstr(host_messages, "CROSS31_PRE_CONTACT_YAW"));
+    board_sample(0.0f, 0.0f, 2000u);
+    CHECK(s_seq_state == SQ_RUN && s_round == R_RUN && last_x == 40.0f && !last_w);
+    CHECK(board_cross_yaw_start(-37.0f, -3.0f, -40.0f) == 0 && s_route31_cross_heading == -37.0f);
+    puts("31 cross yaw:g/a/0 before/correcting/settling/deadline stop permanently; IMU/NaN/Inf/abort wins at2s; missing reference rejects;43 unchanged and negative original reference captured passed");
+    return 0;
+}
+
 int main(void)
 {
-    if (check_stopped_rezero_and_rolling_restart() || check_startup_log_and_guard() ||
+    if (check_cross_original_yaw_before_board() || check_cross_yaw_two_second_accept() ||
+        check_cross_yaw_cancel_fault_and_owner_scope() ||
+        check_stopped_rezero_and_rolling_restart() || check_startup_log_and_guard() ||
         check_threshold_and_axes() || check_baseline_wrap_and_consecutive_frames() ||
         check_not_distance_or_yaw_and_timeout() || check_invalid_and_manual_cancel() ||
-        check_route31_nudge_cancellations() ||
+        check_route31_contact_handoff_cancellations() ||
         check_legacy_and_noncontact_isolation()) return 1;
-    puts("route31/43 board tilt wait300/1000ms/guard300ms/confirm100ms/threshold1.5 host-only regression passed");
+    puts("route31/43 board tilt wait300/1000ms/guard300ms/confirm100ms/threshold1.0 versus1.5/directBACK190 versus legacyBACK10+FWD15 host-only regression passed");
     return 0;
 }
