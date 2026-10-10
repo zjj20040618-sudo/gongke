@@ -49,7 +49,7 @@ static int check_defaults_and_direct_values(void)
     CHECK(s_route31_plan[0].distance_mm == 575u && s_route31_plan[1].distance_mm == 610u);
     /*31 uses first LEFT15 and no return offset;43 keeps LEFT40/returnLEFT20. */
     CHECK(s_route31_plan[3].distance_mm == 620u &&
-          s_route31_plan[6].distance_mm == 780u && s_route31_plan[7].distance_mm == 805u &&
+          s_route31_plan[6].distance_mm == 780u && s_route31_plan[7].distance_mm == 810u &&
           s_route31_pair_offset_leg.distance_mm == 40u &&
           strcmp(s_route31_pair_offset_leg.name, "BALL_TO_BUCKET_LEFT40") == 0);
     CHECK(ROUTE31_BALL_TO_BUCKET_LEFT_MM == 15u &&
@@ -113,7 +113,7 @@ static int check_defaults_and_direct_values(void)
 static int check_all_route_legs(void)
 {
     static const int modes[9] = {17,16,20,16,15,16,18,16,30};
-    static const int commands[9] = {-575,-610,90,-620,0,-190,780,-805,-90};
+    static const int commands[9] = {-575,-610,90,-620,0,-190,780,-810,-90};
     static const float speeds[9] = {250,200,100,300,40,200,250,200,100};
     const float direct_ff = 0.01f;
     unsigned forward_legs = 0u, translation_legs = 0u, ff_legs = 0u, heading_legs = 0u;
@@ -187,7 +187,7 @@ static int check_route_ff_sign_dispatch(void)
             s_seq_stage = mode != 1u ? ROUTE31_TARGET_CORNER_STAGE : 10u; route_seq_prepare();
             CHECK(sequence_start_stage() == 0);
             const float expected_speed = mode != 1u ? 200.0f : 100.0f;
-            CHECK(s_msel == 15 && s_dist_target == (mode == 0u ? 525.0f : mode == 2u ? 520.0f : 780.0f) && s_v == expected_speed);
+            CHECK(s_msel == 15 && s_dist_target == (mode == 0u ? 510.0f : mode == 2u ? 520.0f : 780.0f) && s_v == expected_speed);
             const float effective = mode == 0u ? -0.095f : mode == 2u ? -0.065f : ratios[input];
             const float expected_lateral = mode == 0u ? 19.0f : mode == 2u ? 13.0f : lateral[input];
             CHECK(ff_equal(s_dist_ff_ratio, effective) && last_x == expected_speed && ff_equal(last_y, expected_lateral));
@@ -319,7 +319,7 @@ static int check_pair_turn_offset_scope(void)
 static int check_new_task_tail_and_dynamic_motion(void)
 {
     static const uint8_t tail_modes[7] = {41u,22u,35u,15u,20u,40u,15u};
-    static const uint16_t target_to_corner[3] = {525u,445u,365u};
+    static const uint16_t target_to_corner[3] = {510u,430u,350u};
     CHECK(ROUTE31_LASER_MS == 2000u);
     CHECK(ROUTE31_BALL_GRIP_WAIT_MS == 2000u && ROUTE31_BUCKET_RELEASE_WAIT_MS == 2000u &&
           ROUTE31_BUCKET_LIFT_WAIT_MS == 0u && ROUTE31_HOSTAGE_HOLD_MS == 0u);
@@ -352,11 +352,11 @@ static int check_new_task_tail_and_dynamic_motion(void)
         CHECK(!laser_state && !pulse_calls && !servo_calls && !s_go);
         run_cmd("g");CHECK(s_seq_state==SQ_STOPPED && !vision_align_test_active() && host_receive_closed);
     }
-    /*31 follows the completed stable return185 directly with task2.
+    /*31 follows the completed stable return182 directly with task2.
      *43 retains return180, LEFT20 and its next-g gate; neither bypasses stability. */
     for (unsigned i=0u;i<2u;++i) {
         const unsigned hold=i ? 700u : 400u;
-        const float target=i ? 180.0f : 185.0f;
+        const float target=i ? 180.0f : 182.0f;
         reset_fixture();run_cmd(i ? "43" : "31");run_cmd("g");
         s_seq_qr[0]=1;s_seq_qr[1]=2;s_seq_qr[2]=3;
         s_seq_stage=ROUTE31_RETURN180_STAGE;route_seq_prepare();
@@ -396,7 +396,7 @@ static int check_new_task_tail_and_dynamic_motion(void)
         run_cmd("a");CHECK(s_seq_state==SQ_STOPPED && !s_target35_route && !laser_state);
     }
     run_cmd("35"); CHECK(target35_point()==255 && target35_low()==250 && target35_high()==260);
-    puts("route31 new tail:return185 stable400 directly to target250[247..253]/gate360 without lateral/zero-distance job;43 return180 stable700 retains gatedLEFT20; actualtargets/overshoot/stable handoff; dynamic525/445/365/hostageRIGHT93/hostage40/dynamicrankexit15;16stages/grip2s retained;standalone35 stays255;ownership/stop passed");
+    puts("route31 new tail:return182 stable400 directly to target250[247..253]/gate360 without lateral/zero-distance job;43 return180 stable700 retains gatedLEFT20; actualtargets/overshoot/stable handoff; dynamic510/430/350/hostageRIGHT93/hostage40/dynamicrankexit15;16stages/grip2s retained;standalone35 stays255;ownership/stop passed");
     return 0;
 }
 
@@ -705,6 +705,6 @@ int main(void)
     CHECK(check_heading_slot_direct_values_and_isolation() == 0);
     CHECK(check_route_cross_heading_restart(31u) == 0);
     CHECK(check_exit_yaw_private_slot() == 0);
-    puts("route31 tuning scope:16-stage plan R1left575/R2back610/right90/crossBACK620/contact1.0-v40/directBACK190/right780/back805/left90;ball180/LEFT15/bucket,return185/stable_direct_target250[247..253]/gate360;corners525/445/365/hostageRIGHT93;31grip2100/43grip1900;31targetFF.045/43.065 and31cornerFF.095/43.065 isolated;43 legacy535/630/cross650/800/760/corner520/420/320 with offsets40/20 retained;fff-.00625/bff+.00625/ykp.3;movingyaw belowmid-gate/fiveprefix-heading/threeBFFlegs;cross/contact noYawFF;RAM/reports/locks/manual32 unchanged passed");
+    puts("route31 tuning scope:16-stage plan R1left575/R2back610/right90/crossBACK620/contact1.0-v40/directBACK190/right780/back810/left90;ball180/LEFT15/bucket,return182/stable_direct_target250[247..253]/gate360;corners510/430/350/hostageRIGHT93;31grip2100/43grip1900;31targetFF.045/43.065 and31cornerFF.095/43.065 isolated;43 legacy535/630/cross650/800/760/corner520/420/320 with offsets40/20 retained;fff-.00625/bff+.00625/ykp.3;movingyaw belowmid-gate/fiveprefix-heading/threeBFFlegs;cross/contact noYawFF;RAM/reports/locks/manual32 unchanged passed");
     return 0;
 }

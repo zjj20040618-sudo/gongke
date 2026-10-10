@@ -379,11 +379,11 @@ static int check_real_qr_wait_then_r2_pause_resume(void)
 static int check_current_parameter_isolation(void)
 {
     reset_fixture();
-    CHECK(ROUTE31_ENTRY_BACK_MM == 805u && ROUTE31_EXIT_RIGHT_MM == 780u);
-    CHECK(ROUTE31_RED_TO_CORNER_MM == 525u && ROUTE31_GREEN_TO_CORNER_MM == 445u && ROUTE31_BLUE_TO_CORNER_MM == 365u);
+    CHECK(ROUTE31_ENTRY_BACK_MM == 810u && ROUTE31_EXIT_RIGHT_MM == 780u);
+    CHECK(ROUTE31_RED_TO_CORNER_MM == 510u && ROUTE31_GREEN_TO_CORNER_MM == 430u && ROUTE31_BLUE_TO_CORNER_MM == 350u);
     CHECK(ROUTE31_RIGHT_TARGET_DEG == 90.0f && ROUTE31_HOSTAGE_RIGHT_TARGET_DEG == 93.0f &&
           ROUTE43_RIGHT_TARGET_DEG == 90.0f);
-    CHECK(ROUTE31_LEFT_TARGET_DEG == -90.0f && ROUTE31_RETURN_TARGET_DEG == 185.0f);
+    CHECK(ROUTE31_LEFT_TARGET_DEG == -90.0f && ROUTE31_RETURN_TARGET_DEG == 182.0f);
     CHECK(mid_near(ROUTE31_TARGET_SEARCH_RIGHT_FF_RATIO, 0.045f));
     CHECK(mid_near(ROUTE43_TARGET_SEARCH_RIGHT_FF_RATIO, 0.065f));
     CHECK(s_route43_tune.road_mm[7] == 760u && s_route43_tune.corner_mm[0] == 520u &&
@@ -397,7 +397,7 @@ static int check_current_parameter_isolation(void)
     s_route31_lateral_v = 40.0f; CHECK(route_seq_speed_mms() == 40.0f);
     s_seq_mode = 43u; s_route43_tune.lateral_v = 250.0f;
     CHECK(route_seq_speed_mms() == 250.0f);
-    puts("mid-yaw: current31 ENTRY805/cross-right90/hostage-right93/colors525445365/targetFF4.5%,firstLEFT15cap80/no-return-offset and deferred43 isolation passed");
+    puts("mid-yaw: current31 ENTRY810/cross-right90/hostage-right93/colors510430350/targetFF4.5%,firstLEFT15cap80/no-return-offset and deferred43 isolation passed");
     return 0;
 }
 

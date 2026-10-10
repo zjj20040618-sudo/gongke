@@ -9,13 +9,13 @@
  * Mode31 R2 uses BACK610. Crossing uses BACK620/v300, restore pre-cross yaw,
  * then FWD/v40 until tilt1.0deg,
  * stopped IMU zero then BACK190/v200 (no post-contact nudges),
- * then RIGHT780/BACK805/LEFT90. Its old 2450/2125 road-only tail is REPLACED
+ * then RIGHT780/BACK810/LEFT90. Its old 2450/2125 road-only tail is REPLACED
  * by rack predeploy3400@5000 BEFORE entry LEFT90, ball search/X-only,
  * down32000@10000/grip2100/wait2/up32000/hold_grip/+180/LEFT15_cap80_yawfix,
  * ball rank54 required before paired180; bucket rank1BACK/rank3FWD/rank2wait,
  * only |cx-X105|<15 latches continuous fine v20, final95..115 or seen-loss>300ms/down20000/release1150/
  * after1s_ready1500/wait2_total/up20000/retract3400@5000,
- * return+185/stable400/direct_target_no_lateral_offset, selected target search_route_v/until_x360/fine30/X250_band247..253/fire2s,
+ * return+182/stable400/direct_target_no_lateral_offset, selected target search_route_v/until_x360/fine30/X250_band247..253/fire2s,
  * target-to-corner, RIGHT93 and hostage search_route_v/X215-or-seen-loss>300ms/
  * open1150/extend3400@5000/grip2100/retract3000@5000/rank/forward-to-end_hold_grip.
  * Ordinary forward/back and initial task search use the mode31 RAM v slot
@@ -49,7 +49,7 @@
  * wait; after a300ms startup guard, tilt1.0deg must persist100ms in new frames.
  * it is a user-observed contact trial, not guaranteed squaring or homing.
  * A10s missing-trigger abort must not continue as successful contact.
- * Target-to-corner red/green/blue525/445/365 are user trial distances. Hostage first-seen
+ * Target-to-corner red/green/blue510/430/350 are user trial distances. Hostage first-seen
  * rank1/2/3 selects1415/1315/1215 from its grab stop, never QR shape.
  * Legacy34 still owns its old2450/2125 road-only corridors.
  * Routes reuse the existing distance/yaw-fix executor and route RAM tuning;
@@ -87,7 +87,7 @@
 #define ROUTE31_HOSTAGE_TURN_STAGE   13u
 #define ROUTE31_HOSTAGE_STAGE        14u
 #define ROUTE31_HOSTAGE_EXIT_STAGE   15u
-#define ROUTE31_GREEN_TO_CORNER_MM  445u /*31: each color-to-hostage-corner leg plus10; red/blue stay +/-80. */
+#define ROUTE31_GREEN_TO_CORNER_MM  430u /*31: each color-to-hostage-corner leg minus15; red/blue stay +/-80. */
 #define ROUTE31_RED_TO_CORNER_MM    (ROUTE31_GREEN_TO_CORNER_MM + 80u)
 #define ROUTE31_BLUE_TO_CORNER_MM   (ROUTE31_GREEN_TO_CORNER_MM - 80u)
 /* User trial: no additional in-place heading repair after target fire.
@@ -142,7 +142,7 @@
 #define ROUTE31_BALL_TO_BUCKET_LEFT_V_MMS 80.0f /*31-only trial ceiling, not all lateral legs; obey lower RAM pv. */
 #define ROUTE31_PAIR_LEFT_MM          40u /* Legacy43 body-left AFTER first180; prior50 minus10. */
 #define ROUTE31_RETURN_LEFT_MM        20u /* Body-left AFTER second180 completes unchanged angle/stability gates. */
-#define ROUTE31_RETURN_RIGHT_MM        0u /*31: cancel lateral offset after return185; zero skips the job, never starts a distance test. */
+#define ROUTE31_RETURN_RIGHT_MM        0u /*31: cancel lateral offset after return182; zero skips the job, never starts a distance test. */
 #define ROUTE31_RACK_AXIS              0
 #define ROUTE31_RACK_EXTEND_DIR        0 /* Latest user correction restores extension to raw nl, 2026-10-08. */
 #define ROUTE31_RACK_RETRACT_DIR       1 /* Opposite of extension; never change lift/raw nl/nr here. */
@@ -170,7 +170,7 @@
 #define ROUTE31_R2_BACK_MM          610u /* R2 unchanged this round; independent from crossing630. */
 #define ROUTE31_EXIT_RIGHT_MM      780u /* 2026-10-10: prior800 minus20. */
 #define ROUTE31_EXIT_YAW_KP_SEED   3.0f /* Trial only:31/43 stage6 yaw while translating, not other legs/turns. */
-#define ROUTE31_ENTRY_BACK_MM      805u /*31: user adds15 to prior790, not hostage coarse search. */
+#define ROUTE31_ENTRY_BACK_MM      810u /*31: user adds5 to prior805 before entering the task area. */
 /* 31 ordinary endpoints: restore continuous correction to the ORIGINAL heading.
  * Either side may settle with abs(error)<0.4 and400ms still (43 retains700), without crossing
  * zero or pulse/gap cycles. Mode31's minimum angular command is0.30rad/s;
@@ -190,7 +190,7 @@
 #define ROUTE31_HOSTAGE_RIGHT_TARGET_DEG 93.0f /*31 hostage entry only; no effect on cross/43/standalone turns. */
 #define ROUTE43_RIGHT_TARGET_DEG 90.0f /* Deferred43 does not inherit31 compensation. */
 #define ROUTE31_LEFT_TARGET_DEG (-90.0f)
-#define ROUTE31_RETURN_TARGET_DEG 185.0f /*31 bucket-release return only; first/43/standalone180 remain180. */
+#define ROUTE31_RETURN_TARGET_DEG 182.0f /*31 bucket-release return only; first/43/standalone180 remain180. */
 /* Route31/43 +/-90 and +180 only: command2x outside25deg, unchanged within15deg,
  * linear blend between. These are trial speed scheduling thresholds, not
  * measured angle compensation. Do not scale endpoint yaw-fix or standalone turns. */

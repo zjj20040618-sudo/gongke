@@ -446,7 +446,7 @@ static int check_notice_transition_race(void)
 static int check_complete_recipe_without_bucket(void)
 {
     static const int modes[9] = {17,16,20,16,15,16,18,16,30};
-    static const int commands[9] = {-575,-610,90,-620,0,-190,780,-805,-90};
+    static const int commands[9] = {-575,-610,90,-620,0,-190,780,-810,-90};
     static const float speeds[9] = {250,200,100,300,40,200,250,200,100};
     CHECK(ROUTE31_STAGES == 16u);
     CHECK(begin_qr_wait() == 0);
@@ -481,7 +481,7 @@ static int check_complete_recipe_without_bucket(void)
     CHECK(wire_opcode == 0x63u && wire_task == 1u && wire_digit == 2u && wire_request > qr_request);
     run_cmd("g"); host_tick += 10000u; wire_poll();
     CHECK(s_seq_state == SQ_STOPPED && stopped() && !s_receiving);
-    puts("route31: legal R1 QR -> nine R1left575/R2back610/right90/cross620-v300/tilt1.0-contact-v40/no_contact_nudges/right780/back805/left90 road actions -> selected ball from R1 tuple; no old bucket detour/manuald; cancellation closes task passed");
+    puts("route31: legal R1 QR -> nine R1left575/R2back610/right90/cross620-v300/tilt1.0-contact-v40/no_contact_nudges/right780/back810/left90 road actions -> selected ball from R1 tuple; no old bucket detour/manuald; cancellation closes task passed");
     return 0;
 }
 static int check_route_bucket_manual_stop(unsigned mode)

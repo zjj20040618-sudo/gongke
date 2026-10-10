@@ -271,7 +271,7 @@ static int check_all_route_owners_precise_ff_at_all_speeds(void)
             }
             s_seq_stage = (uint8_t)cases[n].stage; route_seq_prepare();
             if (cases[n].owner == 31u && cases[n].stage == ROUTE31_TARGET_CORNER_STAGE)
-                CHECK(route_seq_leg()->distance_mm == 445u && s_d == 445.0f);
+                CHECK(route_seq_leg()->distance_mm == 430u && s_d == 430.0f);
             if (cases[n].owner == 31u && cases[n].stage == ROUTE31_HOSTAGE_EXIT_STAGE)
                 CHECK(route_seq_leg()->distance_mm == 1315u && s_d == 1315.0f);
             CHECK(sequence_start_stage() == 0 && s_msel == cases[n].mode && route_seq_leg()->heading_hold);

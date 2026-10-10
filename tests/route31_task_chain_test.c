@@ -1,7 +1,7 @@
 /* Real31 router + real XY engine + CRC/ACK/request/QR parser. A host fixture
  * injects camera pixels, encoder endpoints and yaw: NOT physical acceptance. */
 /* Historical LEFT20 coverage is an explicit fixture-only build. Ordinary31
- * uses LEFT15 after first180 and goes directly to target after return185;
+ * uses LEFT15 after first180 and goes directly to target after return182;
  * no return lateral or zero-distance job; hostage pregrab body
  * offset remains disabled. No production setting is changed by this override. */
 #include "route_test_plan.h"
@@ -646,7 +646,7 @@ static int check_full_qr_ball_bucket_target_hostage_chain(void)
     CHECK(ROUTE31_BALL_GRIP_US == 2100u && ROUTE31_HOSTAGE_GRIP_US == 2100u &&
           ROUTE43_BALL_GRIP_US == 1900u && ROUTE43_HOSTAGE_GRIP_US == 1900u &&
           ARM_SERVO_GRIP_US == 1700u && ARM_SERVO_START_US == 1150u);
-    CHECK(ROUTE31_ENTRY_BACK_MM == 805u && s_route31_plan[7].distance_mm == 805u &&
+    CHECK(ROUTE31_ENTRY_BACK_MM == 810u && s_route31_plan[7].distance_mm == 810u &&
           s_route31_plan[6].distance_mm == 780u &&
           ROUTE31_PAIR_LEFT_MM == 40u && ROUTE31_BALL_TO_BUCKET_LEFT_MM ==
 #if defined(ROUTE31_BALL_OFFSET_LEGACY_TEST)
@@ -716,7 +716,7 @@ static int check_full_qr_ball_bucket_target_hostage_chain(void)
 #endif
     CHECK(task31_bucket_up_done() == 0);
     CHECK(s_seq_stage == ROUTE31_RETURN180_STAGE && s_seq_state == SQ_STILL && s_msel == 22 &&
-          turn_target_deg() == 185.0f);
+          turn_target_deg() == 182.0f);
     CHECK(task31_finish_motion() == 0);
     CHECK(s_seq_stage == ROUTE31_TARGET_STAGE && s_seq_state == SQ_TASK && s_msel == 31);
     CHECK(task31_target_fire(8) == 0); /* QR second2 => green target model8 */
@@ -750,7 +750,7 @@ static int check_full_qr_ball_bucket_target_hostage_chain(void)
     unsigned commands = wire_commands;
     run_cmd("g"); xy_advance(10000u); xy_obj(wire_request, 0, 180, 220);
     CHECK(s_seq_state == SQ_DONE && stopped() && wire_commands == commands);
-    printf("31 full hostchain: %s; entryBACK805/preCrossRIGHT90/hostageRIGHT93/predeploy3400/LEFT90/ballX135/down32000/grip2100hold2/up32000/+180/%s/newBucketX105/down20000/release1150/after1s-ready1500/total2s/up20000/rackback3400/+185/stable400/direct_target250_noReturnLateralOrZeroDistance;hostageX215/%s/open1150/rack3400/grip2100/retract3000/held+rankfinal;117200STEP/verticalnet0/racknet400/5servo commands passed\n",
+    printf("31 full hostchain: %s; entryBACK810/preCrossRIGHT90/hostageRIGHT93/predeploy3400/LEFT90/ballX135/down32000/grip2100hold2/up32000/+180/%s/newBucketX105/down20000/release1150/after1s-ready1500/total2s/up20000/rackback3400/+182/stable400/direct_target250_noReturnLateralOrZeroDistance;hostageX215/%s/open1150/rack3400/grip2100/retract3000/held+rankfinal;117200STEP/verticalnet0/racknet400/5servo commands passed\n",
            VAT_Y_ALIGN_ENABLE ? "legacyXY" : "defaultXonly,noYfix",
            ROUTE31_BALL_TO_BUCKET_LEFT_MM == 20u ? "EXPLICIT_FIXTURE_LEFT20_cap80_yawfix" : "CURRENT_LEFT15_cap80_yawfix",
            ROUTE31_HOSTAGE_PREGRAB_LEFT_MM ? "EXPLICIT_FIXTURE_LEFT20_yawfix_NEW_X" : "CURRENT_noBodyOffset");
@@ -761,7 +761,7 @@ static int check_three_target_distances_and_independent_laser_scope(void)
 {
     const char *const qr[] = {"111", "222", "333"};
     const int models[] = {6, 8, 7};
-    const unsigned mm[] = {525u, 445u, 365u};
+    const unsigned mm[] = {510u, 430u, 350u};
     for (unsigned i = 0u; i < 3u; ++i) {
         CHECK(task31_at(ROUTE31_TARGET_STAGE, qr[i]) == 0);
         CHECK(task31_target_fire(models[i]) == 0); xy_advance(2000u);
@@ -1763,7 +1763,7 @@ static int task31_turn_phase(unsigned phase)
 {
     CHECK(phase <= 4u && s_seq_mode == ROUTE_TEST_MODE && s_seq_state == SQ_STILL &&
           s_msel == 22 && turn_target_deg() ==
-              (s_seq_stage == ROUTE31_RETURN180_STAGE && !s_seq_pair_turn ? 185.0f : 180.0f) &&
+              (s_seq_stage == ROUTE31_RETURN180_STAGE && !s_seq_pair_turn ? 182.0f : 180.0f) &&
           !s_seq_pair_offset && !s_seq_return_offset);
     if (phase) CHECK(sequence_start_stage() == 0 && s_seq_state == SQ_RUN && s_round == R_RUN);
     if (phase >= 2u) {
@@ -2283,7 +2283,7 @@ static int task31_return_turn_phase(unsigned phase)
           !s_target35_route && wire_request == request && host_servo == 1500u);
     return 0;
 }
-/* A completed185 must hand off directly. Keep the stale distance ledger as
+/* A completed182 must hand off directly. Keep the stale distance ledger as
  * evidence that neither a RIGHT15 nor an ostensibly harmless0mm leg started.
  * Target preparation still has its own stop/zero/settle, separate from turn. */
 static int task31_return_target_phase(unsigned phase, uint16_t *old_request)
@@ -2343,15 +2343,15 @@ static int check_return_turn_stability_and_stops(void)
               !s_target35_route && pulse_calls==pulses && servo_calls==servos &&
               wire_commands==commands && host_servo==1500u);
     }
-    /* Actual release/rack-return reaches this second185; near-target
+    /* Actual release/rack-return reaches this second182; near-target
      * stronger commands must remain signed, precise and request-gated. */
     for (unsigned side=0u;side<2u;++side) {
         CHECK(task31_return_turn_phase(1u)==0);
         float offset=side?0.5f:-0.5f;
         int zeros=zero_calls;unsigned precise=host_precise_calls, integer=host_integer_calls;
         uint16_t request=wire_request;
-        CHECK(turn_target_deg()==185.0f);
-        host_yaw=185.0f+offset;host_tick+=20u;wire_poll();
+        CHECK(turn_target_deg()==182.0f);
+        host_yaw=182.0f+offset;host_tick+=20u;wire_poll();
         CHECK(s_round==R_RUN && s_seq_stage==ROUTE31_RETURN180_STAGE &&
               fabsf(last_w+(side?0.30f:-0.30f))<0.000001f && !last_x && !last_y &&
               host_precise_calls==precise+1u && host_integer_calls==integer &&
@@ -2374,7 +2374,7 @@ static int check_return_turn_stability_and_stops(void)
     uint16_t old_goal_request=wire_request;int old_goal_zeros=zero_calls;
     host_yaw=180.0f;host_tick+=20u;wire_poll();
     CHECK(s_round==R_RUN && s_seq_state==SQ_RUN && s_seq_stage==ROUTE31_RETURN180_STAGE &&
-          turn_target_deg()==185.0f && last_w>0.0f && !last_x && !last_y &&
+          turn_target_deg()==182.0f && last_w>0.0f && !last_x && !last_y &&
           wire_request==old_goal_request && zero_calls==old_goal_zeros &&
           !s_target35_route && !laser_state);
     CHECK(task31_cancel_and_verify("0")==0);
@@ -2392,7 +2392,7 @@ static int check_return_turn_stability_and_stops(void)
           pulse_calls == pulses && servo_calls == servos && host_servo == 1500u && stopped() &&
           zero_calls == zeros && host_absolute_yaw == absolute_heading && !dist_mode() &&
           s_msel == 31 && s_round == R_RUN && ROUTE31_RETURN_RIGHT_MM == 0u);
-    CHECK(strstr(host_messages,"cmd_deg=185") && strstr(host_messages,"abs_yaw_deg=") &&
+    CHECK(strstr(host_messages,"cmd_deg=182") && strstr(host_messages,"abs_yaw_deg=") &&
           strstr(host_messages,"route_step=11"));
     CHECK(!s_seq_pair_turn && !s_seq_pair_offset && s_msel == 31 &&
           s_target35_phase == TA_TASK_WAIT && !s_target35_seen && !s_target35_good);
@@ -2421,7 +2421,7 @@ static int check_return_turn_stability_and_stops(void)
         CHECK(task31_service_ms(10000u) == 0); run_cmd("g");
         CHECK(s_seq_state == SQ_STOPPED && pulse_calls == p && servo_calls == s && stopped());
     }
-    puts("31 return185 direct TARGET/no return lateral or0mm job: old180 staysRUN;actual +/-0.5 precise +/-0.30,overshoot/399-400ms hold;15 turn and12 target-handoff/prep g/a/0 stops;original absoluteheading retained;old/preACK targetpixels inert;target preparation zero once only afterstill250;REC185 and3IMU/abort/turn-timeout faults passed");
+    puts("31 return182 direct TARGET/no return lateral or0mm job: old180 staysRUN;actual +/-0.5 precise +/-0.30,overshoot/399-400ms hold;15 turn and12 target-handoff/prep g/a/0 stops;original absoluteheading retained;old/preACK targetpixels inert;target preparation zero once only afterstill250;REC182 and3IMU/abort/turn-timeout faults passed");
     return 0;
 }
 
@@ -2673,9 +2673,9 @@ static int check_target_current_direct_corner_and_stop(void)
         ++host_tick; wire_poll();
         CHECK(s_seq_state == SQ_STILL && s_seq_stage == ROUTE31_TARGET_CORNER_STAGE &&
               !s_target35_route && !laser_state && stopped() && zero_calls == zeros &&
-              wire_commands == commands && route_seq_leg()->distance_mm == 445u &&
+              wire_commands == commands && route_seq_leg()->distance_mm == 430u &&
               strstr(host_messages, "TARGET31_POST_YAW_TIMEOUT_CONTINUE") == NULL);
-        CHECK(sequence_start_stage() == 0 && s_msel == 15 && s_dist_target == 445.0f &&
+        CHECK(sequence_start_stage() == 0 && s_msel == 15 && s_dist_target == 430.0f &&
               zero_calls == zeros + 1 && s_dist_heading0 == 0.0f &&
               last_x == 200.0f && fabsf(last_y - 200.0f * ROUTE31_CORNER_RIGHT_FF_RATIO) < 0.0001f);
         CHECK(task31_cancel_and_verify(side ? "g" : "a") == 0);
@@ -2686,7 +2686,7 @@ static int check_target_current_direct_corner_and_stop(void)
         CHECK(task31_cancel_and_verify(keys[key]) == 0);
         CHECK(strstr(host_messages, "TARGET31_POST_YAW_TIMEOUT_CONTINUE") == NULL);
     }
-    puts("CURRENT31 target:laser holds1999ms,2000 laserOFF directly queues525/445/365 corner without stationaryyaw;next-road normalbaseline and FF retained;g/a/0 cancel before deadline passed");
+    puts("CURRENT31 target:laser holds1999ms,2000 laserOFF directly queues510/430/350 corner without stationaryyaw;next-road normalbaseline and FF retained;g/a/0 cancel before deadline passed");
     return 0;
 }
 #endif

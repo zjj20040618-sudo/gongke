@@ -97,7 +97,7 @@ static int integrated_aim_current(void)
 static int check_route31_qr53_road_prefix_to_ball(void)
 {
     static const int modes[9] = {17,16,20,16,15,16,18,16,30};
-    static const int commands[9] = {-575,-610,90,-620,0,-190,780,-805,-90};
+    static const int commands[9] = {-575,-610,90,-620,0,-190,780,-810,-90};
     static const float speeds[9] = {250,200,100,300,40,200,250,200,100};
     CHECK(integrated_boot(31u, 1) == 0);
     CHECK(s_seq_state == SQ_READY && stopped() && notice_calls == 1u && proto_qr_get(NULL));
@@ -134,7 +134,7 @@ static int check_route31_qr53_road_prefix_to_ball(void)
     CHECK(!proto_qr_get(NULL)); /* route factory uses the validated R1 snapshot */
     run_cmd("g"); run_cmd("d500"); host_tick += 60000u; wire_poll();
     CHECK(s_seq_state == SQ_STOPPED && stopped() && !s_receiving);
-    puts("integrated31 realQR53: early331 stays through roadprefix, R1left575/R2back610/right90/cross620/tilt1.0-contact-v40/no_contact_nudges/right780/back805/left90; after nine road actions ball request starts from latched QR, no old2450/2125 road-only tail passed");
+    puts("integrated31 realQR53: early331 stays through roadprefix, R1left575/R2back610/right90/cross620/tilt1.0-contact-v40/no_contact_nudges/right780/back810/left90; after nine road actions ball request starts from latched QR, no old2450/2125 road-only tail passed");
     return 0;
 }
 

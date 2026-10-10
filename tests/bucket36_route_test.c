@@ -192,7 +192,7 @@ static int check_mode31_34_integrated_recipe_isolation(void)
     }
     {
         static const unsigned modes31[9] = {17,16,20,16,15,16,18,16,30};
-        static const unsigned distances31[9] = {575,610,0,620,0,190,780,805,0};
+        static const unsigned distances31[9] = {575,610,0,620,0,190,780,810,0};
         CHECK(wire_boot() == 0); run_cmd("31");
         CHECK(s_seq_mode == 31u && route_seq_stage_count() == 16u && ROUTE31_STAGES == 16u);
         CHECK(!route_seq_bucket_enabled());
@@ -224,7 +224,7 @@ static int check_mode31_34_integrated_recipe_isolation(void)
     CHECK(s_route_test_plan[0].distance_mm == 530u && s_bucket36_plan[0].distance_mm == 530u);
     CHECK(wire_boot() == 0); run_cmd("36");
     CHECK(route_seq_leg()->distance_mm == 530u && route_seq_leg()->speed_mms == 100.0f);
-    puts("recipe isolation:31 independent16-task stages with nine-road prefix/left575/R2back610/right90/cross620/tilt1.0-contact-v40/no_contact_nudges/right780/back805; no OLD bucket-anchor/manuald;34 retains15-node bucket/530/80/manual-d730,36 ten/530/80/right730,37 three/80; global left92 unchanged passed");
+    puts("recipe isolation:31 independent16-task stages with nine-road prefix/left575/R2back610/right90/cross620/tilt1.0-contact-v40/no_contact_nudges/right780/back810; no OLD bucket-anchor/manuald;34 retains15-node bucket/530/80/manual-d730,36 ten/530/80/right730,37 three/80; global left92 unchanged passed");
     return 0;
 }
 

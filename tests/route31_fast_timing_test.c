@@ -49,12 +49,12 @@ static int check_fast_private_cross_distance(void)
     CHECK(route_seq_leg()->distance_mm == 650u && s_d == 650.0f);
     run_cmd("0");
     CHECK(fast_prepare(31u,7u) == 0);
-    CHECK(route_seq_leg()->mode == 16u && route_seq_leg()->distance_mm == 805u && s_d == 805.0f);
+    CHECK(route_seq_leg()->mode == 16u && route_seq_leg()->distance_mm == 810u && s_d == 810.0f);
     run_cmd("0");
     CHECK(fast_prepare(43u,7u) == 0);
     CHECK(route_seq_leg()->mode == 16u && route_seq_leg()->distance_mm == 760u && s_d == 760.0f);
     run_cmd("0");
-    puts("31 private cross620/BACK805 vs43 retained650/BACK760 prepare distance isolation passed");
+    puts("31 private cross620/BACK810 vs43 retained650/BACK760 prepare distance isolation passed");
     return 0;
 }
 
@@ -158,7 +158,7 @@ static int check_fast_turn_strength_preserves_holds(void)
             unsigned hold=owner?700u:400u;
             unsigned zeros=(unsigned)zero_calls, commands=wire_commands;
             float direction=side? -1.0f:1.0f;
-            float goal=owner?180.0f:185.0f;
+            float goal=owner?180.0f:182.0f;
             CHECK(turn_target_deg()==goal);
             host_yaw=goal+(side?0.5f:-0.5f);
             host_tick+=20u;wire_poll();
@@ -183,7 +183,7 @@ static int check_fast_turn_strength_preserves_holds(void)
             run_cmd("0");CHECK(fast_stopped());
         }
     }
-    puts("31 actual second185 goal+/-0.5 .30 vs43 second180 .18; holds400/700 preserved;31 directly requests task2 with no lateral job;43 keeps gatedLEFT20; no early zero/request passed");
+    puts("31 actual second182 goal+/-0.5 .30 vs43 second180 .18; holds400/700 preserved;31 directly requests task2 with no lateral job;43 keeps gatedLEFT20; no early zero/request passed");
     return 0;
 }
 
@@ -323,7 +323,7 @@ static int check_fast_target_and_legacy(void)
         ++host_tick; wire_poll();
     }
     CHECK(s_seq_state == SQ_STILL && s_seq_stage == ROUTE31_TARGET_CORNER_STAGE && fast_stopped());
-    CHECK(route_seq_leg()->distance_mm == 445u && s_d == 445.0f);
+    CHECK(route_seq_leg()->distance_mm == 430u && s_d == 430.0f);
     const unsigned owners[] = {35u,43u};
     for (unsigned k = 0u; k < 2u; ++k) {
         CHECK(fast_target_seek(owners[k]) == 0);
@@ -339,8 +339,8 @@ static int check_fast_target_and_legacy(void)
         run_cmd("0"); CHECK(!laser_state && !s_receiving);
     }
     puts(ROUTE31_TARGET_STOP_YAW_ENABLE
-         ? "historical enabled31 target:four fresh nofire,fifth samepoll laser/brake/RXclose,1999 on2000 off,original-yaw399 wait400 then green445;35/43 stillwait999/1000 passed (not default behavior)"
-         : "default31 target:four fresh nofire,fifth samepoll laser/brake/RXclose,1999 on2000 off directly prepares green445 without SQ_TASK_YAW;35/43 stillwait999/1000 passed");
+         ? "historical enabled31 target:four fresh nofire,fifth samepoll laser/brake/RXclose,1999 on2000 off,original-yaw399 wait400 then green430;35/43 stillwait999/1000 passed (not default behavior)"
+         : "default31 target:four fresh nofire,fifth samepoll laser/brake/RXclose,1999 on2000 off directly prepares green430 without SQ_TASK_YAW;35/43 stillwait999/1000 passed");
     return 0;
 }
 

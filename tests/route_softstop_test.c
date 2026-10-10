@@ -104,7 +104,7 @@ static int check_local_profile_and_distance(void)
     /* Contact has no encoder endpoint. Its v40 ramp and sensor-triggered
      * braking are checked separately by route31_board_tilt_test. */
     static const unsigned stages[] = { 0u, 1u, 3u, 5u, 7u, ROUTE31_HOSTAGE_EXIT_STAGE };
-    static const float targets[] = { -575.0f, -610.0f, -620.0f, -190.0f, -805.0f, 1315.0f };
+    static const float targets[] = { -575.0f, -610.0f, -620.0f, -190.0f, -810.0f, 1315.0f };
     static const float speeds[] = { 250.0f, 200.0f, 300.0f, 200.0f, 200.0f, 200.0f };
     for (unsigned p = 0; p < sizeof globals / sizeof globals[0]; ++p) {
         for (unsigned s = 0; s < sizeof stages / sizeof stages[0]; ++s) {
@@ -261,7 +261,7 @@ static int check_lateral_reverse_and_ff_wheel_dispatch(void)
     for (int motor = 0; motor < 4; ++motor) CHECK(delivered_rpm[motor] < 0.0f);
     run_cmd("g");
     CHECK(start_stage(ROUTE31_TARGET_CORNER_STAGE, &global) == 0);
-    CHECK(s_dist_target == 445.0f);
+    CHECK(s_dist_target == 430.0f);
     CHECK(s_dist_ff_ratio == -ROUTE31_CORNER_RIGHT_FF_RATIO && last_x > 0.0f && last_y > 0.0f && last_w == 0.0f);
     CHECK(close_to(last_y, last_x * ROUTE31_CORNER_RIGHT_FF_RATIO));
     real_motion_ik_precise(last_x, 0.0f, 0.0f, baseline);
@@ -273,7 +273,7 @@ static int check_lateral_reverse_and_ff_wheel_dispatch(void)
     CHECK(delivered_rpm[1] > baseline[1] && delivered_rpm[3] > baseline[3]);
     CHECK(close_to(delivered_rpm[0], delivered_rpm[2]) && close_to(delivered_rpm[1], delivered_rpm[3]));
     run_cmd("g");
-    puts("real precise IK: route31 left575/manual right35 signed lateral targets; reverse190 negative axis with separateleftBFF; stage12 green445 privateCORNER_RIGHT_FF ->positive lateral and four changed forwardRPM targets passed");
+    puts("real precise IK: route31 left575/manual right35 signed lateral targets; reverse190 negative axis with separateleftBFF; stage12 green430 privateCORNER_RIGHT_FF ->positive lateral and four changed forwardRPM targets passed");
     return 0;
 }
 

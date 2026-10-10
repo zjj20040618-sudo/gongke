@@ -635,7 +635,7 @@ static int check_route_sequence(void)
 {
     /* Independent expectation, not copied from the live recipe at runtime. */
     static const int expected_modes[9] = {17,16,20,16,15,16,18,16,30};
-    static const int expected_commands[9] = {-575,-610,90,-620,0,-190,780,-805,-90};
+    static const int expected_commands[9] = {-575,-610,90,-620,0,-190,780,-810,-90};
     static const float expected_speeds[9] = {250,200,100,300,40,200,250,200,100};
     static const char *const stop_keys[] = {"g", "a", "0"};
     reset_fixture();
@@ -764,7 +764,7 @@ static int check_route_sequence(void)
     reset_fixture(); run_cmd("31"); run_cmd("g"); CHECK(sequence_start_stage() == 0);
     dist_begin_finish(0u); host_tick += T_DIST_STILL_MS; test_poll();
     CHECK(s_seq_state == SQ_STOPPED && s_seq_stage == 0u);
-    puts("route31: nine-road prefix R1left575/R2back610/right90/cross620/board_tilt1.0_wait300ms_guard300_confirm100_v40/no_contact_nudges, crossing/contact yaw/FF disabled, QRgate/right780/back805/rackDIR0nl3400predeploy/left90 then actual ball/bucket41 task handoff; independent3400 recipe and3399-not-DONE boundary, no legacybucket/manuald, three backwardBFF legs, post-yaw-before-next, terminal router policy,108 road g/a/0 cancellations, locks and IMU/abort/turn failure passed");
+    puts("route31: nine-road prefix R1left575/R2back610/right90/cross620/board_tilt1.0_wait300ms_guard300_confirm100_v40/no_contact_nudges, crossing/contact yaw/FF disabled, QRgate/right780/back810/rackDIR0nl3400predeploy/left90 then actual ball/bucket41 task handoff; independent3400 recipe and3399-not-DONE boundary, no legacybucket/manuald, three backwardBFF legs, post-yaw-before-next, terminal router policy,108 road g/a/0 cancellations, locks and IMU/abort/turn failure passed");
     return 0;
 }
 

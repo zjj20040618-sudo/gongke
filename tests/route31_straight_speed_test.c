@@ -182,7 +182,7 @@ static int speed_default_stage_scope(void)
         if (stage == ROUTE31_HOSTAGE_TURN_STAGE) CHECK(turn_target_deg() == 93.0f);
         if (strafe || ordinary || stage == 3u || stage == 4u) {
             CHECK(sequence_start_stage() == 0 && s_v == expected);
-            if (stage == 7u) CHECK(s_dist_target == -805.0f);
+            if (stage == 7u) CHECK(s_dist_target == -810.0f);
             if (stage == 15u) CHECK(route_seq_leg()->distance_mm == 1415u && s_dist_target == 1415.0f);
             if (strafe) CHECK(fabsf(last_y) == 250.0f);
             else CHECK(last_x == (s_msel == 16 ? -expected : expected));
@@ -217,7 +217,7 @@ static int speed_every_stage_scope(void)
                       stage == 1u ? s_dist_target == -610.0f :
                       stage == 3u ? s_dist_target == -620.0f :
                       stage == 4u ? s_dist_target == 0.0f :
-                      stage == 7u ? s_dist_target == -805.0f : 1);
+                      stage == 7u ? s_dist_target == -810.0f : 1);
                 if (stage == 15u) CHECK(route_seq_leg()->distance_mm == 1415u && s_dist_target == 1415.0f);
                 if (ordinary) CHECK(last_x == (s_msel == 16 ? -expected : expected));
                 else if (stage == 0u || stage == 6u) CHECK(fabsf(last_y) == 100.0f);
