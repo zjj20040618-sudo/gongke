@@ -6,7 +6,10 @@
 /* Mode31 has its own 16-stage task trial. Active31 R1=565/pv100;
  * select31 starts QR reception but only g starts movement. R1 still/yaw-fix
  * must finish and a legal QR tuple must be cached before R2 can start.
- * Mode31 R2 uses BACK610. Crossing uses BACK620/v300, restore pre-cross yaw,
+ * Mode31 R2 uses BACK490 then body-back100/body-left100 diagonal with held
+ * heading, before the retained RIGHT90. Remaining crossing BACK520/v300
+ * preserves westward total100+520=620; southward total490+100=590 (old610).
+ * These are unmeasured trial distances. Restore pre-cross yaw after crossing,
  * then FWD/v40 until tilt2.0deg,
  * stopped IMU zero then BACK190/route_v (no post-contact nudges),
  * then RIGHT780/BACK760/LEFT90. Its old 2450/2125 road-only tail is REPLACED
@@ -77,13 +80,25 @@
 #define ROUTE31_LATERAL_V_MMS 100.0f /*31 slow-route trial; pv remains independently adjustable. */
 #define ROUTE31_START_LEFT_MM 565u /* Active31 only;43 table retains545. */
 #define ROUTE31_TASK_ENTRY_BACK_MM 760u /* Active31 only;43 table retains780. */
+/* Only31's bottom-right approach. All distances are positive body-axis mm.
+ * Map south=body-back and west=body-left BEFORE the retained RIGHT90.
+ * Tune one at a time; changing diagonal-left also changes total westward
+ * travel unless CORNER_CROSS is adjusted separately.43/44 stay610/620. */
+#define ROUTE31_CORNER_BACK_MM 490u       /* Straight back BEFORE diagonal. */
+#define ROUTE31_CORNER_DIAG_BACK_MM 100u  /* Rearward component, NOT diagonal length. */
+#define ROUTE31_CORNER_DIAG_LEFT_MM 100u  /* Leftward component; no heading turn. */
+#define ROUTE31_CORNER_CROSS_MM 520u      /* Remaining reverse crossing AFTER RIGHT90. */
+#define ROUTE31_CORNER_DIAG_V_MMS 50.0f   /* Resultant translation speed cap. */
+#define ROUTE31_CORNER_DIAG_ORTH_KP 0.5f  /* Private uncalibrated mm/s per mm; no global change. */
+#define ROUTE31_CORNER_DIAG_ORTH_TOL_MM 12.0f /* Both along/orth endpoint error; stop on failure. */
+#define ROUTE31_CORNER_DIAG_MAX_MS 6000u  /* Whole diagonal incl. mid-yaw pauses; abort, never DONE. */
 #define ROUTE31_TASK_V_MMS 50.0f /* Ordinary travel/search/offsets from pair stage onward; not fine/laser. */
 #define ROUTE31_CROSS_LEFT_SCALE 1.30f /* Only31 reverse crossing; target RPM of m0(LR)/m3(LF). */
 #define ROUTE43_STRAIGHT_V_MMS ROUTE31_STRAIGHT_V_MMS /*43 restored as current31's stepped copy. */
 #define ROUTE43_LATERAL_V_MMS ROUTE31_LATERAL_V_MMS
 /* Legacy reverse-crossing recipe for34/36/37;31/43 use the private table below. */
 #define ROUTE_CROSS_BACK_MM       650u
-#define ROUTE31_CROSS_BACK_MM     620u /*31 only: user shortens prior630 by10. */
+#define ROUTE31_CROSS_BACK_MM     620u /* Shared43/44 seed; active31 uses CORNER_CROSS_MM. */
 #define ROUTE_CROSS_BACK_V_MMS    300.0f
 #define ROUTE_POST_CROSS_ALIGN_MM  80u
 #define ROUTE_POST_CROSS_ALIGN_V_MMS 20.0f
@@ -188,7 +203,7 @@
 #define ROUTE31_BOARD_CONTACT_MAX_MS 10000u /* Abort if no lift; never claim contact from distance/time. */
 #define ROUTE31_BOARD_NUDGE_BACK_MM    10u /* Historical macro; current31/43 skip post-contact nudges. */
 #define ROUTE31_BOARD_NUDGE_FORWARD_MM 15u /* Historical macro; current31/43 skip this leg. */
-#define ROUTE31_R2_BACK_MM          610u /* R2 unchanged this round; independent from crossing630. */
+#define ROUTE31_R2_BACK_MM          610u /*43 seed; active31 uses CORNER_BACK plus internal diagonal. */
 #define ROUTE31_EXIT_RIGHT_MM      780u /* 2026-10-10: prior800 minus20. */
 #define ROUTE31_EXIT_YAW_KP_SEED   3.0f /* Trial only:31/43 stage6 yaw while translating, not other legs/turns. */
 #define ROUTE31_ENTRY_BACK_MM      780u /* User: move task-entry corner away from ball-side boundary. */

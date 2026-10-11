@@ -29,6 +29,21 @@ static int r31_revised_boot(void)
     return 0;
 }
 
+/* The inherited44 fixture injects one axis.31's new internal diagonal needs
+ * both encoder endpoints, without changing the independent44 test helper. */
+static int r31_finish_road(void)
+{
+    if (!route31_diagonal_active()) return r44_finish_road();
+    host_fore = -(float)ROUTE31_CORNER_DIAG_BACK_MM;
+    host_lateral = -(float)ROUTE31_CORNER_DIAG_LEFT_MM;
+    for (unsigned k=0u; k<180u && s_seq_state==SQ_RUN; ++k) {
+        if (s_round==R_ALIGN) host_yaw=s_dist_heading0;
+        CHECK(r44_service(20u)==0);
+    }
+    CHECK(s_seq_state!=SQ_STOPPED);
+    return 0;
+}
+
 /* Replay the real first nine automatic route stages. No direct stage jump or
  * invented rack position: even LEFT90 must finish without one STEP emitted. */
 static int r31_to_ball_request(void)
@@ -42,7 +57,7 @@ static int r31_to_ball_request(void)
             wire_sync(); wire_ack(wire_request,1u,0u); xy_qr(wire_request,"123");
         } else {
             if(s_seq_state!=SQ_RUN) CHECK(r44_start_road()==0);
-            CHECK(r44_finish_road()==0);
+            CHECK(r31_finish_road()==0);
         }
     }
     wire_sync();
@@ -229,8 +244,12 @@ static int check_r31_automatic_complete_chain(void)
                         ++tail_ff_checks;
                     }
                     if(stage==0u) CHECK(s_msel==17 && s_dist_target==-565.0f && s_v==100.0f);
-                    if(stage==1u) CHECK(s_msel==16 && s_dist_target==-610.0f && s_v==100.0f);
-                    if(stage==3u) CHECK(s_msel==16 && s_dist_target==-620.0f &&
+                    if(stage==1u) {
+                        CHECK(s_msel==16);
+                        if(s_route31_corner_diag) CHECK(fabsf(s_dist_target+route31_diagonal_length())<.001f && s_v==50.0f);
+                        else CHECK(s_dist_target==-(float)ROUTE31_CORNER_BACK_MM && s_v==100.0f);
+                    }
+                    if(stage==3u) CHECK(s_msel==16 && s_dist_target==-(float)ROUTE31_CORNER_CROSS_MM &&
                                          s_v==300.0f && s_dist_heading_kp==0.0f && !s_dist_ff_ratio);
                     if(stage==7u) CHECK(s_msel==16 && s_dist_target==-760.0f && s_v==100.0f);
                     if(stage==9u) {
@@ -264,7 +283,10 @@ static int check_r31_automatic_complete_chain(void)
                             CHECK(last_w<0.0f);
                         }
                         host_yaw=s_dist_heading0;
-                        if(dist_lateral()) host_lateral=s_dist_odo0+s_dist_target;
+                        if(route31_diagonal_active()) {
+                            host_fore=-(float)ROUTE31_CORNER_DIAG_BACK_MM;
+                            host_lateral=-(float)ROUTE31_CORNER_DIAG_LEFT_MM;
+                        } else if(dist_lateral()) host_lateral=s_dist_odo0+s_dist_target;
                         else host_fore=s_dist_odo0+s_dist_target;
                     }
                 }
@@ -344,7 +366,7 @@ static int check_r31_automatic_complete_chain(void)
           s_dist_target==(float)ROUTE31_HOSTAGE_RANK1_MM && r44_stopped());
     CHECK(s_route43_tune.road_mm[0]==545u && s_route43_tune.road_mm[7]==780u &&
           s_route43_tune.straight_v==100.0f && s_route43_tune.lateral_v==100.0f);
-    puts("31 actualautomatic16stage:LEFT565/BACK610/BACK620_leftRPMx1.30/BACK760;zeroSTEPthroughLEFT90,firstNEWBALLparallelrackcompletebeforeLEFT30/grab;tail50FF0_yawhold,LEFT30_grab_RIGHT30_first180_thenNEWbucket,release_retract_second180exact,laser2s,hostageLEFT30_NEWX_grab_retract_54_finalDONE;noextraG passed");
+    puts("31 actualautomatic16stage:LEFT565/BACK490/DIAGONAL_back100_left100/BACK520_leftRPMx1.30/BACK760;zeroSTEPthroughLEFT90,firstNEWBALLparallelrackcompletebeforeLEFT30/grab;tail50FF0_yawhold,LEFT30_grab_RIGHT30_first180_thenNEWbucket,release_retract_second180exact,laser2s,hostageLEFT30_NEWX_grab_retract_54_finalDONE;noextraG passed");
     return 0;
 }
 

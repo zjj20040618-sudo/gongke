@@ -21,7 +21,7 @@ static int slow_defaults_and_scope(void)
         CHECK(s_route31_straight_v == 100.0f && s_route31_lateral_v == 100.0f);
         CHECK(stage != 0u || (s_dist_target == -565.0f && last_y == -100.0f));
         CHECK(stage != 7u || s_dist_target == -760.0f);
-        CHECK(stage != 3u || (s_dist_target == -(float)ROUTE31_CROSS_BACK_MM &&
+        CHECK(stage != 3u || (s_dist_target == -(float)ROUTE31_CORNER_CROSS_MM &&
                              s_dist_heading_kp == 0.0f && s_dist_ff_ratio == 0.0f));
         run_cmd("g"); CHECK(s_seq_state == SQ_STOPPED && !laser_state);
     }

@@ -17,7 +17,7 @@ try {
         $taskStack.Groups['words'].Value -ne $taskIocStack.Groups['words'].Value) {
         throw 'Current route stack contract: DefaultTask needs at least 4 KB and matching IOC words'
     }
-    foreach ($taskCase in @('route31_slow_clearance_test', 'route43_current_step_test',
+    foreach ($taskCase in @('route31_diagonal_corner_test', 'route31_slow_clearance_test', 'route43_current_step_test',
             'route31_revised_tail_test', 'route44_current_test')) {
         foreach ($taskVariant in @('default', 'optimized')) {
             $taskOutput = Join-Path ([IO.Path]::GetTempPath()) "$taskCase-$taskVariant-$taskBuildId.exe"
