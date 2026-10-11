@@ -9,7 +9,7 @@ import config
 from hardware import init_uart, send_packet
 from mode_controller import ModeController
 from protocol import (build_object_packet, build_qr_packet, build_hostage_order_packet,
-                      build_ball_order_packet, CommandReceiver)
+                      build_ball_order_packet, build_target_order_packet, CommandReceiver)
 from control_session import ControlSession
 from boot_session import BootSession
 from qr_reader import QrReader
@@ -20,7 +20,7 @@ from task_selection import TaskSelection
 from touch_inspector import ObjectInspector
 from display_cache import DisplayCache
 from frame_pair import FramePair
-from hostage_order import HostageOrder, BallOrder
+from hostage_order import HostageOrder, BallOrder, TargetOrder
 
 
 def main():
@@ -47,6 +47,7 @@ def main():
         task = TaskSelection()
         hostage_order = HostageOrder()
         ball_order = BallOrder()
+        target_order = TargetOrder()
         sequence = frame_count = fps_count = 0
         fps_value, fps_started = 0.0, time.ticks_ms()
         cached_qrs, cached_qr_left = [], 0
@@ -56,7 +57,7 @@ def main():
         modes.enter(config.START_MODE)
         manual_object_view = modes.mode == config.MODE_OBJECT
         print("[APP] ready {}; model={} classes=10; UART controls recognition".format(modes.mode, config.MODEL_FILE))
-        print("[UART] QR=0x53; OBJECT=0x01; HOSTAGE/BALL ORDER=0x54; task request=0x63; MCU requires f976afb-compatible rank receiver")
+        print("[UART] QR=0x53; OBJECT=0x01; HOSTAGE/BALL/TARGET ORDER=0x54; task request=0x63; TARGET task2 rank requires upgraded MCU receiver")
         print("[SESSION] transport={}; MCU boot V1 requires 6fe1538+".format(
             "V1: waiting HELLO; no legacy fallback" if boot is not None else "legacy (boot V1 disabled)"))
         for class_id, name in enumerate(config.CLASS_NAMES_CN):
@@ -79,6 +80,7 @@ def main():
                             task.reset()
                             hostage_order.reset()
                             ball_order.reset()
+                            target_order.reset()
                             sequence = 0
                             frame_pair.reset()
                             inspector.reset()
@@ -106,6 +108,8 @@ def main():
                                             and control.task_id == 3 else None)
                         ball_order.reset(control.target_class_id if control.request_id == command[0]
                                          and control.task_id == 1 else None)
+                        target_order.reset(control.target_class_id if control.request_id == command[0]
+                                           and control.task_id == 2 else None)
                         pending_auto_object = auto_object_failed = False
                         frame_pair.reset()  # 新请求，即使仍是OBJECT，也拒绝前任务的流水线结果。
                         manual_object_view = False
@@ -144,6 +148,7 @@ def main():
                     if not control.remote_owned:
                         hostage_order.reset()
                         ball_order.reset()
+                        target_order.reset()
                     # 原请求的ACK与历史编号保留；人工预览不新增编号、不回传。
                     frame_pair.reset()
                     manual_object_view = modes.mode == config.MODE_OBJECT and (
@@ -242,6 +247,7 @@ def main():
                     # 使用全部新检测结果；若先筛成抓取目标，就无法知道另外两种谁先出现。
                     hostage_order.observe(objects, width, height)
                     ball_order.observe(objects, width, height)
+                    target_order.observe(objects, width, height)
                 vision_ms = time.ticks_ms() - source_started if result_ready else 0
                 # 0x63只发当前任务；通用0x60 OBJECT保留三任务加桶诊断。
                 if serial is not None and (result_ready or control.qr_handoff):
@@ -262,6 +268,11 @@ def main():
                         # 球与人质共用54，由当前63任务区分类别域；01坐标和seq不变。
                         order_packet = build_ball_order_packet(frame_sequence,
                             ball_order.target_class_id, ball_order.order)
+                        send_packet(serial, control.result(order_packet))
+                    if target_order.active and result_ready:
+                        # task2靶子首次出现编号；旧MCU需扩展54的任务域才能接收。
+                        order_packet = build_target_order_packet(frame_sequence,
+                            target_order.target_class_id, target_order.order)
                         send_packet(serial, control.result(order_packet))
                     uart_ms = time.ticks_ms() - uart_started
 
@@ -293,6 +304,9 @@ def main():
             if ball_order.active:
                 task_status += " BALL ORDER:{} TARGET#{}".format(
                     ",".join(str(cid) for cid in ball_order.order) or "NONE", ball_order.target_rank)
+            if target_order.active:
+                task_status += " TARGET ORDER:{} RANK:{}".format(
+                    ",".join(str(cid) for cid in target_order.order) or "NONE", target_order.target_rank)
             status = "{} {}".format(task_status, status or "").strip()
             if modes.mode == config.MODE_QR:
                 # 原始灰度图仍解码；预览关闭只改显示背景，触屏范围映射保持不变。

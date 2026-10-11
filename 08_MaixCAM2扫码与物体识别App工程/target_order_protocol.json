@@ -1,0 +1,68 @@
+{
+  "contract": "TARGET_FIRST_SEEN_62_54_V1",
+  "basis": "gongke cloud main fff5d601bbf77d7fa80728e01925264c710b871d",
+  "hardware_verified": false,
+  "encoding": "binary, not ASCII; all multibyte fields little-endian",
+  "crc": "CRC-16/CCITT-FALSE, init FFFF, poly 1021; excludes AA 55 and trailing CRC",
+  "task_id": 2,
+  "digit_to_model": {
+    "1": 6,
+    "2": 8,
+    "3": 7
+  },
+  "model_to_color": {
+    "6": "red",
+    "7": "blue",
+    "8": "green"
+  },
+  "unknown_rank": 0,
+  "empty_slot": 255,
+  "examples": [
+    {
+      "name": "request_blue",
+      "request_id": 1,
+      "task_id": 2,
+      "qr_digit": 3,
+      "length": 9,
+      "hex": "AA 55 63 01 00 02 03 B7 C6"
+    },
+    {
+      "name": "ack",
+      "request_id": 1,
+      "mode": 2,
+      "status": 0,
+      "length": 9,
+      "hex": "AA 55 61 01 00 02 00 57 B2"
+    },
+    {
+      "name": "unknown",
+      "request_id": 1,
+      "seq": 0,
+      "target_model_id": 7,
+      "target_rank": 0,
+      "seen_count": 0,
+      "slots": [
+        255,
+        255,
+        255
+      ],
+      "length": 18,
+      "hex": "AA 55 62 01 00 09 00 54 00 00 07 00 00 FF FF FF 99 5C"
+    },
+    {
+      "name": "blue_second",
+      "request_id": 1,
+      "seq": 1,
+      "target_model_id": 7,
+      "target_rank": 2,
+      "seen_count": 3,
+      "slots": [
+        8,
+        7,
+        6
+      ],
+      "length": 18,
+      "hex": "AA 55 62 01 00 09 00 54 01 00 07 02 03 08 07 06 89 46"
+    }
+  ]
+}

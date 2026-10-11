@@ -122,9 +122,9 @@ class ControlSession:
         if packet is None or len(packet) < 3:
             return None
         if packet[2] == 0x54:
-            # 球task1/人质task3共用54；不得串用类别域或当前请求的目标。
-            class_ids = (3, 4, 5) if self.task_id == 1 else (0, 1, 2)
-            if (not self.remote_owned or self.task_id not in (1, 3) or self.modes.mode != "OBJECT"
+            # 球task1/靶task2/人质task3共用54；桶task4不得接收编号。
+            class_ids = {1: (3, 4, 5), 2: (6, 7, 8), 3: (0, 1, 2)}.get(self.task_id, ())
+            if (not self.remote_owned or self.task_id not in (1, 2, 3) or self.modes.mode != "OBJECT"
                     or self.qr_handoff or len(packet) != 13 or packet[5] != self.target_class_id
                     or packet[5] not in class_ids):
                 return None

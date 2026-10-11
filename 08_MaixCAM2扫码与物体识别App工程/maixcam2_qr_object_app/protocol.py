@@ -1,4 +1,4 @@
-"""UART组包：01坐标、53任务码、54球/人质顺序、60/63请求。"""
+"""UART组包：01坐标、53任务码、54球/人质/靶顺序、60/63请求。"""
 import struct
 from utils import clamp_u16, crc16_ccitt
 
@@ -90,6 +90,15 @@ def build_ball_order_packet(sequence, target_class_id, order):
     由62绑定task1请求；与本帧01同seq，目标未见rank=0，空位FF。
     """
     return _build_order_packet(0x54, sequence, target_class_id, order, (3, 4, 5), "ball")
+
+
+def build_target_order_packet(sequence, target_class_id, order):
+    """54靶顺序：按task2区分类别域，模型ID为6红/7蓝/8绿。
+
+    编号为本轮首次有效出现顺序，不等于颜色号或固定左右站位。
+    由62绑定task2请求；与本帧01同seq，目标未见rank=0，空位FF。
+    """
+    return _build_order_packet(0x54, sequence, target_class_id, order, (6, 7, 8), "target")
 
 
 def _build_order_packet(opcode, sequence, target_class_id, order, class_ids, name):
