@@ -182,7 +182,7 @@ static int speed_default_stage_scope(void)
         if (stage == ROUTE31_HOSTAGE_TURN_STAGE) CHECK(turn_target_deg() == 93.0f);
         if (strafe || ordinary || stage == 3u || stage == 4u) {
             CHECK(sequence_start_stage() == 0 && s_v == expected);
-            if (stage == 7u) CHECK(s_dist_target == -810.0f);
+            if (stage == 7u) CHECK(s_dist_target == -790.0f);
             if (stage == 15u) CHECK(route_seq_leg()->distance_mm == 1415u && s_dist_target == 1415.0f);
             if (strafe) CHECK(fabsf(last_y) == 250.0f);
             else CHECK(last_x == (s_msel == 16 ? -expected : expected));
@@ -212,12 +212,12 @@ static int speed_every_stage_scope(void)
             if (ordinary || stage == 0u || stage == 3u || stage == 4u || stage == 6u) {
                 CHECK(sequence_start_stage() == 0 && s_v == expected);
                 CHECK(s_dist_ramp.acc == 700.0f && s_dist_ramp.dec == 350.0f && s_dist_precise);
-                CHECK(s_dist_heading_kp == (stage == 3u || stage == 4u ? 0.0f : stage == 6u ? 3.0f : 0.3f));
+                CHECK(s_dist_heading_kp == (stage == 3u || stage == 4u ? 0.0f : stage == 0u || stage == 6u ? 3.0f : 0.3f));
                 CHECK(stage == 0u ? s_dist_target == -575.0f :
                       stage == 1u ? s_dist_target == -610.0f :
                       stage == 3u ? s_dist_target == -620.0f :
                       stage == 4u ? s_dist_target == 0.0f :
-                      stage == 7u ? s_dist_target == -810.0f : 1);
+                      stage == 7u ? s_dist_target == -790.0f : 1);
                 if (stage == 15u) CHECK(route_seq_leg()->distance_mm == 1415u && s_dist_target == 1415.0f);
                 if (ordinary) CHECK(last_x == (s_msel == 16 ? -expected : expected));
                 else if (stage == 0u || stage == 6u) CHECK(fabsf(last_y) == 100.0f);
@@ -251,7 +251,8 @@ static int speed_internal_turn_offsets(void)
               route_seq_speed_mms()==capped && s_v==capped &&
               s_route31_straight_v==600.0f && s_route31_lateral_v==(float)lateral);
         CHECK(sequence_start_stage()==0 && s_dist_target==-15.0f &&
-              s_dist_align_enabled && last_y==-capped && !last_x);
+              s_dist_align_enabled && last_y==-capped && last_x==0.010f*last_y &&
+              s_dist_ff_ratio==0.010f && s_dist_heading_kp==3.0f);
         run_cmd("g");CHECK(s_seq_state==SQ_STOPPED&&!s_seq_pair_offset&&!s_seq_return_offset&&stopped());
     }
     CHECK(ROUTE31_RETURN_RIGHT_MM == 0u); /* Return-turn handoff is tested by the real task chain. */
@@ -308,10 +309,11 @@ static int lateral_every_stage_scope(void)
                 char report[24]; snprintf(report, sizeof report, "lateral_v=%u", lateral);
                 CHECK(strstr(host_messages, report));
                 CHECK(s_dist_ramp.acc == 700.0f && s_dist_ramp.dec == 350.0f && s_dist_precise);
-                CHECK(s_dist_heading_kp == (stage == 3u || stage == 4u ? 0.0f : stage == 6u ? 3.0f : 0.3f));
+                CHECK(s_dist_heading_kp == (stage == 3u || stage == 4u ? 0.0f : stage == 0u || stage == 6u ? 3.0f : 0.3f));
                 if (strafe) {
                     CHECK(s_msel == (stage == 0u ? 17 : 18) && fabsf(last_y) == (float)lateral &&
-                          last_x == 0.0f && last_w == 0.0f);
+                          last_x == (stage == 0u ? 0.010f * last_y : 0.0f) && last_w == 0.0f &&
+                          s_dist_ff_ratio == (stage == 0u ? 0.010f : 0.0f));
                     CHECK(s_dist_target == (stage == 0u ? -575.0f : 780.0f));
                 } else CHECK(last_x == (s_msel == 16 ? -expected : expected));
             }
@@ -348,16 +350,17 @@ static int speed_search_and_fine(void)
     CHECK(VAT_ROUTE_BALL_X_PX == 135 && VAT_ROUTE_BUCKET_X_PX == 105 && VAT_ROUTE43_BUCKET_X_PX == 125 &&
           VAT_ROUTE_HOSTAGE_X_PX == 215 && VAT_TOL_PX == 10);
     for (unsigned i = 0u; i < 3u; ++i) {
+        const float trial_ff = i == 0u ? 0.015f : 0.03f;
         CHECK(speed_prepare_with_lateral(stages[i], 200u, 600u) == 0);
         if (i == 1u) CHECK(target35_point() == 250 && target35_low() == 247 && target35_high() == 253 &&
                            target35_fine_enter() == 360);
         else CHECK(s_vat.x_goal == (i == 0u ? 135 : 215));
         if (i != 1u) {
             CHECK(VAT_ROUTE_SEARCH_ACC_MMS2 == 700.0f);
-            CHECK(fabsf(s_route_search_ff - (i == 2u ? 0.05f : 0.03f)) < 0.00001f);
-            /* Explicit trial FF exercises the public setter while still
-             * braked. It must scale with actual ramp speed, not cruise200. */
-            CHECK(vision_align_test_route_search_ff_set(0.03f));
+            CHECK(fabsf(s_route_search_ff - (i == 2u ? 0.05f : 0.015f)) < 0.00001f);
+            /* BALL must keep its new default1.5% body-right FF; HOSTAGE
+             * still exercises the public trial setter while braked. */
+            if (i == 2u) CHECK(vision_align_test_route_search_ff_set(trial_ff));
         }
         wire_ack(wire_request, 2u, 0u);
         host_tick += T_DIST_STILL_MS; wire_poll();
@@ -368,17 +371,17 @@ static int speed_search_and_fine(void)
         } else {
             CHECK(s_vat.state == VAT_ROUTE_SEARCH && last_x == 0.0f && last_y == 0.0f);
             host_tick += VAT_POLL_MS; wire_poll();
-            if (fabsf(last_x - 14.0f) >= 0.00001f || fabsf(last_y - 14.0f * 0.03f) >= 0.00001f)
+            if (fabsf(last_x - 14.0f) >= 0.00001f || fabsf(last_y - 14.0f * trial_ff) >= 0.00001f)
                 fprintf(stderr,"search ramp task=%u tick=%u from=%u vx=%.9f vy=%.9f ff=%.9f state=%u\n",
                         stages[i],host_tick,s_route_search_from,last_x,last_y,s_route_search_ff,(unsigned)s_vat.state);
-            CHECK(fabsf(last_x - 14.0f) < 0.00001f && fabsf(last_y - 14.0f * 0.03f) < 0.00001f);
+            CHECK(fabsf(last_x - 14.0f) < 0.00001f && fabsf(last_y - 14.0f * trial_ff) < 0.00001f);
             host_tick += VAT_POLL_MS; wire_poll();
-            CHECK(fabsf(last_x - 28.0f) < 0.00001f && fabsf(last_y - 28.0f * 0.03f) < 0.00001f);
+            CHECK(fabsf(last_x - 28.0f) < 0.00001f && fabsf(last_y - 28.0f * trial_ff) < 0.00001f);
             host_tick += 245u; wire_poll();
             CHECK(fabsf(last_x - 199.5f) < 0.0001f &&
-                  fabsf(last_y - last_x * 0.03f) < 0.00001f);
+                  fabsf(last_y - last_x * trial_ff) < 0.00001f);
             host_tick += 1u; wire_poll();
-            CHECK(last_x == 200.0f && fabsf(last_y - 6.0f) < 0.00001f);
+            CHECK(last_x == 200.0f && fabsf(last_y - 200.0f * trial_ff) < 0.00001f);
         }
         CHECK(last_x == 200.0f && s_seq_state == SQ_TASK);
         speed_wire_object(wire_request, 1u, models[i], 400u, image_y[i]);

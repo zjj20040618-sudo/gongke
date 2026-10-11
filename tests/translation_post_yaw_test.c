@@ -380,7 +380,7 @@ static int check_every_route_normal_leg_and_crossing_exemptions(void)
             s_seq_stage = (uint8_t)stage; route_seq_prepare();
             leg = route_seq_leg();
             if (dynamic) {
-                const unsigned expected = stage == ROUTE31_TARGET_CORNER_STAGE ? 430u : 1315u;
+                const unsigned expected = stage == ROUTE31_TARGET_CORNER_STAGE ? 420u : 1315u;
                 CHECK(leg->distance_mm == expected && s_d == (float)expected);
             }
             CHECK(sequence_start_stage() == 0 && s_seq_mode == owners[n]);
@@ -500,7 +500,7 @@ static int yaw_check31_next_leg(unsigned zero_before)
 {
     CHECK((unsigned)zero_calls == zero_before + 1u && host_yaw == 0.0f);
     CHECK(s_seq_mode == 31u && s_seq_stage == 7u && s_seq_state == SQ_STILL);
-    CHECK(route_seq_leg()->mode == 16u && route_seq_leg()->distance_mm == 810u &&
+    CHECK(route_seq_leg()->mode == 16u && route_seq_leg()->distance_mm == 790u &&
           route_seq_leg()->speed_mms == 200.0f && yaw_stopped());
     CHECK(strstr(host_messages, "tol=0.40") != NULL);
     return 0;
@@ -636,7 +636,7 @@ static int check_route31_new_leg_reset_and_reselect(void)
     uint32_t old_hold = s_dist_align_stable_t0;
     yaw_elapsed(399u); CHECK(s_round == R_ALIGN);
     yaw_elapsed(1u); CHECK(yaw_check31_next_leg(before) == 0);
-    /* The real next BACK810 must receive its own full400ms stable window. */
+    /* The real next BACK790 must receive its own full400ms stable window. */
     CHECK(sequence_start_stage() == 0 && !s_dist_align_hold);
     CHECK(s_seq_stage == 7u && s_round == R_RUN);
     CHECK(yaw_arrive(-0.29f) == 0);
@@ -670,7 +670,7 @@ static int check_route31_new_leg_reset_and_reselect(void)
     yaw_elapsed(399u); CHECK(s_round == R_ALIGN && (unsigned)zero_calls == before);
     yaw_elapsed(1u); CHECK(yaw_check31_next_leg(before) == 0);
     CHECK(host_precise_calls == dispatch && !pulse_calls && !servo_calls);
-    puts("post-yaw:real nextBACK810, stopped-owner reselect31 and fixture reset each receive fresh400ms hold; initial true0 never issues a forced rotation passed");
+    puts("post-yaw:real nextBACK790, stopped-owner reselect31 and fixture reset each receive fresh400ms hold; initial true0 never issues a forced rotation passed");
     return 0;
 }
 
@@ -812,9 +812,8 @@ static int check_route31_wrapped_side_and_turn_isolation(void)
         yaw_elapsed(399u); CHECK(s_round == R_ALIGN && (unsigned)zero_calls == before);
         yaw_elapsed(1u); CHECK(yaw_check31_next_leg(before) == 0);
     }
-    /* Real31 pre-cross right90, hostage right93 and left90, plus standalone20/22/30, retain the0.3
-     * acceptance band and may finish on the approach side. The31 distance
-     * correction's0.4 band must not change these executors'0.3 band. */
+    /* Real31 pre-cross right90, hostage right93 and left90 accept0.4.
+     * Standalone20/22/30 retain0.3; both may finish on the approach side. */
     static const unsigned modes[] = { 31u, 31u, 31u, 20u, 22u, 30u };
     static const unsigned stages[] = { 2u, 8u, 13u, 0u, 0u, 0u };
     for (unsigned n = 0u; n < sizeof modes / sizeof modes[0]; ++n) {
@@ -830,13 +829,13 @@ static int check_route31_wrapped_side_and_turn_isolation(void)
         float direction = target > 0.0f ? 1.0f : -1.0f;
         unsigned before = (unsigned)zero_calls;
         unsigned precise_before = host_precise_calls, integer_before = host_integer_calls;
-        host_yaw = target - direction * 0.35f; yaw_elapsed(20u);
+        host_yaw = target - direction * (modes[n] == 31u ? 0.401f : 0.35f); yaw_elapsed(20u);
         CHECK(s_round == R_RUN && last_w * direction > 0.0f);
         CHECK(host_precise_calls == precise_before + (modes[n] == 31u));
         CHECK(host_integer_calls == integer_before + (modes[n] != 31u));
         yaw_elapsed(700u);
         CHECK(s_round == R_RUN && (unsigned)zero_calls == before);
-        host_yaw = target - direction * 0.25f; yaw_elapsed(20u);
+        host_yaw = target - direction * (modes[n] == 31u ? 0.4f : 0.25f); yaw_elapsed(20u);
         CHECK(s_round == R_BRAKE && yaw_stopped() && !strcmp(s_turn_result, "DONE"));
         yaw_elapsed(modes[n] == 31u ? 399u : 699u);
         CHECK(s_round == R_BRAKE && (unsigned)zero_calls == before);
@@ -849,7 +848,7 @@ static int check_route31_wrapped_side_and_turn_isolation(void)
         }
         else CHECK(s_round == R_DONE);
     }
-    puts("post-yaw:31 wrapped +/-359 correction follows shortest signed error and accepts same-side wrapped0.25; real31 both right90/left90 and independent20/22/30 still reject0.35, accept same-side0.25 after400ms(31)/700ms(independent) passed");
+    puts("post-yaw:31 wrapped +/-359 correction follows shortest signed error and accepts same-side wrapped0.25; real31 turns reject0.401/accept0.4 after400ms; independent20/22/30 retain reject0.35/accept0.25 after700ms passed");
     return 0;
 }
 
@@ -922,7 +921,7 @@ static int check_turn_body_timeout_is_not_endpoint_cap(void)
         CHECK(s_round == R_DONE && (unsigned)zero_calls == zeros && yaw_stopped());
         if (owners[sample] == 31u) CHECK(s_seq_state == SQ_STOPPED && s_seq_stage == stages[sample]);
     }
-    puts("post-yaw:31 body90/body182 and standalone20/22/30 remainRUN at2s/11999;only12s body timeout fails,never endpoint-cap success passed");
+    puts("post-yaw:31 body90/body180 and standalone20/22/30 remainRUN at2s/11999;only12s body timeout fails,never endpoint-cap success passed");
     return 0;
 }
 
@@ -946,7 +945,7 @@ static int check_route31_turn_endpoint_strength_scope(void)
             if (owners[n]==31u && stages[n]==8u) CHECK(goal==-90.0f);
             if ((owners[n]==43u && stages[n]==2u) || owners[n]==20u) CHECK(goal==90.0f);
             if (stages[n]==ROUTE31_RETURN180_STAGE && (owners[n]==31u || owners[n]==43u))
-                CHECK(goal==(owners[n]==31u?182.0f:180.0f));
+                CHECK(goal==180.0f);
             if (owners[n]==22u) CHECK(goal==180.0f);
             unsigned zeros=(unsigned)zero_calls, precise=host_precise_calls, integer=host_integer_calls;
             host_yaw=goal+offsets[side];yaw_elapsed(20u);
@@ -961,7 +960,7 @@ static int check_route31_turn_endpoint_strength_scope(void)
             run_cmd("0");CHECK(yaw_stopped());
         }
     }
-    puts("31 real right90/left90/return182 at goal+/-0.5 command precise pure-yaw+/-0.30 without zero or prematureDONE;43 and standalone20 right90,43 return180/standalone22 remain180 and retain0.18/integer;primary turn has no endpoint0.60 boost passed");
+    puts("31 real right90/left90/return180 at goal+/-0.5 command precise pure-yaw+/-0.30 without zero or prematureDONE;43 and standalone20 right90,43 return180/standalone22 remain180 and retain0.18/integer;primary turn has no endpoint0.60 boost passed");
     return 0;
 }
 

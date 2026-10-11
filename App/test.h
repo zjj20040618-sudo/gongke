@@ -23,5 +23,9 @@ void test_stepper_timer_irq(void); /* TIM7 only: one shared finite job, at most 
  * isolated motion-only routes. g/a/0 cancel without auto-return. */
 void test_vision_feed_frame(const ProtoFrame *f); /* RX ISR only caches current-phase33/35,31 target and VAT38..41/31 task frames; no TX or motion. */
 float test_forward_ff_ratio(void); /* Mode32 RAM fff; bench/route candidates are isolated. */
+/*44 is independently stepped: road/turn complete -> frozen application
+ * measurement snapshot -> next g; its grab/first180/bucket-release group stays
+ * continuous. Sensor IRQ/health data stay live; manual pause motion is rebased
+ * out on next g. Active g/a/0 cancel, not an interrupted-leg resume. */
 
 #endif /* APP_TEST_H */

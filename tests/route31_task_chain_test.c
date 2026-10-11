@@ -1,13 +1,15 @@
 /* Real31 router + real XY engine + CRC/ACK/request/QR parser. A host fixture
  * injects camera pixels, encoder endpoints and yaw: NOT physical acceptance. */
-/* Historical LEFT20 coverage is an explicit fixture-only build. Ordinary31
- * uses LEFT15 after first180 and goes directly to target after return182;
- * no return lateral or zero-distance job; hostage pregrab body
- * offset remains disabled. No production setting is changed by this override. */
+/* Ordinary31 uses LEFT15 after first180, returns180 directly to target,
+ * and shifts LEFT30 once before hostage arm action with original-yaw/new-X
+ * revalidation. Explicit historical LEFT20 overrides remain fixture-only. */
 #include "route_test_plan.h"
 #if defined(ROUTE31_HOSTAGE_OFFSET_LEGACY_TEST)
 #undef ROUTE31_HOSTAGE_PREGRAB_LEFT_MM
 #define ROUTE31_HOSTAGE_PREGRAB_LEFT_MM 20u
+#define TASK31_HOSTAGE_OFFSET_EXPECTED_MM 20u
+#else
+#define TASK31_HOSTAGE_OFFSET_EXPECTED_MM 30u
 #endif
 #if defined(ROUTE31_BALL_OFFSET_LEGACY_TEST)
 #undef ROUTE31_BALL_TO_BUCKET_LEFT_MM
@@ -247,7 +249,7 @@ static int task31_finish_motion(void)
     if (board_contact)
         CHECK(!s_board_contact.active && !s_board_contact.zeroed && !s_board_contact.hits &&
               s_dist_reason == 1u && strstr(host_messages, "result=TILT_REACHED") &&
-              strstr(host_messages, s_seq_mode == ROUTE_STEP_MODE ? "threshold=1.50 hits=2" : "threshold=1.00 hits=2") && !host_timer_active);
+              strstr(host_messages, s_seq_mode == ROUTE_STEP_MODE ? "threshold=1.50 hits=2" : "threshold=2.00 hits=2") && !host_timer_active);
     if (board_contact && s_seq_mode == ROUTE_TEST_MODE)
         CHECK(s_seq_stage == 5u && !s_seq_contact_post && s_seq_state == SQ_STILL && s_msel == 16);
     wire_sync();
@@ -273,7 +275,9 @@ static int task31_finish_motion(void)
             run_cmd("g");
         } else CHECK(s_seq_state == SQ_STILL);
         CHECK(sequence_start_stage() == 0 && s_msel == 17 && s_dist_target == -(float)offset_mm &&
-              s_dist_heading_kp == 0.3f && s_dist_align_enabled && last_y < 0.0f && s_seq_pair_offset);
+              s_dist_heading_kp == (s_seq_mode == ROUTE_TEST_MODE ? 3.0f : 0.3f) &&
+              s_dist_ff_ratio == (s_seq_mode == ROUTE_TEST_MODE ? 0.010f : 0.0f) &&
+              last_x == s_dist_ff_ratio * last_y && s_dist_align_enabled && last_y < 0.0f && s_seq_pair_offset);
         CHECK(sequence_finish_stage() == 0);
         if (s_seq_mode == ROUTE_STEP_MODE) run_cmd("g");
         wire_sync(); task31_snapshot();
@@ -399,7 +403,7 @@ static int task31_hostage_offset_resume(void)
     unsigned commands = wire_commands;
     int pulses = pulse_calls, servos = servo_calls, zeros = zero_calls;
     uint16_t held = host_servo;
-    CHECK(ROUTE31_HOSTAGE_PREGRAB_LEFT_MM == 20u &&
+    CHECK(ROUTE31_HOSTAGE_PREGRAB_LEFT_MM == TASK31_HOSTAGE_OFFSET_EXPECTED_MM &&
           ROUTE31_BALL_TO_BUCKET_LEFT_MM ==
 #if defined(ROUTE31_BALL_OFFSET_LEGACY_TEST)
               20u &&
@@ -409,9 +413,9 @@ static int task31_hostage_offset_resume(void)
           ROUTE31_PAIR_LEFT_MM == 40u);
     CHECK(s_seq_hostage_offset && s_route31_hostage_offset_done &&
           s_seq_state == SQ_STILL && s_seq_stage == ROUTE31_HOSTAGE_STAGE &&
-          route_seq_leg()->mode == 17u && route_seq_leg()->distance_mm == 20u &&
+          route_seq_leg()->mode == 17u && route_seq_leg()->distance_mm == TASK31_HOSTAGE_OFFSET_EXPECTED_MM &&
           route_seq_leg()->heading_hold && !host_timer_active);
-    CHECK(sequence_start_stage() == 0 && s_msel == 17 && s_dist_target == -20.0f &&
+    CHECK(sequence_start_stage() == 0 && s_msel == 17 && s_dist_target == -(float)TASK31_HOSTAGE_OFFSET_EXPECTED_MM &&
           last_y < 0.0f && s_dist_align_enabled && zero_calls == zeros);
     CHECK(sequence_finish_stage() == 0); wire_sync(); task31_snapshot();
     CHECK(s_seq_state == SQ_TASK && !s_seq_hostage_offset && s_route31_hostage_offset_done &&
@@ -646,7 +650,7 @@ static int check_full_qr_ball_bucket_target_hostage_chain(void)
     CHECK(ROUTE31_BALL_GRIP_US == 2100u && ROUTE31_HOSTAGE_GRIP_US == 2100u &&
           ROUTE43_BALL_GRIP_US == 1900u && ROUTE43_HOSTAGE_GRIP_US == 1900u &&
           ARM_SERVO_GRIP_US == 1700u && ARM_SERVO_START_US == 1150u);
-    CHECK(ROUTE31_ENTRY_BACK_MM == 810u && s_route31_plan[7].distance_mm == 810u &&
+    CHECK(ROUTE31_ENTRY_BACK_MM == 790u && s_route31_plan[7].distance_mm == 790u &&
           s_route31_plan[6].distance_mm == 780u &&
           ROUTE31_PAIR_LEFT_MM == 40u && ROUTE31_BALL_TO_BUCKET_LEFT_MM ==
 #if defined(ROUTE31_BALL_OFFSET_LEGACY_TEST)
@@ -666,7 +670,7 @@ static int check_full_qr_ball_bucket_target_hostage_chain(void)
     CHECK(route_seq_leg()->distance_mm == 575u);
     CHECK(s_route31_plan[1].distance_mm == 610u && s_route31_plan[3].distance_mm == 620u &&
           ROUTE_CROSS_BACK_MM == 650u && s_route31_plan[4].distance_mm == 0u &&
-          s_route31_plan[4].speed_mms == 40.0f && ROUTE31_BOARD_CONTACT_TILT_DEG == 1.0f &&
+          s_route31_plan[4].speed_mms == 40.0f && ROUTE31_BOARD_CONTACT_TILT_DEG == 2.0f &&
           ROUTE31_BOARD_CONTACT_FRAMES == 2u && ROUTE31_BOARD_CONTACT_ZERO_WAIT_MS == 1000u &&
           ROUTE31_BOARD_ZERO_WAIT_MS == 300u && ROUTE31_STABLE_MS == 400u &&
           ROUTE31_BOARD_CONTACT_START_GUARD_MS == 300u && ROUTE31_BOARD_CONTACT_CONFIRM_MS == 100u &&
@@ -716,7 +720,7 @@ static int check_full_qr_ball_bucket_target_hostage_chain(void)
 #endif
     CHECK(task31_bucket_up_done() == 0);
     CHECK(s_seq_stage == ROUTE31_RETURN180_STAGE && s_seq_state == SQ_STILL && s_msel == 22 &&
-          turn_target_deg() == 182.0f);
+          turn_target_deg() == 180.0f);
     CHECK(task31_finish_motion() == 0);
     CHECK(s_seq_stage == ROUTE31_TARGET_STAGE && s_seq_state == SQ_TASK && s_msel == 31);
     CHECK(task31_target_fire(8) == 0); /* QR second2 => green target model8 */
@@ -750,10 +754,11 @@ static int check_full_qr_ball_bucket_target_hostage_chain(void)
     unsigned commands = wire_commands;
     run_cmd("g"); xy_advance(10000u); xy_obj(wire_request, 0, 180, 220);
     CHECK(s_seq_state == SQ_DONE && stopped() && wire_commands == commands);
-    printf("31 full hostchain: %s; entryBACK810/preCrossRIGHT90/hostageRIGHT93/predeploy3400/LEFT90/ballX135/down32000/grip2100hold2/up32000/+180/%s/newBucketX105/down20000/release1150/after1s-ready1500/total2s/up20000/rackback3400/+182/stable400/direct_target250_noReturnLateralOrZeroDistance;hostageX215/%s/open1150/rack3400/grip2100/retract3000/held+rankfinal;117200STEP/verticalnet0/racknet400/5servo commands passed\n",
+    printf("31 full hostchain: %s; entryBACK790/preCrossRIGHT90/hostageRIGHT93/predeploy3400/LEFT90/ballX135/down32000/grip2100hold2/up32000/+180/%s/newBucketX105/down20000/release1150/after1s-ready1500/total2s/up20000/rackback3400/+180/stable400/direct_target250_noReturnLateralOrZeroDistance;hostageX215/%s/open1150/rack3400/grip2100/retract3000/held+rankfinal;117200STEP/verticalnet0/racknet400/5servo commands passed\n",
            VAT_Y_ALIGN_ENABLE ? "legacyXY" : "defaultXonly,noYfix",
            ROUTE31_BALL_TO_BUCKET_LEFT_MM == 20u ? "EXPLICIT_FIXTURE_LEFT20_cap80_yawfix" : "CURRENT_LEFT15_cap80_yawfix",
-           ROUTE31_HOSTAGE_PREGRAB_LEFT_MM ? "EXPLICIT_FIXTURE_LEFT20_yawfix_NEW_X" : "CURRENT_noBodyOffset");
+           ROUTE31_HOSTAGE_PREGRAB_LEFT_MM == 30u ? "CURRENT_LEFT30_yawfix_NEW_X" :
+           ROUTE31_HOSTAGE_PREGRAB_LEFT_MM ? "EXPLICIT_FIXTURE_LEFT20_yawfix_NEW_X" : "EXPLICIT_noBodyOffset");
     return 0;
 }
 
@@ -761,7 +766,7 @@ static int check_three_target_distances_and_independent_laser_scope(void)
 {
     const char *const qr[] = {"111", "222", "333"};
     const int models[] = {6, 8, 7};
-    const unsigned mm[] = {510u, 430u, 350u};
+    const unsigned mm[] = {515u, 420u, 355u};
     for (unsigned i = 0u; i < 3u; ++i) {
         CHECK(task31_at(ROUTE31_TARGET_STAGE, qr[i]) == 0);
         CHECK(task31_target_fire(models[i]) == 0); xy_advance(2000u);
@@ -1468,6 +1473,7 @@ static int check_route_ball_hostage_strict_coarse_boundaries(void)
     const unsigned stages[] = {ROUTE31_PAIR_STAGE, ROUTE31_HOSTAGE_STAGE};
     const int models[] = {4,0}, ys[] = {VAT_BALL_Y_PX,VAT_HOSTAGE_Y_PX};
     CHECK(VAT_ROUTE_FINE_ERROR_PX == 15 && VAT_TOL_PX == 10);
+    CHECK(ROUTE31_BALL_SEARCH_RIGHT_FF_RATIO == 0.015f && ROUTE31_HOSTAGE_SEARCH_RIGHT_FF_RATIO == 0.05f);
     for (unsigned kind = 0u; kind < 2u; ++kind) for (int sign = -1; sign <= 1; sign += 2) {
         CHECK(task31_at(stages[kind], "123") == 0);
         const int goal = task31_goal(models[kind]);
@@ -1495,7 +1501,7 @@ static int check_route_ball_hostage_strict_coarse_boundaries(void)
               last_y == 0.0f && last_w == 0.0f && !task31_status.good && !host_timer_active);
         run_cmd("0"); CHECK(stopped());
     }
-    puts("31 BALL/HOSTAGE:both exact goal+/-15 stay signed coarse200; +/-14 brake/fresh-recheck, permanentfine20; forward-only task-specific FF and unchanged+/-10 arrival passed");
+    puts("31 BALL/HOSTAGE:both exact goal+/-15 stay signed coarse200; +/-14 brake/fresh-recheck, permanentfine20; BALL forwardrightFF1.5%/backzero,HOSTAGE5% and unchanged+/-10 arrival passed");
     return 0;
 }
 
@@ -1553,6 +1559,10 @@ static int check_route_search_private_gain_and_late_yaw(void)
         CHECK(task31_status.state!=VAT_YAW_FIX && !last_x && !last_y && !last_w &&
               (unsigned)zero_calls==zero_before && task31_status.good==frame+1u);
         if (frame<4u) CHECK(!host_timer_active && pulse_calls==before_pulses && servo_calls==before_servos);
+    }
+    if (ROUTE31_HOSTAGE_PREGRAB_LEFT_MM > 0u) {
+        CHECK(s_seq_hostage_offset && !host_timer_active && !servo_calls && !pulse_calls);
+        CHECK(task31_hostage_reconfirm(0, VAT_HOSTAGE_Y_PX) == 0);
     }
     CHECK(task31_status.state==VAT_WAIT_HOSTAGE_ACTION && task31_status.alignment_confirmed &&
           !task31_status.hostage_fallback && task31_status.target_rank==2u &&
@@ -1762,8 +1772,7 @@ static int check_route31_wait_task_ack_diagnostics(void)
 static int task31_turn_phase(unsigned phase)
 {
     CHECK(phase <= 4u && s_seq_mode == ROUTE_TEST_MODE && s_seq_state == SQ_STILL &&
-          s_msel == 22 && turn_target_deg() ==
-              (s_seq_stage == ROUTE31_RETURN180_STAGE && !s_seq_pair_turn ? 182.0f : 180.0f) &&
+          s_msel == 22 && turn_target_deg() == 180.0f &&
           !s_seq_pair_offset && !s_seq_return_offset);
     if (phase) CHECK(sequence_start_stage() == 0 && s_seq_state == SQ_RUN && s_round == R_RUN);
     if (phase >= 2u) {
@@ -1816,7 +1825,8 @@ static int task31_bucket_offset_phase(unsigned phase)
           route_seq_leg()->mode == 17u && route_seq_leg()->distance_mm == ROUTE31_BALL_TO_BUCKET_LEFT_MM &&
           route_seq_leg()->heading_hold && s_msel == 17 && s_v == 80.0f && stopped());
     if (phase) CHECK(sequence_start_stage() == 0 && s_dist_target == -(float)ROUTE31_BALL_TO_BUCKET_LEFT_MM &&
-                     s_dist_align_enabled && s_dist_heading_kp == 0.3f && s_v == 80.0f && last_y == -80.0f);
+                     s_dist_align_enabled && s_dist_heading_kp == 3.0f && s_dist_ff_ratio == 0.010f &&
+                     s_v == 80.0f && last_y == -80.0f && fabsf(last_x + 0.8f) < 0.00001f);
     if (phase >= 2u) {
         host_yaw = s_dist_heading0 + 1.0f;
         host_lateral = s_dist_odo0 + s_dist_target; wire_poll();
@@ -1871,7 +1881,7 @@ static int check_first_bucket_left20_speed_cap_and_other_pv_scope(void)
         CHECK(route_seq_speed_mms() == ram_pv);
 #if ROUTE31_HOSTAGE_PREGRAB_LEFT_MM > 0u
         s_seq_stage = ROUTE31_HOSTAGE_STAGE; s_seq_hostage_offset = 1u;
-        CHECK(route_seq_leg()->distance_mm == 20u && route_seq_speed_mms() == ram_pv);
+        CHECK(route_seq_leg()->distance_mm == TASK31_HOSTAGE_OFFSET_EXPECTED_MM && route_seq_speed_mms() == ram_pv);
 #else
         CHECK(!s_seq_hostage_offset && ROUTE31_HOSTAGE_PREGRAB_LEFT_MM == 0u);
 #endif
@@ -2283,7 +2293,7 @@ static int task31_return_turn_phase(unsigned phase)
           !s_target35_route && wire_request == request && host_servo == 1500u);
     return 0;
 }
-/* A completed182 must hand off directly. Keep the stale distance ledger as
+/* A completed180 must hand off directly. Keep the stale distance ledger as
  * evidence that neither a RIGHT15 nor an ostensibly harmless0mm leg started.
  * Target preparation still has its own stop/zero/settle, separate from turn. */
 static int task31_return_target_phase(unsigned phase, uint16_t *old_request)
@@ -2343,15 +2353,15 @@ static int check_return_turn_stability_and_stops(void)
               !s_target35_route && pulse_calls==pulses && servo_calls==servos &&
               wire_commands==commands && host_servo==1500u);
     }
-    /* Actual release/rack-return reaches this second182; near-target
+    /* Actual release/rack-return reaches this second180; near-target
      * stronger commands must remain signed, precise and request-gated. */
     for (unsigned side=0u;side<2u;++side) {
         CHECK(task31_return_turn_phase(1u)==0);
         float offset=side?0.5f:-0.5f;
         int zeros=zero_calls;unsigned precise=host_precise_calls, integer=host_integer_calls;
         uint16_t request=wire_request;
-        CHECK(turn_target_deg()==182.0f);
-        host_yaw=182.0f+offset;host_tick+=20u;wire_poll();
+        CHECK(turn_target_deg()==180.0f);
+        host_yaw=180.0f+offset;host_tick+=20u;wire_poll();
         CHECK(s_round==R_RUN && s_seq_stage==ROUTE31_RETURN180_STAGE &&
               fabsf(last_w+(side?0.30f:-0.30f))<0.000001f && !last_x && !last_y &&
               host_precise_calls==precise+1u && host_integer_calls==integer &&
@@ -2372,9 +2382,9 @@ static int check_return_turn_stability_and_stops(void)
         }
     CHECK(task31_return_turn_phase(1u) == 0);
     uint16_t old_goal_request=wire_request;int old_goal_zeros=zero_calls;
-    host_yaw=180.0f;host_tick+=20u;wire_poll();
+    host_yaw=185.0f;host_tick+=20u;wire_poll();
     CHECK(s_round==R_RUN && s_seq_state==SQ_RUN && s_seq_stage==ROUTE31_RETURN180_STAGE &&
-          turn_target_deg()==182.0f && last_w>0.0f && !last_x && !last_y &&
+          turn_target_deg()==180.0f && last_w<0.0f && !last_x && !last_y &&
           wire_request==old_goal_request && zero_calls==old_goal_zeros &&
           !s_target35_route && !laser_state);
     CHECK(task31_cancel_and_verify("0")==0);
@@ -2392,7 +2402,7 @@ static int check_return_turn_stability_and_stops(void)
           pulse_calls == pulses && servo_calls == servos && host_servo == 1500u && stopped() &&
           zero_calls == zeros && host_absolute_yaw == absolute_heading && !dist_mode() &&
           s_msel == 31 && s_round == R_RUN && ROUTE31_RETURN_RIGHT_MM == 0u);
-    CHECK(strstr(host_messages,"cmd_deg=182") && strstr(host_messages,"abs_yaw_deg=") &&
+    CHECK(strstr(host_messages,"cmd_deg=180") && strstr(host_messages,"abs_yaw_deg=") &&
           strstr(host_messages,"route_step=11"));
     CHECK(!s_seq_pair_turn && !s_seq_pair_offset && s_msel == 31 &&
           s_target35_phase == TA_TASK_WAIT && !s_target35_seen && !s_target35_good);
@@ -2421,7 +2431,7 @@ static int check_return_turn_stability_and_stops(void)
         CHECK(task31_service_ms(10000u) == 0); run_cmd("g");
         CHECK(s_seq_state == SQ_STOPPED && pulse_calls == p && servo_calls == s && stopped());
     }
-    puts("31 return182 direct TARGET/no return lateral or0mm job: old180 staysRUN;actual +/-0.5 precise +/-0.30,overshoot/399-400ms hold;15 turn and12 target-handoff/prep g/a/0 stops;original absoluteheading retained;old/preACK targetpixels inert;target preparation zero once only afterstill250;REC182 and3IMU/abort/turn-timeout faults passed");
+    puts("31 return180 direct TARGET/no return lateral or0mm job: old185 corrects backward;actual +/-0.5 precise +/-0.30,overshoot/399-400ms hold;15 turn and12 target-handoff/prep g/a/0 stops;original absoluteheading retained;old/preACK targetpixels inert;target preparation zero once only afterstill250;REC180 and3IMU/abort/turn-timeout faults passed");
     return 0;
 }
 
@@ -2673,9 +2683,9 @@ static int check_target_current_direct_corner_and_stop(void)
         ++host_tick; wire_poll();
         CHECK(s_seq_state == SQ_STILL && s_seq_stage == ROUTE31_TARGET_CORNER_STAGE &&
               !s_target35_route && !laser_state && stopped() && zero_calls == zeros &&
-              wire_commands == commands && route_seq_leg()->distance_mm == 430u &&
+              wire_commands == commands && route_seq_leg()->distance_mm == 420u &&
               strstr(host_messages, "TARGET31_POST_YAW_TIMEOUT_CONTINUE") == NULL);
-        CHECK(sequence_start_stage() == 0 && s_msel == 15 && s_dist_target == 430.0f &&
+        CHECK(sequence_start_stage() == 0 && s_msel == 15 && s_dist_target == 420.0f &&
               zero_calls == zeros + 1 && s_dist_heading0 == 0.0f &&
               last_x == 200.0f && fabsf(last_y - 200.0f * ROUTE31_CORNER_RIGHT_FF_RATIO) < 0.0001f);
         CHECK(task31_cancel_and_verify(side ? "g" : "a") == 0);
@@ -2686,15 +2696,15 @@ static int check_target_current_direct_corner_and_stop(void)
         CHECK(task31_cancel_and_verify(keys[key]) == 0);
         CHECK(strstr(host_messages, "TARGET31_POST_YAW_TIMEOUT_CONTINUE") == NULL);
     }
-    puts("CURRENT31 target:laser holds1999ms,2000 laserOFF directly queues510/430/350 corner without stationaryyaw;next-road normalbaseline and FF retained;g/a/0 cancel before deadline passed");
+    puts("CURRENT31 target:laser holds1999ms,2000 laserOFF directly queues515/420/355 corner without stationaryyaw;next-road normalbaseline and FF retained;g/a/0 cancel before deadline passed");
     return 0;
 }
 #endif
 
-#if defined(ROUTE31_HOSTAGE_OFFSET_LEGACY_TEST)
+#if ROUTE31_HOSTAGE_PREGRAB_LEFT_MM > 0u
 static int task31_hostage_offset_phase(unsigned phase)
 {
-    CHECK(ROUTE31_HOSTAGE_PREGRAB_LEFT_MM == 20u && ROUTE31_BALL_TO_BUCKET_LEFT_MM ==
+    CHECK(ROUTE31_HOSTAGE_PREGRAB_LEFT_MM == TASK31_HOSTAGE_OFFSET_EXPECTED_MM && ROUTE31_BALL_TO_BUCKET_LEFT_MM ==
 #if defined(ROUTE31_BALL_OFFSET_LEGACY_TEST)
           20u);
 #else
@@ -2708,10 +2718,11 @@ static int task31_hostage_offset_phase(unsigned phase)
     task31_snapshot();
     CHECK(s_seq_state == SQ_STILL && s_seq_hostage_offset && s_route31_hostage_offset_done &&
           task31_status.state == VAT_WAIT_HOSTAGE_ACTION && task31_status.good == 5u &&
-          route_seq_leg()->mode == 17u && route_seq_leg()->distance_mm == 20u &&
+          route_seq_leg()->mode == 17u && route_seq_leg()->distance_mm == TASK31_HOSTAGE_OFFSET_EXPECTED_MM &&
           host_servo == 1500u && !servo_calls && !pulse_calls && !host_timer_active);
-    if (phase) CHECK(sequence_start_stage() == 0 && last_y < 0.0f && last_x == 0.0f &&
-                     s_dist_align_enabled && s_dist_target == -20.0f);
+    if (phase) CHECK(sequence_start_stage() == 0 && last_y < 0.0f && last_x == 0.010f * last_y &&
+                     s_dist_heading_kp == 3.0f && s_dist_ff_ratio == 0.010f &&
+                     s_dist_align_enabled && s_dist_target == -(float)TASK31_HOSTAGE_OFFSET_EXPECTED_MM);
     if (phase >= 2u) {
         host_lateral = s_dist_odo0 + s_dist_target;
         host_yaw = s_dist_heading0 + 0.7f;
@@ -2759,6 +2770,10 @@ static int check_hostage_pregrab_offset_and_new_images(void)
     CHECK(s_seq_state == SQ_TASK && !s_seq_hostage_offset && task31_status.state == VAT_BRAKE &&
           !task31_status.alignment_confirmed && !task31_status.good && !task31_status.latest &&
           task31_status.target_rank == 2u && wire_request == request && !pulse_calls && !servo_calls);
+    /* Supply genuinely new post-offset input before the independent300ms
+     * loss fallback. It still cannot count toward arrival while braking. */
+    host_tick += 20u;
+    xy_obj(request, 0, VAT_ROUTE_HOSTAGE_X_PX, VAT_HOSTAGE_Y_PX);
     xy_advance(260u); task31_snapshot();
     CHECK(task31_status.state == VAT_RECHECK && !task31_status.good && !host_timer_active);
     unsigned next_seq = xy_seq; xy_seq = moving_seq;
@@ -2777,7 +2792,7 @@ static int check_hostage_pregrab_offset_and_new_images(void)
           !pulse_calls && host_servo == 1150u && task31_status.target_rank == 2u);
     CHECK(task31_hostage_grab_done() == 0 && s_route31_hostage_hold);
     wire_poll(); CHECK(s_seq_stage == ROUTE31_HOSTAGE_EXIT_STAGE && !s_seq_hostage_offset &&
-                       route_seq_leg()->distance_mm == 1395u && pulse_calls == 6400 && servo_calls == 2);
+                       route_seq_leg()->distance_mm == 1315u && pulse_calls == 6400 && servo_calls == 2);
     CHECK(task31_cancel_and_verify("0") == 0);
 
     const char *const keys[] = {"g", "a", "0"};
@@ -2786,7 +2801,7 @@ static int check_hostage_pregrab_offset_and_new_images(void)
         CHECK(task31_cancel_and_verify(keys[key]) == 0);
         CHECK(!s_seq_hostage_offset && !s_route31_hostage_offset_done && !servo_calls && !pulse_calls);
     }
-    puts("EXPLICIT FIXTURE HISTORY hostageLEFT20: before anyarm/servo,originalyaw+400ms restored; moving-window frame replay rejected,rank/request retained,NEW5frames then onegrab/no repeat;18g/a/0 cancel atPREP/RUN/BRAKE/CORRECT/HOLD/RECHECK passed");
+    printf("31 hostageLEFT%u: before anyarm/servo,originalyaw+400ms restored; moving-window frame replay rejected,rank/request retained,NEW5frames then onegrab/no repeat;18g/a/0 cancel atPREP/RUN/BRAKE/CORRECT/HOLD/RECHECK passed\n", TASK31_HOSTAGE_OFFSET_EXPECTED_MM);
     return 0;
 }
 
@@ -2821,8 +2836,9 @@ static int check_hostage_offset_timeout_keeps_visual_heading_recheck(void)
     CHECK(!task31_status.good && !task31_status.latest && !task31_status.alignment_confirmed &&
           !servo_calls && !pulse_calls);
 
-    /* Keep genuine NEW observations arriving so the user's independent2s
-     *seen-then-loss fallback does not mask the separate12s VAT yaw policy. */
+    /* Genuine NEW observations prevent the independent300ms loss fallback
+     * from masking the selected stopped-yaw policy. */
+#if VAT_ROUTE31_BALL_HOSTAGE_STOP_YAW_ENABLE
     for (unsigned elapsed = 0u; elapsed < 500u; elapsed += 20u) {
         host_tick += 20u; xy_obj(request, 0, VAT_ROUTE_HOSTAGE_X_PX, VAT_HOSTAGE_Y_PX);
     }
@@ -2857,12 +2873,38 @@ static int check_hostage_offset_timeout_keeps_visual_heading_recheck(void)
           s_route31_lift_phase == R31_HOSTAGE_RACK_EXTEND && host_timer_active &&
           servo_calls == 1 && !pulse_calls && s_route31_hostage_offset_done && !s_seq_hostage_offset);
     CHECK(task31_cancel_and_verify("0") == 0);
-    puts("31 hostage LEFT20:1999 stays yawcorrecting,2000 accepts logged residual then same-request/rank BRAKE; movingframe replay rejected;VAT originalabsolute yaw still corrects past2s before NEW5 pixels/no duplicate offset/no early arm passed");
+    puts("31 hostage offset legacy stoppedyaw:1999 stays correcting,2000 accepts residual then same-request/rank BRAKE; movingframe rejected;VAT originalabsolute yaw corrects before NEW5 pixels/no duplicate offset/no early arm passed");
+#else
+    for (unsigned elapsed = 0u; elapsed < 600u && task31_status.state != VAT_RECHECK; elapsed += 20u) {
+        host_tick += 20u; xy_obj(request, 0, VAT_ROUTE_HOSTAGE_X_PX, VAT_HOSTAGE_Y_PX);
+        task31_snapshot();
+        CHECK(task31_status.state != VAT_YAW_FIX && !last_w &&
+              task31_status.yaw_target == absolute_goal && wire_request == request &&
+              !s_seq_hostage_offset && s_route31_hostage_offset_done && !servo_calls && !pulse_calls);
+    }
+    CHECK(task31_status.state == VAT_RECHECK && !task31_status.good &&
+          !task31_status.alignment_confirmed && !host_timer_active);
+    for (unsigned fresh = 0u; fresh < 4u; ++fresh) {
+        host_tick += 20u; xy_obj(request, 0, VAT_ROUTE_HOSTAGE_X_PX, VAT_HOSTAGE_Y_PX);
+        task31_snapshot();
+        CHECK(task31_status.good == fresh + 1u && !task31_status.alignment_confirmed &&
+              task31_status.state != VAT_YAW_FIX && !last_w && !servo_calls && !pulse_calls);
+    }
+    host_tick += 20u; xy_obj(request, 0, VAT_ROUTE_HOSTAGE_X_PX, VAT_HOSTAGE_Y_PX);
+    task31_snapshot();
+    CHECK(task31_status.alignment_confirmed && task31_status.good == 5u &&
+          !task31_status.hostage_fallback && task31_status.target_rank == 2u &&
+          s_route31_lift_phase == R31_HOSTAGE_RACK_EXTEND && host_timer_active &&
+          servo_calls == 1 && !pulse_calls && s_route31_hostage_offset_done && !s_seq_hostage_offset &&
+          task31_status.yaw_target == absolute_goal && wire_request == request && wire_commands == commands);
+    CHECK(task31_cancel_and_verify("0") == 0);
+    puts("31 hostageLEFT30:1999 corrects/2000 accepts logged residual; originalyaw/request/rank retained, movingframe barrier, no extra stoppedyaw, NEW5 pixels before one grab passed");
+#endif
     return 0;
 }
-#endif /* Explicit historical fixture only; current31 bypasses this road leg. */
+#endif /* Production LEFT30 or explicit historical LEFT20. */
 
-#if !defined(ROUTE31_HOSTAGE_OFFSET_LEGACY_TEST)
+#if ROUTE31_HOSTAGE_PREGRAB_LEFT_MM == 0u
 /* Current default: a real fifth NEW stopped image commits the existing arm
  * job directly. No zero-distance road, post-offset recheck or chassis output
  * may occur between confirmation and extension/grip/retraction. */
@@ -3039,7 +3081,7 @@ int main(void)
     CHECK(check_route_search_private_gain_and_late_yaw() == 0);
     CHECK(check_hostage_real_rank_hold_and_final_route() == 0);
     CHECK(check_hostage_alignment_opens_before_rank_once() == 0);
-#if defined(ROUTE31_HOSTAGE_OFFSET_LEGACY_TEST)
+#if ROUTE31_HOSTAGE_PREGRAB_LEFT_MM > 0u
     CHECK(check_hostage_pregrab_offset_and_new_images() == 0);
     CHECK(check_hostage_offset_timeout_keeps_visual_heading_recheck() == 0);
 #else
@@ -3050,8 +3092,8 @@ int main(void)
     CHECK(check_hostage_dropout_trigger_and_rank() == 0);
     CHECK(check_hostage_dropout_recovery_priority_and_fault() == 0);
     CHECK(check_ball_needs_no_rank_before_bucket_request() == 0);
-#if defined(ROUTE31_HOSTAGE_OFFSET_LEGACY_TEST)
-    puts("EXPLICIT HOST FIXTURE HISTORY: hostageLEFT20 enabled only by test compile macro; not current production default or vehicle acceptance");
+#if ROUTE31_HOSTAGE_PREGRAB_LEFT_MM > 0u
+    printf("CURRENT TEST: hostageLEFT%u once before arm, original-yaw correction and NEW X revalidation; host software only\n", TASK31_HOSTAGE_OFFSET_EXPECTED_MM);
 #else
     puts("CURRENT PRODUCTION DEFAULT: hostageNOOFFSET directly grabs after existing confirmation/fallback; no cancelled zero-distance road job");
 #endif

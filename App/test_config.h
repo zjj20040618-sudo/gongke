@@ -10,7 +10,7 @@
 #define T_IDLE_MS    20u
 #define T_V_MAX      600
 #define T_D_MAX      20000
-#define T_MODE_MAX   43
+#define T_MODE_MAX   44
 #define T_GRAB_MODE  42
 /* Independent grab bench: counts are STEP pulses, not sensed positions. */
 #define T_GRAB_EXTEND_DEFAULT_STEPS 2500u /* User measured nl2500 -> forward90mm. */
@@ -51,15 +51,15 @@
 
 /* Modes 19-23: 19 is an elevated sign check; 20 is the +90 turn family.
  * Mode 22's +180 profile remains a bench candidate, not the mission tune.
- * 2026-10-05 user keeps right90 and changes the left trial to92.
- * Modes20/30 command +90/-92; active mode31 locally uses +90/-90 only.
+ * 2026-10-11 left trial physically over-rotates with the old2deg addition.
+ * Modes20/30 command +90/-90;31/43 keep their independent per-stage goals.
  * Mode22 is explicitly 180, not twice this compensated target. */
 #define T_TURN_SIGN_DUTY 45
 #define T_TURN_SIGN_MS 250u
 #define T_TURN_MAX_MS TURN90_MAX_MS
 #define T_TURN_SETTLE_MS TURN90_SETTLE_MS
 #define T_TURN90_RIGHT_COMP_DEG 0.0f
-#define T_TURN90_LEFT_COMP_DEG 2.0f
+#define T_TURN90_LEFT_COMP_DEG 0.0f
 #define T_TURN_RIGHT_TARGET_DEG (TURN90_TARGET_DEG + T_TURN90_RIGHT_COMP_DEG)
 #define T_TURN_LEFT_TARGET_DEG (-(TURN90_TARGET_DEG + T_TURN90_LEFT_COMP_DEG))
 #define T_TURN_TOL_DEG TURN90_TOL_DEG

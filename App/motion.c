@@ -162,6 +162,25 @@ void motion_vel_set_precise(float vx, float vy, float w)
     for (int i = 0; i < MOTOR_NUM; i++) ctrl_set_speed_precise(i, rpm[i]);
 }
 
+void motion_vel_set_left_scaled(float vx, float vy, float w, float left_scale)
+{
+    float rpm[4];
+    uint32_t pm;
+    if (!isfinite(left_scale) || left_scale <= 0.0f) { motion_brake(); return; }
+    motion_ik_precise(vx, vy, w, rpm);
+    rpm[0] *= left_scale; /* m0 left rear */
+    rpm[3] *= left_scale; /* m3 left front */
+    for (int i = 0; i < MOTOR_NUM; ++i) {
+        if (!isfinite(rpm[i])) { motion_brake(); return; }
+    }
+    /* Publish together, using the existing speed loop, not raw PWM/creep.
+     * No persistent scale can leak into a subsequent road or brake command. */
+    pm = __get_PRIMASK();
+    __disable_irq();
+    for (int i = 0; i < MOTOR_NUM; ++i) ctrl_set_speed_precise(i, rpm[i]);
+    __set_PRIMASK(pm);
+}
+
 void motion_vel_set_creep(float vx, float vy, float w)
 {
     float rpm[4];

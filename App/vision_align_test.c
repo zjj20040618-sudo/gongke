@@ -90,7 +90,8 @@ static void vat_ball_begin_bucket_turn(void);
 static int vat_route_hostage_loss_poll(uint32_t now);
 static int vat_route_bucket_loss_poll(uint32_t now);
 static int vat_route31_loss_poll(uint32_t now);
-static int vat_route31_owned(void) { return s_route_owned && s_route_owner_mode == 31u; }
+static int vat_route31_owned(void)
+{ return s_route_owned && (s_route_owner_mode == 31u || s_route_owner_mode == 43u || s_route_owner_mode == 44u); }
 static int vat_stopped_yaw_enabled(void)
 {
     return VAT_ROUTE31_BALL_HOSTAGE_STOP_YAW_ENABLE || !vat_route31_owned() ||
@@ -325,9 +326,90 @@ int vision_align_test_start_route(uint8_t mode, const int32_t qr[3])
 }
 int vision_align_test_start_route_scoped(uint8_t mode, const int32_t qr[3], uint8_t owner_mode)
 {
-    if (owner_mode != 31u && owner_mode != 43u) return 0;
+    if (owner_mode != 31u && owner_mode != 43u && owner_mode != 44u) return 0;
     return vat_start(mode, qr, owner_mode, owner_mode == 43u ?
         VAT_ROUTE43_FINE_ERROR_PX : VAT_ROUTE_FINE_ERROR_PX);
+}
+static int vat_route44_approach_resume_locked(void)
+{
+    ProtoStats stats;
+    ProtoWireDiag diag;
+    uint16_t barrier = 0u;
+    uint8_t have = 0u;
+    uint32_t now;
+    if (!s_route_owned || s_route_owner_mode != 44u || s_vat.mode != 41u ||
+        s_vat.task != PROTO_TASK_BALL || s_vat.state != VAT_BRAKE ||
+        !s_initial_search || s_seen_target || s_route_search_started ||
+        s_route_action_taken || s_search_mid.phase || s_search_mid.need_new) return 0;
+    if (run_aborted() || !vat_heading_update()) {
+        vat_stop("APPROACH44_IMU_OR_ABORT", VAT_STOPPED); return 0;
+    }
+    proto_wire_diag_get(&diag);
+    /* A pending matching ACK is not a fault. The ordinary VAT ACK gate must
+     * still keep motion/action stopped until it arrives; never create a new
+     * request here, which would erase the BALL54 collected during approach. */
+    if (!diag.controlled || !diag.receiving || diag.failed || diag.mode != 2u ||
+        diag.request != s_vat.request || diag.task != PROTO_TASK_BALL ||
+        diag.selection != s_vat.digit) {
+        vat_stop("APPROACH44_LINK_ERROR", VAT_STOPPED); return 0;
+    }
+    vat_ball_rank_capture();
+    if (s_route31_target.seen) {
+        have = 1u; barrier = s_route31_target.frame.sequence;
+    } else if (s_route_coarse_have_seq) {
+        have = 1u; barrier = s_route_coarse_seq;
+    } else if (s_have_seq) {
+        have = 1u; barrier = s_last_seq;
+    }
+    proto_stats_get(&stats);
+    memset(&s_search_mid, 0, sizeof s_search_mid);
+    s_search_mid.need_new = 1u; s_search_mid.have_seq = have;
+    s_search_mid.sequence = barrier; s_search_mid.packet = stats.obj;
+    s_search_mid.direction = 1; /* Continue authorized forward search, never old pixels. */
+    s_have_seq = s_route_coarse_have_seq = have;
+    s_last_seq = s_route_coarse_seq = barrier;
+    s_route_coarse_packet = stats.obj;
+    s_session_packet = s_used_packet = s_recheck_packet = stats.obj;
+    s_route31_session_packet = stats.obj;
+    s_rejected_packet = 0u;
+    memset((void *)&s_sample, 0, sizeof s_sample);
+    memset((void *)&s_route_search_sample, 0, sizeof s_route_search_sample);
+    memset((void *)&s_route31_target, 0, sizeof s_route31_target);
+    s_route31_loss_braking = 0u;
+    s_route_search_started = 0u; s_route_search_from = 0u;
+    s_seen_target = s_step_saw_target = 0u; s_initial_search = 1u;
+    s_vat.ball_seen = s_vat.ball_fallback = s_vat.alignment_confirmed = 0u;
+    s_vat.ball_age_ms = UINT32_MAX;
+    s_vat.cx = s_vat.cy = 0; s_vat.sequence = s_vat.img_w = s_vat.img_h = 0u;
+    s_vat.age_ms = UINT32_MAX;
+    /* Keep the absolute entry heading across external FWD200/local zeroes. */
+    s_vat.yaw_dirty = (uint8_t)(fabsf(s_vat.yaw_error) > T_DIST_ALIGN_TOL_DEG);
+    s_vat.yaw_ever = 1u;
+    now = HAL_GetTick(); s_last_poll = now;
+    vat_begin_brake(now, 1);
+    s_vat.reason = "APPROACH44_WAIT_NEW_BALL";
+    return 1;
+}
+int vision_align_test_route44_approach_resume(void)
+{
+    uint32_t pm = __get_PRIMASK();
+    int resumed;
+    __disable_irq(); resumed = vat_route44_approach_resume_locked(); __set_PRIMASK(pm);
+    return resumed;
+}
+int vision_align_test_route44_wait_rebase(float manual_heading_delta)
+{
+    uint32_t pm = __get_PRIMASK();
+    int ok;
+    __disable_irq();
+    ok = s_route_owned && s_route_owner_mode == 44u && s_vat.mode == 41u &&
+         s_vat.task == PROTO_TASK_BALL && s_vat.state == VAT_BRAKE &&
+         s_initial_search && !s_seen_target && !s_route_search_started &&
+         !s_route_action_taken && vat_finite(manual_heading_delta) &&
+         vat_finite(s_vat.yaw_target + manual_heading_delta);
+    if (ok) s_vat.yaw_target += manual_heading_delta;
+    __set_PRIMASK(pm);
+    return ok;
 }
 static int vat_take_route_action_locked(void)
 {
@@ -382,7 +464,7 @@ static int vat_hostage_offset_resume_locked(void)
     ProtoStats stats;
     uint16_t barrier, delta;
     uint32_t now;
-    if (!s_route_owned || s_route_owner_mode != 31u || s_vat.mode != 40u ||
+    if (!vat_route31_owned() || s_vat.mode != 40u ||
         s_vat.task != PROTO_TASK_HOSTAGE || s_vat.state != VAT_WAIT_HOSTAGE_ACTION ||
         !s_route_action_taken) return 0;
     if (run_aborted() || !vat_heading_update()) {
@@ -763,6 +845,13 @@ static void vat_ball_rank_capture(void)
 }
 static void vat_ball_begin_bucket_turn(void)
 {
+    if (s_route_owned && (s_route_owner_mode == 31u || s_route_owner_mode == 44u)) {
+        /*31/44 return RIGHT30 before turning. Preserve BALL/request/rank here;
+         * only the owner's completed180 notification may request the bucket. */
+        vat_brake();
+        s_vat.state = VAT_TURN_REQUEST; s_vat.reason = "TURN_BEFORE_BUCKET_REQUEST";
+        return;
+    }
     if (!vat_request(PROTO_TASK_BUCKET, 0u, HAL_GetTick())) {
         vat_stop("REQUEST", VAT_STOPPED); return;
     }

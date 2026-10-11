@@ -10,7 +10,7 @@
 #define VAT_X_PX               190
 #define VAT_ROUTE_BALL_X_PX     135 /*125..145 inclusive. */
 #define VAT_ROUTE_BUCKET_X_PX   105 /*31:95..115 inclusive; strict fine gate abs(error)<15. */
-#define VAT_ROUTE43_BUCKET_X_PX 125 /* Deferred43 keeps its previous bucket workpoint. */
+#define VAT_ROUTE43_BUCKET_X_PX VAT_ROUTE_BUCKET_X_PX /*43 stepped copy of current31. */
 #define VAT_ROUTE_HOSTAGE_X_PX  215 /*205..225 inclusive. */
 #define VAT_BALL_Y_PX          390
 #define VAT_BUCKET_Y_PX        420
@@ -32,24 +32,25 @@
 #define VAT_ROUTE_SEARCH_SPEED_MMS 100.0f /* Route API fallback;31/43 owner supplies its RAM cruise. */
 #define VAT_ROUTE_SEARCH_ACC_MMS2 700.0f /*31/43 coarse approach only; no instant cruise step. */
 #define VAT_ROUTE_FINE_ERROR_PX  15 /*31 ball/bucket/hostage: abs(cx-goal)<15 latches fine v20. */
-#define VAT_ROUTE43_FINE_ERROR_PX 30 /* Deferred43 keeps its previous gate. */
+#define VAT_ROUTE43_FINE_ERROR_PX VAT_ROUTE_FINE_ERROR_PX
 #define VAT_ROUTE_BUCKET_FINE_ERROR_PX VAT_ROUTE_FINE_ERROR_PX /* Existing bucket API name. */
 #define VAT_ROUTE_BUCKET_MISSING_MS 2000u /*31 paired bucket only, AFTER turn+newACK. */
-#define VAT_ROUTE_HOSTAGE_LOST_MS 2000u /* Deferred43: seen selected01, then no NEW valid selected01. */
-#define VAT_ROUTE_BUCKET_LOST_MS 2000u /* Deferred43: AFTER fine entry, no NEW legal bucket coordinates. */
-#define VAT_ROUTE31_LOST_MS     300u /*31 only: strictly greater than300 since last NEW selected01. */
+#define VAT_ROUTE_HOSTAGE_LOST_MS 2000u /* Legacy non-current-route branch;31/43 use ROUTE31_LOST_MS. */
+#define VAT_ROUTE_BUCKET_LOST_MS 2000u /* Legacy non-current-route branch;31/43 use ROUTE31_LOST_MS. */
+#define VAT_ROUTE31_LOST_MS     300u /*31/43: strictly greater than300 since last NEW selected01. */
 #define VAT_ROUTE_BUCKET_SEARCH_SPEED_MMS (-VAT_X_SPEED_MMS) /* Legacy fine-step constant; coarse bucket uses owner RAM cruise. */
 #define VAT_YAW_MIN_W          TURN_HOLD_MIN_W_RADS
 /*31 BALL/HOSTAGE: no stopped in-place yaw correction or heading-arrival gate.
  * Still brake, wait for stationary wheels and use NEW matching image frames;
- * moving heading hold and bucket/43/standalone yaw rules stay unchanged.
+ * moving heading hold and bucket/standalone yaw rules stay unchanged.
  * Set1 only for the historical correction candidate's host tests. */
 #ifndef VAT_ROUTE31_BALL_HOSTAGE_STOP_YAW_ENABLE
 #define VAT_ROUTE31_BALL_HOSTAGE_STOP_YAW_ENABLE 0
 #endif
 /* Loaded mode31 BALL stopped-heading trial only. Preserve the original task
  * heading and new-image recheck; these are angular commands, not PWM/torque.
- * Bucket, hostage,43 and independent38..41 retain their previous yaw profile. */
+ * Bucket, hostage and independent38..41 retain their previous yaw profile;
+ *43 copies the31 stopped-heading policy. */
 #define VAT_ROUTE31_BALL_YAW_MIN_W 0.30f
 #define VAT_ROUTE31_BALL_YAW_MAX_W 0.60f
 /* One encoder-projected small step, then a stopped/new-image decision.
@@ -82,17 +83,17 @@ typedef struct {
     VisionAlignTestState state;
     uint8_t mode, task, digit, good, axis, latest;
     int cls, label, cx, cy;
-    int x_goal; /*31:ball135/bucket105/hostage215;43 bucket125; standalone190. */
+    int x_goal; /*31/43:ball135/bucket105/hostage215; standalone190. */
     uint8_t alignment_confirmed; /*31 hostage only: latched fresh/still enabled-axis alignment, even while rank0 waits. */
     uint8_t target_rank; /* Current task's validated54 rank, never QR color/shape. */
     uint8_t ball_rank; /* Route-only: preserve ball position across new bucket requests/180. */
     uint8_t ball_seen, ball_fallback; /*31: first NEW selected01 / explicit seen-lost300 action source. */
     uint32_t ball_age_ms; /* Last NEW selected01; never refreshed by54/empty/replay/old request. */
     uint8_t hostage_seen; /* Sticky current-request NEW selected01 evidence; not alignment. */
-    uint8_t hostage_fallback; /* HOSTAGE source:31 lost>300ms;43 lost2s. Never pixel alignment. */
+    uint8_t hostage_fallback; /* HOSTAGE source:31/43 lost>300ms. Never pixel alignment. */
     uint32_t hostage_age_ms; /* Since last NEW valid selected01; empty/54/replay cannot refresh. */
     uint8_t bucket_seen; /* Sticky NEW post-turn selected01 evidence, distinct from the owner fine gate. */
-    uint8_t bucket_fallback; /*31 lost>300ms /43 fine-seen-lost2s release; never pixel alignment. */
+    uint8_t bucket_fallback; /*31/43 lost>300ms release; never pixel alignment. */
     uint32_t bucket_age_ms; /* Since last NEW valid bucket01, independent of empty/replay frames. */
     uint16_t rank_sequence;
     uint16_t sequence, img_w, img_h, request;
@@ -123,7 +124,7 @@ void vision_align_test_init(void);
  * brake, restore this task's original heading, discard old images and recheck
  * enabled-axis arrival. No initial correction or heading/encoder zeroing, arm or laser. */
 int vision_align_test_start(uint8_t mode, const int32_t qr[3]);
-/* Modes31/43 own a previously validated, locked QR tuple after closing
+/* Modes31/43/44 own a previously validated, locked QR tuple after closing
  * its R1 receive window. Use only41(ball/action/externally-run180/bucket/action)
  * or40(hostage): validate all three selections, but do not reopen/read QR.
  * Same IMU/abort/running gates and motion engine as the standalone entry.
@@ -135,7 +136,7 @@ int vision_align_test_start(uint8_t mode, const int32_t qr[3]);
  * search gain before the first poll (default snapshots the global gain).
  * Fresh selected cx>goal searches forward, cx<goal searches backward; no
  * selected frame defaults forward. Each reversal restarts the acceleration ramp.
- * The first fresh abs(cx-goal)<15 (31;43 retains30) brakes and permanently latches fine v20.
+ * The first fresh abs(cx-goal)<15 (31/43) brakes and permanently latches fine v20.
  * The +/-10px arrival band is unchanged. Stop/yaw recheck needs NEW imagery before
  * fine X20/optionalY30 steps.31 with Y disabled instead holds continuous X20
  * and the original task heading, braking/settling before reversing or proving
@@ -147,9 +148,9 @@ int vision_align_test_start(uint8_t mode, const int32_t qr[3]);
  * coordinates and chooses by cx-goal. A300ms-old image stops movement;
  * a2s absence allows rank1/3 search again, restarting the acceleration ramp.
  * Cruise holds the post-turn heading without lateral feedforward. Only
- * abs(cx-goal)<15 (31;43 retains30) brakes/rechecks NEW images and permanently latches fine v20.
+ * abs(cx-goal)<15 (31/43) brakes/rechecks NEW images and permanently latches fine v20.
  * No coarse-search restart after the fine gate, even if cx rises again or frames are lost.
- * For31 (including a Y-enabled test build), any ball/bucket/hostage task first
+ * For31/43 (including a Y-enabled test build), any ball/bucket/hostage task first
  * seen as a NEW legal current-request selected01 may expose its real action
  * when that NEW-coordinate age is strictly>300ms and four wheels are stopped
  *250ms. This does not require fine entry and never claims pixel alignment.
@@ -175,6 +176,19 @@ int vision_align_test_start(uint8_t mode, const int32_t qr[3]);
 int vision_align_test_start_route(uint8_t mode, const int32_t qr[3]);
 /* Owner31 selects the15px gate; deferred43 retains30. Captured before RX opens. */
 int vision_align_test_start_route_scoped(uint8_t mode, const int32_t qr[3], uint8_t owner_mode);
+/*44-only: after external FWD200, resume the INITIAL route41 BALL/BRAKE that
+ * the owner started once at entry. Feed may run during approach; VAT poll may
+ * not. Preserve the same request, legal QR, BALL54, gains and absolute heading.
+ * Discard moving pixels/fine-gate/loss history and require a newer selected01
+ * sequence AND packet before pixels or LOST300 can authorize an action.
+ * Returns0 outside that one-shot window; abort/IMU/live-request failure stops.
+ * Matching ACK may still be pending: normal VAT ACK gating remains in force.
+ * No camera request, mechanical call, zeroing, or synthetic alignment. */
+int vision_align_test_route44_approach_resume(void);
+/*44 stopped-step inspection only: exclude the manual heading delta from
+ * the still-initial BALL approach goal. Does not move, clear QR/rank, or open
+ * a request. The subsequent approach_resume still discards old pixels. */
+int vision_align_test_route44_wait_rebase(float manual_heading_delta);
 /* Success only for a stopped, initial route ball/hostage BRAKE before search;
  * accept finite0..5, including0. Does not change fine XY/yaw-fix/standalone gain
  * or existing start signatures. Call immediately after start_route succeeds. */
@@ -200,6 +214,7 @@ int vision_align_test_route_search_ff_set(float ratio);
  * action exactly once; all31 seen-lost actions, HOSTAGE and seen-lost BUCKET recheck the matching ACK,
  * pending recovery and four-wheel stopped250ms. WAIT remains until owner success.
  * Failure stops with LIFT_ERROR; ball success plus rank requests bucket then +180,
+ * except44 which preserves BALL until RIGHT30 and180 finish, then requests bucket.
  * bucket success completes; hostage success completes only with real rank1..3,
  * otherwise waits braked with RXopen. Standalone38..41 never expose these actions;
  * standalone41 retains its two5s placeholders. No stepper/servo/timer calls. */

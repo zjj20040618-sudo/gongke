@@ -244,9 +244,17 @@ static int check_route_strafe_seed_report_and_manual_isolation(void)
     run_cmd("g"); host_tick += T_DIST_STILL_MS; tick();
     ff_select_route(31u);
     CHECK(ff_near(s_route_left_ff_ratio,0.02f) && ff_near(s_route_right_ff_ratio,-0.03f));
+    CHECK(ff_near(route_left_ff_ratio(),0.01f) && ff_near(s_route31_left_ff_ratio,0.01f));
+    host_messages[0] = '\0'; run_cmd("param");
+    CHECK(strstr(host_messages,"lff=0.0100") && strstr(host_messages,"ROUTE31_LEFT_YAW lkp=3.000"));
+    run_cmd("lff-0.01");
+    CHECK(ff_near(s_route31_left_ff_ratio,-0.01f) && ff_near(s_route_left_ff_ratio,0.02f));
+    ff_select_route(36u);
+    CHECK(ff_near(route_left_ff_ratio(),0.02f) && ff_near(s_route31_left_ff_ratio,-0.01f));
     test_init();
-    CHECK(s_route_left_ff_ratio == 0.0f && s_route_right_ff_ratio == 0.0f);
-    puts("routeFFF: default unmeasured lateral slots0 reported,37 accepts/preserves inert LFF/RFF slots then36 applies them atv100; route/manual values never leak; test_init restores0 passed");
+    CHECK(s_route_left_ff_ratio == 0.0f && s_route_right_ff_ratio == 0.0f &&
+          ff_near(s_route31_left_ff_ratio,0.01f));
+    puts("routeFFF:31 left private trial.01 report/write/reset;37/36 legacy shared0 slot and manual slots isolated; test_init restores each seed passed");
     return 0;
 }
 
@@ -271,7 +279,7 @@ static int check_all_route_owners_precise_ff_at_all_speeds(void)
             }
             s_seq_stage = (uint8_t)cases[n].stage; route_seq_prepare();
             if (cases[n].owner == 31u && cases[n].stage == ROUTE31_TARGET_CORNER_STAGE)
-                CHECK(route_seq_leg()->distance_mm == 430u && s_d == 430.0f);
+                CHECK(route_seq_leg()->distance_mm == 420u && s_d == 420.0f);
             if (cases[n].owner == 31u && cases[n].stage == ROUTE31_HOSTAGE_EXIT_STAGE)
                 CHECK(route_seq_leg()->distance_mm == 1315u && s_d == 1315.0f);
             CHECK(sequence_start_stage() == 0 && s_msel == cases[n].mode && route_seq_leg()->heading_hold);
@@ -309,7 +317,7 @@ static int check_all_route_owners_precise_ff_at_all_speeds(void)
 static int check_route31_corner_compensation_is_translation_not_yaw(void)
 {
     static const unsigned speeds[] = {100u,200u,350u,600u};
-    /* Retained moving hold/FF behavior up to the strict1.5deg boundary.
+    /* Retained moving hold/FF behavior within the strict2.5deg boundary.
      * Larger deviations now belong to the separately tested pause executor. */
     static const float yaw_errors[] = {-1.5f,-1.0f,0.0f,1.0f,1.5f};
     CHECK(ROUTE31_CORNER_RIGHT_FF_RATIO == 0.095f && ROUTE43_CORNER_RIGHT_FF_RATIO == 0.065f);

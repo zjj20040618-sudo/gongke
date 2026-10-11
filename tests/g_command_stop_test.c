@@ -71,6 +71,7 @@ static int host_qr_valid;
 static int32_t host_qr_tuple[3];
 static void (*host_scene_hook)(ProtoScene);
 static int (*host_target_hook)(ProtoTask task, uint8_t digit);
+static int (*host_target_sequence_guard_hook)(void);
 static void (*host_qr_begin_hook)(void), (*host_qr_cancel_hook)(void);
 static void (*host_receive_end_hook)(void);
 static int (*host_qr_get_hook)(int32_t out[3]);
@@ -259,6 +260,12 @@ int proto_send_target(ProtoTask task, uint8_t digit)
     if (host_target_hook) return host_target_hook(task, digit);
     return host_target_result;
 }
+int proto_target_sequence_guard_enable(void)
+{
+    if (host_target_sequence_guard_hook) return host_target_sequence_guard_hook();
+    return host_target_calls && host_target_result && !host_receive_closed &&
+           host_scene == SCENE_ANTI && host_target_task == PROTO_TASK_TARGET;
+}
 void proto_qr_begin(void)
 {
     if (host_qr_begin_hook) { host_qr_begin_hook(); return; }
@@ -328,6 +335,7 @@ static void reset_fixture(void)
     host_qr_valid = 0; memset(host_qr_tuple, 0, sizeof host_qr_tuple);
     host_scene_hook = NULL; host_qr_begin_hook = host_qr_cancel_hook = NULL;
     host_target_hook = NULL;
+    host_target_sequence_guard_hook = NULL;
     host_receive_end_hook = NULL;
     host_qr_get_hook = NULL;
     host_rank_get_hook = NULL;
@@ -443,7 +451,7 @@ static int fixture_trigger_board_contact(void)
     CHECK(route31_owner() && s_seq_stage == 4u && s_seq_state == SQ_RUN && s_round == R_RUN);
     /* Contact ignores startup motion, then requires fresh observations over
      * a sustained interval. Encoder distance never substitutes for tilt. */
-    host_pitch += ROUTE31_BOARD_CONTACT_TILT_DEG + 0.1f;
+    host_pitch += route_contact_tilt_deg() + 0.1f;
     host_imu_age = 0u;
     host_tick += ROUTE31_BOARD_CONTACT_START_GUARD_MS + 20u; test_poll();
     CHECK(s_round == R_RUN);
@@ -613,7 +621,7 @@ static int check_route_cross_heading_restart(unsigned mode)
               step_heading_kp_deg() == 0.3f && host_yaw == 0.0f && last_w == 0.0f);
         CHECK(s_dist_ff_ratio == 0.00625f && last_x == (mode == 31u ? -200.0f : -100.0f) &&
               last_y == (mode == 31u ? -1.25f : -0.625f));
-        /* Check restored moving gain below31's1.5deg mid-yaw brake.
+        /* Check restored moving gain below31's2.5deg mid-yaw brake.
          * The dedicated mid-yaw fixture covers larger errors and resume. */
         host_yaw = 1.0f; tick();
         CHECK(fabsf(last_w + 1.2f * 1.0f * 0.0174533f) < 0.000001f);
@@ -635,7 +643,7 @@ static int check_route_sequence(void)
 {
     /* Independent expectation, not copied from the live recipe at runtime. */
     static const int expected_modes[9] = {17,16,20,16,15,16,18,16,30};
-    static const int expected_commands[9] = {-575,-610,90,-620,0,-190,780,-810,-90};
+    static const int expected_commands[9] = {-575,-610,90,-620,0,-190,780,-790,-90};
     static const float expected_speeds[9] = {250,200,100,300,40,200,250,200,100};
     static const char *const stop_keys[] = {"g", "a", "0"};
     reset_fixture();
@@ -657,10 +665,11 @@ static int check_route_sequence(void)
         if (dist_mode()) {
             CHECK(s_dist_target == (float)expected_commands[i] && s_v == expected_speeds[i]);
             CHECK(s_dist_ramp.acc == 700.0f && s_dist_ramp.dec == 350.0f && s_dist_precise == 1u);
-            CHECK(s_dist_ff_ratio == (i == 1 || i == 5 || i == 7 ? 0.00625f : 0.0f));
-            CHECK(s_dist_heading_kp == (i == 3 || i == 4 ? 0.0f : i == 6 ? 3.0f : 0.3f));
+            CHECK(s_dist_ff_ratio == (i == 0 ? 0.010f : i == 1 || i == 5 || i == 7 ? 0.00625f : 0.0f));
+            CHECK(s_dist_heading_kp == (i == 3 || i == 4 ? 0.0f : i == 0 || i == 6 ? 3.0f : 0.3f));
             CHECK(last_w == 0.0f);
-            if (dist_lateral()) CHECK(last_x == 0.0f && last_y == (s_msel == 18 ? 250.0f : -250.0f));
+            if (dist_lateral()) CHECK(last_x == s_dist_ff_ratio * last_y &&
+                                      last_y == (s_msel == 18 ? 250.0f : -250.0f));
             else CHECK(last_x == (s_msel == 16 ? -expected_speeds[i] : expected_speeds[i]) &&
                        last_y == -s_dist_ff_ratio * expected_speeds[i]);
         } else {
@@ -764,7 +773,7 @@ static int check_route_sequence(void)
     reset_fixture(); run_cmd("31"); run_cmd("g"); CHECK(sequence_start_stage() == 0);
     dist_begin_finish(0u); host_tick += T_DIST_STILL_MS; test_poll();
     CHECK(s_seq_state == SQ_STOPPED && s_seq_stage == 0u);
-    puts("route31: nine-road prefix R1left575/R2back610/right90/cross620/board_tilt1.0_wait300ms_guard300_confirm100_v40/no_contact_nudges, crossing/contact yaw/FF disabled, QRgate/right780/back810/rackDIR0nl3400predeploy/left90 then actual ball/bucket41 task handoff; independent3400 recipe and3399-not-DONE boundary, no legacybucket/manuald, three backwardBFF legs, post-yaw-before-next, terminal router policy,108 road g/a/0 cancellations, locks and IMU/abort/turn failure passed");
+    puts("route31: nine-road prefix R1left575/R2back610/right90/cross620/board_tilt2.0_wait300ms_guard300_confirm100_v40/no_contact_nudges, crossing/contact yaw/FF disabled, QRgate/right780/back790/rackDIR0nl3400predeploy/left90 then actual ball/bucket41 task handoff; independent3400 recipe and3399-not-DONE boundary, no legacybucket/manuald, three backwardBFF legs, post-yaw-before-next, terminal router policy,108 road g/a/0 cancellations, locks and IMU/abort/turn failure passed");
     return 0;
 }
 

@@ -194,7 +194,7 @@ static int check_startup_log_and_guard(void)
 {
     CHECK(board_start(31u, 1.71f, 1.72f) == 0);
     /* User log: +0.56degrees at100ms and1.7mm previously caused immediate
-     * success. It is below1.0 and inside the startup guard now. */
+     * success. It is below31's2.0 and inside the startup guard now. */
     host_fore = s_dist_odo0 + 1.7f;
     board_sample(2.27f, 1.73f, 80u); board_sample(2.27f, 1.73f, 20u);
     CHECK(s_round == R_RUN && !s_board_contact.hits && last_x == 40.0f);
@@ -217,20 +217,30 @@ static int check_startup_log_and_guard(void)
 
 static int check_threshold_and_axes(void)
 {
-    CHECK(ROUTE31_BOARD_CONTACT_TILT_DEG == 1.0f && ROUTE43_BOARD_CONTACT_TILT_DEG == 1.5f);
+    CHECK(ROUTE31_BOARD_CONTACT_TILT_DEG == 2.0f && ROUTE43_BOARD_CONTACT_TILT_DEG == 1.5f);
     for (unsigned owner = 31u; owner <= 43u; owner += 12u) {
         for (unsigned axis = 0u; axis < 2u; ++axis) {
             for (int sign = -1; sign <= 1; sign += 2) {
                 CHECK(board_start(owner, 0.0f, 0.0f) == 0); board_finish_guard();
-                const float threshold = owner == 31u ? 1.0f : 1.5f;
+                const float threshold = owner == 31u ? 2.0f : 1.5f;
                 CHECK(route_contact_tilt_deg() == threshold);
-                float near = (float)sign * (threshold - 0.01f);
+                float near = (float)sign * (owner == 31u ? 1.99f : 1.49f);
                 float at = (float)sign * threshold;
-                board_sample(axis ? 0.0f : near, axis ? near : 0.0f, 20u);
-                board_sample(axis ? 0.0f : near, axis ? near : 0.0f, 20u);
-                CHECK(s_round == R_RUN && s_board_contact.hits == 0u && last_x == 40.0f);
+                /* Even a full confirmation interval cannot promote a tilt
+                 * strictly below the new31/retained43 threshold. */
+                for (unsigned elapsed = 0u; elapsed <= ROUTE31_BOARD_CONTACT_CONFIRM_MS; elapsed += 20u) {
+                    board_sample(axis ? 0.0f : near, axis ? near : 0.0f, 20u);
+                    CHECK(s_round == R_RUN && s_board_contact.hits == 0u &&
+                          !s_board_contact.confirming && last_x == 40.0f);
+                }
                 board_sample(axis ? 0.0f : at, axis ? at : 0.0f, 20u);
                 CHECK(s_round == R_RUN && s_board_contact.hits == 1u);
+                /* Falling below the owner-specific threshold must discard
+                 * that candidate instead of retaining its confirmation time. */
+                board_sample(axis ? 0.0f : near, axis ? near : 0.0f, 20u);
+                CHECK(s_round == R_RUN && s_board_contact.hits == 0u && !s_board_contact.confirming);
+                board_sample(axis ? 0.0f : at, axis ? at : 0.0f, 20u);
+                CHECK(s_round == R_RUN && s_board_contact.hits == 1u && s_board_contact.confirming);
                 for (unsigned elapsed = 20u; elapsed < ROUTE31_BOARD_CONTACT_CONFIRM_MS; elapsed += 20u) {
                     board_sample(axis ? 0.0f : at, axis ? at : 0.0f, 20u); CHECK(s_round == R_RUN);
                 }
@@ -240,14 +250,14 @@ static int check_threshold_and_axes(void)
             }
         }
     }
-    puts("board tilt:+/-pitch/roll31 .99reject/1.00accept directBACK190;43 1.49reject/1.50accept BACK10+FWD15 fixed40 no yaw/FF;rolling resets250;43 freshg each;BACK190 only then zero+750 passed");
+    puts("board tilt:+/-pitch/roll31 1.99 sustained rejects/2.00 accepts;43 1.49 rejects/1.50 accepts;below threshold resets candidate;31 directBACK190;43 BACK10+FWD15 fixed40 no yaw/FF;rolling resets250;43 freshg each;BACK190 only then zero+750 passed");
     return 0;
 }
 
 static int check_baseline_wrap_and_consecutive_frames(void)
 {
     static const float from[] = {12.5f, -12.5f, 0.2f, 179.9f, -179.9f, 179.25f};
-    static const float to[] = {14.0f, -14.0f, 1.7f, -178.6f, 178.6f, -179.25f};
+    static const float to[] = {14.5f, -14.5f, 2.2f, -178.1f, 178.1f, -178.75f};
     for (unsigned i = 0u; i < sizeof from / sizeof from[0]; ++i) {
         CHECK(board_start(31u, from[i], -9.0f) == 0); board_finish_guard();
         board_sample(from[i], -9.0f, 20u); CHECK(s_round == R_RUN && !s_board_contact.hits);
@@ -611,6 +621,6 @@ int main(void)
         check_not_distance_or_yaw_and_timeout() || check_invalid_and_manual_cancel() ||
         check_route31_contact_handoff_cancellations() ||
         check_legacy_and_noncontact_isolation()) return 1;
-    puts("route31/43 board tilt wait300/1000ms/guard300ms/confirm100ms/threshold1.0 versus1.5/directBACK190 versus legacyBACK10+FWD15 host-only regression passed");
+    puts("route31/43 board tilt wait300/1000ms/guard300ms/confirm100ms/threshold2.0 versus1.5/directBACK190 versus legacyBACK10+FWD15 host-only regression passed");
     return 0;
 }

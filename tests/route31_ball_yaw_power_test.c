@@ -41,7 +41,7 @@ static int power_route_yaw(unsigned task, unsigned owner, float error)
     }
     float original = st.yaw_target;
     /* This explicit legacy-enabled fixture audits STOPPED task-end power,
-     * not31's new >1.5deg coarse mid-search repair. Latch the fine gate and
+     * not31's >2.5deg coarse mid-search repair. Latch the fine gate and
      * old VAT_YAW_FIX at0.6deg first; inject the requested large error only
      * after that controller owns the motors. Small-error timing is unchanged. */
     float admission_error = fabsf(error) > 1.5f ? (error > 0.0f ? 0.6f : -0.6f) : error;

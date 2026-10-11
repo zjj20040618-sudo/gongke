@@ -163,14 +163,16 @@ static int check_turn_and_route_isolation(void)
     host_messages[0] = '\0';
     run_cmd("31"); run_cmd("g"); CHECK(sequence_start_stage() == 0);
     CHECK(s_msel == 17 && s_v == 250.0f && s_dist_heading_profile == 0);
-    CHECK(s_dist_heading_kp == 0.3f && host_precise_calls > 0u && host_integer_calls == 0u);
-    CHECK(strstr(host_messages, "ykp=0.300 source=ROUTE31") != NULL);
+    CHECK(s_dist_heading_kp == 3.0f && s_route_heading_kp == 0.3f &&
+          host_precise_calls > 0u && host_integer_calls == 0u);
+    CHECK(strstr(host_messages, "ykp=3.000 source=ROUTE31") != NULL &&
+          strstr(host_messages, "ROUTE31_LEFT_YAW lkp=3.000") != NULL);
     host_yaw = 3.0f; tick();
-    CHECK(fabsf(last_w + 0.3f * 3.0f * 0.0174533f) < 0.000001f);
+    CHECK(fabsf(last_w + 3.0f * 3.0f * 0.0174533f) < 0.000001f);
     set_gain(4.0f); CHECK(strstr(last_message, "ERR ROUTE_SEQ_ACTIVE") != NULL);
-    CHECK(host_heading_kp == 0.3f && s_dist_heading_kp == 0.3f);
+    CHECK(host_heading_kp == 0.3f && s_route_heading_kp == 0.3f && s_dist_heading_kp == 3.0f);
     run_cmd("g"); select_speed(17, 100); CHECK(gain_is(5.0f, 1) == 0);
-    puts("speed ykp: 20/22/30 turn profiles unchanged; mode31 local gain0.3 stays isolated from global/manual table passed");
+    puts("speed ykp: 20/22/30 turn profiles unchanged; mode31 left private3 and ordinary0.3 stay isolated from global/manual table passed");
     return 0;
 }
 

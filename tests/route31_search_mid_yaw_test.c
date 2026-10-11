@@ -72,10 +72,10 @@ static int check_all_tasks_directions_and_new_frames(void)
     for(unsigned k=0u;k<3u;k++)for(int direction=-1;direction<=1;direction+=2){
         unsigned task=tasks[k]; CHECK(mid_start(task,direction,31u));
         float original=st.yaw_target; uint16_t req=request(); unsigned tx_before=request_count;
-        yaw=original+1.5f; tick(20u);
+        yaw=original+(float)direction*2.5f; tick(20u);
         CHECK(st.state==(task==PROTO_TASK_BUCKET?VAT_ROUTE_BUCKET_SEARCH:VAT_ROUTE_SEARCH));
         CHECK(vx*(float)direction>0.0f); /* Strictly >, not >=. */
-        CHECK(mid_trigger(direction>0?1.51f:-1.51f));
+        CHECK(mid_trigger(direction>0?2.501f:-2.501f));
         /* Wheel coasting restarts the initial250ms brake gate. */
         counts[0]++; tick(20u); CHECK(st.state==VAT_BRAKE&&stopped());
         CHECK(mid_begin_fix()); CHECK(w*(float)direction<0.0f);
@@ -103,32 +103,37 @@ static int check_all_tasks_directions_and_new_frames(void)
         CHECK(st.state==(task==PROTO_TASK_BALL?VAT_WAIT_BALL_ACTION:task==PROTO_TASK_BUCKET?VAT_WAIT_BUCKET_ACTION:VAT_WAIT_HOSTAGE_ACTION));
         vision_align_test_cancel(); CHECK(stopped());
     }
-    puts("mid-search31: three tasks x forward/back; >1.5 brake/still/original-yaw400, no LOST300/action while fixing, original direction blind resume, rotating/replayed pixels rejected, NEW stopped five-frame arrival passed");
+    puts("mid-search31: three tasks x forward/back; +/-2.5 no-trigger,+/-2.501 brake/still/original-yaw400, no LOST300/action while fixing, original direction blind resume, rotating/replayed pixels rejected, NEW stopped five-frame arrival passed");
     return 1;
 }
 static int check_timeout_residual_and_hysteresis(void)
 {
-    CHECK(mid_start(PROTO_TASK_BALL,1,31u)); CHECK(mid_trigger(2.0f)); CHECK(mid_begin_fix());
-    tick(1999u); CHECK(st.state==VAT_YAW_FIX&&vx==0.0f&&vy==0.0f);
-    tick(1u); CHECK(st.state==VAT_STOPPED&&stopped()&&strcmp(st.reason,"SEARCH_MID_YAW_TIMEOUT_GT1P5")==0);
-    unsigned calls=mid_drive_calls; tick(10000u); CHECK(mid_drive_calls==calls&&st.state==VAT_STOPPED&&stopped());
+    for(int side=-1;side<=1;side+=2){
+        CHECK(mid_start(PROTO_TASK_BALL,side,31u)); CHECK(mid_trigger((float)side*2.501f)); CHECK(mid_begin_fix());
+        tick(1999u); CHECK(st.state==VAT_YAW_FIX&&vx==0.0f&&vy==0.0f);
+        tick(1u); CHECK(st.state==VAT_STOPPED&&stopped()&&strcmp(st.reason,"SEARCH_MID_YAW_TIMEOUT_GT2P5")==0);
+        unsigned calls=mid_drive_calls; tick(10000u); CHECK(mid_drive_calls==calls&&st.state==VAT_STOPPED&&stopped());
 
-    CHECK(mid_start(PROTO_TASK_HOSTAGE,-1,31u)); CHECK(mid_trigger(-2.0f)); CHECK(mid_begin_fix());
-    yaw=st.yaw_target-1.5f; tick(2000u);
-    CHECK(st.state==VAT_YAW_FIX&&stopped()&&strcmp(st.reason,"SEARCH_MID_YAW_ACCEPT_STILL")==0);
-    tick(249u); CHECK(stopped()&&st.state==VAT_YAW_FIX); tick(1u);
-    CHECK(st.state==VAT_ROUTE_SEARCH&&stopped()&&strcmp(st.reason,"SEARCH_MID_YAW_ACCEPT_WAIT_NEW")==0);
-    tick(20u); CHECK(vx<0.0f&&st.state==VAT_ROUTE_SEARCH); /* No immediate same-error re-trigger at1.5. */
-    yaw=st.yaw_target-1.51f;tick(20u);CHECK(st.state==VAT_BRAKE&&stopped());
-    vision_align_test_cancel();
-    puts("mid-search31: exact1999/2000 timeout, residual>1.5 terminal/no restart, <=1.5 accepted only after250ms wheel stop, strict threshold avoids same-error instant looping passed");
+        CHECK(mid_start(PROTO_TASK_HOSTAGE,side,31u)); CHECK(mid_trigger((float)side*3.0f)); CHECK(mid_begin_fix());
+        float original=st.yaw_target;
+        yaw=original+(float)side*2.5f; tick(1999u);
+        CHECK(st.state==VAT_YAW_FIX&&vx==0.0f&&vy==0.0f);
+        tick(1u); CHECK(st.state==VAT_YAW_FIX&&stopped()&&strcmp(st.reason,"SEARCH_MID_YAW_ACCEPT_STILL")==0);
+        tick(249u); CHECK(stopped()&&st.state==VAT_YAW_FIX); tick(1u);
+        CHECK(st.state==VAT_ROUTE_SEARCH&&stopped()&&strcmp(st.reason,"SEARCH_MID_YAW_ACCEPT_WAIT_NEW")==0);
+        CHECK(st.yaw_target==original&&yaw==original+(float)side*2.5f&&!imu_zero);
+        tick(20u); CHECK(vx*(float)side>0.0f&&st.state==VAT_ROUTE_SEARCH); /* No re-trigger at exact2.5. */
+        yaw=original+(float)side*2.501f;tick(20u);CHECK(st.state==VAT_BRAKE&&stopped());
+        vision_align_test_cancel();
+    }
+    puts("mid-search31: exact1999/2000 timeout, +/-2.501 terminal/no restart, +/-2.5 accepted only after250ms wheel stop without headingzero, strict threshold avoids same-error instant looping passed");
     return 1;
 }
 static int check_middle_bucket_and_geometry_barriers(void)
 {
     for(int direction=-1;direction<=1;direction+=2){
         CHECK(mid_start_rank(PROTO_TASK_BUCKET,direction,31u,2u));
-        CHECK(st.ball_rank==2u); CHECK(mid_trigger(2.0f)); CHECK(mid_begin_fix());
+        CHECK(st.ball_rank==2u); CHECK(mid_trigger(3.0f)); CHECK(mid_begin_fix());
         CHECK(mid_restore());tick(20u);
         CHECK(st.ball_rank==2u&&vx*(float)direction>0.0f);
         /* Clearing turn pixels must not turn an already-running middle search
@@ -143,7 +148,7 @@ static int check_middle_bucket_and_geometry_barriers(void)
         vision_align_test_cancel();
     }
     for(unsigned resumed=0u;resumed<2u;resumed++){
-        CHECK(mid_start(PROTO_TASK_BALL,1,31u));CHECK(mid_trigger(2.0f));CHECK(mid_begin_fix());
+        CHECK(mid_start(PROTO_TASK_BALL,1,31u));CHECK(mid_trigger(3.0f));CHECK(mid_begin_fix());
         if(resumed)CHECK(mid_restore());
         object(request(),4,135,VAT_BALL_Y_PX,641u,480u,seq++);tick(20u);
         CHECK(st.state==VAT_STOPPED&&stopped()&&strcmp(st.reason,"IMAGE_GEOMETRY")==0);
@@ -154,19 +159,19 @@ static int check_middle_bucket_and_geometry_barriers(void)
 }
 static int check_scopes_and_faults(void)
 {
-    CHECK(mid_start(PROTO_TASK_BALL,1,43u));yaw=st.yaw_target+2.0f;tick(20u);
+    CHECK(mid_start(PROTO_TASK_BALL,1,43u));yaw=st.yaw_target+4.0f;tick(20u);
     CHECK(st.state==VAT_ROUTE_SEARCH&&vx>0.0f&&w<0.0f);vision_align_test_cancel();
     CHECK(reset(38u));CHECK(ready());tick(20u);CHECK(st.state==VAT_STEP_MOVE);
-    yaw=st.yaw_target+2.0f;tick(20u);CHECK(st.state==VAT_STEP_MOVE&&vx>0.0f&&w==0.0f);vision_align_test_cancel();
+    yaw=st.yaw_target+4.0f;tick(20u);CHECK(st.state==VAT_STEP_MOVE&&vx>0.0f&&w==0.0f);vision_align_test_cancel();
     /* Already-latched fine X retains its moving heading controller; this is
      * not permission to restore stopped BALL/HOSTAGE task-end hard yaw. */
     CHECK(reset_route(40u));CHECK(ready());frame(0,229,VAT_HOSTAGE_Y_PX);CHECK(stop_recheck());
     frame(0,226,VAT_HOSTAGE_Y_PX);CHECK(st.state==VAT_FINE_CONTINUOUS&&vx>0.0f);
-    yaw=st.yaw_target+2.0f;frame(0,226,VAT_HOSTAGE_Y_PX);
+    yaw=st.yaw_target+4.0f;frame(0,226,VAT_HOSTAGE_Y_PX);
     CHECK(st.state==VAT_FINE_CONTINUOUS&&vx>0.0f&&w<0.0f);vision_align_test_cancel();
 
     for(unsigned phase=0u;phase<3u;phase++)for(unsigned fault=0u;fault<5u;fault++){
-        CHECK(mid_start(PROTO_TASK_HOSTAGE,1,31u));CHECK(mid_trigger(2.0f));
+        CHECK(mid_start(PROTO_TASK_HOSTAGE,1,31u));CHECK(mid_trigger(3.0f));
         if(phase){CHECK(mid_begin_fix());if(phase==2u)CHECK(mid_restore());}
         if(fault==0u)vision_align_test_cancel();
         else if(fault==1u)aborted=1;

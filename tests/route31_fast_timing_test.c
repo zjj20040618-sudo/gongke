@@ -49,12 +49,12 @@ static int check_fast_private_cross_distance(void)
     CHECK(route_seq_leg()->distance_mm == 650u && s_d == 650.0f);
     run_cmd("0");
     CHECK(fast_prepare(31u,7u) == 0);
-    CHECK(route_seq_leg()->mode == 16u && route_seq_leg()->distance_mm == 810u && s_d == 810.0f);
+    CHECK(route_seq_leg()->mode == 16u && route_seq_leg()->distance_mm == 790u && s_d == 790.0f);
     run_cmd("0");
     CHECK(fast_prepare(43u,7u) == 0);
     CHECK(route_seq_leg()->mode == 16u && route_seq_leg()->distance_mm == 760u && s_d == 760.0f);
     run_cmd("0");
-    puts("31 private cross620/BACK810 vs43 retained650/BACK760 prepare distance isolation passed");
+    puts("31 private cross620/BACK790 vs43 retained650/BACK760 prepare distance isolation passed");
     return 0;
 }
 
@@ -120,7 +120,7 @@ static int check_fast_contact_zero_wait(void)
     for (unsigned k = 0u; k < 2u; ++k) {
         unsigned wait = k ? 1000u : 300u;
         CHECK(fast_prepare(owners[k],4u) == 0 && route_contact_zero_wait_ms() == wait);
-        CHECK(route_contact_tilt_deg() == (owners[k] == 31u ? 1.0f : 1.5f));
+        CHECK(route_contact_tilt_deg() == (owners[k] == 31u ? 2.0f : 1.5f));
         host_tick += T_DIST_STILL_MS - 1u; wire_poll();
         CHECK(s_seq_state == SQ_STILL && fast_stopped());
         ++host_tick; wire_poll();
@@ -158,7 +158,7 @@ static int check_fast_turn_strength_preserves_holds(void)
             unsigned hold=owner?700u:400u;
             unsigned zeros=(unsigned)zero_calls, commands=wire_commands;
             float direction=side? -1.0f:1.0f;
-            float goal=owner?180.0f:182.0f;
+            float goal=180.0f;
             CHECK(turn_target_deg()==goal);
             host_yaw=goal+(side?0.5f:-0.5f);
             host_tick+=20u;wire_poll();
@@ -183,7 +183,83 @@ static int check_fast_turn_strength_preserves_holds(void)
             run_cmd("0");CHECK(fast_stopped());
         }
     }
-    puts("31 actual second182 goal+/-0.5 .30 vs43 second180 .18; holds400/700 preserved;31 directly requests task2 with no lateral job;43 keeps gatedLEFT20; no early zero/request passed");
+    puts("31 actual second180 goal+/-0.5 .30 vs43 second180 .18; holds400/700 preserved;31 directly requests task2 with no lateral job;43 keeps gatedLEFT20; no early zero/request passed");
+    return 0;
+}
+
+static int fast_tolerance_turn(unsigned stage)
+{
+    CHECK(fast_prepare(31u,2u) == 0);
+    s_seq_stage = (uint8_t)stage;
+    s_route31_rack_deployed = 1u; /* Isolate the already-completed predeployment. */
+    s_seq_pair_turn = stage == ROUTE31_PAIR_STAGE;
+    route_seq_prepare();
+    CHECK(sequence_start_stage() == 0 && s_round == R_RUN && turn_closed_loop_mode());
+    CHECK(turn_tolerance_deg() == 0.4f && turn_settle_ms() == 400u &&
+          strstr(host_messages,"hold_tol=0.4deg") != NULL);
+    return 0;
+}
+
+static int check_fast_turn_tolerance_boundaries_and_scope(void)
+{
+    const unsigned stages[] = {2u,8u,ROUTE31_PAIR_STAGE,ROUTE31_RETURN180_STAGE,ROUTE31_HOSTAGE_TURN_STAGE};
+    const float goals[] = {90.0f,-90.0f,180.0f,180.0f,93.0f};
+    CHECK(ROUTE31_TURN_TOL_DEG == 0.4f && T_TURN_TOL_DEG == 0.3f &&
+          ROUTE31_STABLE_MS == 400u && ROUTE31_TURN_MIN_W == 0.30f);
+    for (unsigned leg=0u;leg<sizeof stages/sizeof stages[0];++leg)
+        for (int side=-1;side<=1;side+=2) {
+            CHECK(fast_tolerance_turn(stages[leg]) == 0);
+            const float goal=goals[leg], sign=(float)side;
+            CHECK(turn_target_deg() == goal);
+            unsigned zeros=(unsigned)zero_calls, commands=wire_commands;
+            /* Use the real float target subtraction (e.g.90.4-90), not
+             * only a direct helper call that would miss its rounding edge. */
+            host_yaw=goal+sign*0.401f;host_tick+=20u;wire_poll();
+            CHECK(s_round==R_RUN && last_w*sign<0.0f && !last_x && !last_y &&
+                  fabsf(fabsf(last_w)-0.30f)<0.000001f && !turn_error_accepted(goal-host_yaw));
+            host_yaw=goal+sign*0.4f;host_tick+=20u;wire_poll();
+            CHECK(turn_error_accepted(goal-host_yaw) && s_round==R_BRAKE && fast_stopped());
+            uint32_t began=s_turn_settle_t0;
+            host_tick=began+200u;wire_poll();CHECK(s_round==R_BRAKE && fast_stopped());
+            /* Overshoot during BRAKE invalidates the first hold and returns
+             * to signed correction; it must not report arrival at400ms. */
+            host_yaw=goal+sign*0.401f;host_tick+=20u;wire_poll();
+            CHECK(s_round==R_RUN && (unsigned)zero_calls==zeros && wire_commands==commands);
+            host_tick+=20u;wire_poll();
+            CHECK(s_round==R_RUN && last_w*sign<0.0f && !last_x && !last_y);
+            host_yaw=goal+sign*0.4f;host_tick+=20u;wire_poll();
+            CHECK(s_round==R_BRAKE && s_turn_settle_t0==host_tick && fast_stopped());
+            began=s_turn_settle_t0;host_tick=began+399u;wire_poll();
+            CHECK(s_round==R_BRAKE && s_seq_state==SQ_RUN && s_seq_stage==stages[leg] &&
+                  (unsigned)zero_calls==zeros && wire_commands==commands && fast_stopped());
+            ++host_tick;wire_poll();CHECK(s_round!=R_BRAKE && fast_stopped());
+            CHECK(strstr(host_messages,"status=DONE") != NULL);
+            run_cmd("0");CHECK(fast_stopped());
+        }
+    const unsigned legacy[] = {43u,20u,22u,30u};
+    for (unsigned kind=0u;kind<sizeof legacy/sizeof legacy[0];++kind)
+        for (int side=-1;side<=1;side+=2) {
+            if (legacy[kind]==43u) CHECK(fast_start_road(43u,2u)==0);
+            else {
+                char command[8];reset_fixture();snprintf(command,sizeof command,"%u",legacy[kind]);
+                run_cmd(command);run_cmd("g");CHECK(s_round==R_RUN && turn_closed_loop_mode());
+            }
+            CHECK(turn_tolerance_deg()==0.3f && turn_settle_ms()==700u &&
+                  turn_error_accepted(0.3f) && turn_error_accepted(-0.3f) &&
+                  !turn_error_accepted(0.300005f) && !turn_error_accepted(-0.300005f));
+            CHECK(strstr(host_messages,"hold_tol=0.3deg") != NULL);
+            host_yaw=turn_target_deg()+(float)side*0.4f;host_tick+=20u;wire_poll();
+            CHECK(s_round==R_RUN && last_w*(float)side<0.0f && !last_x && !last_y);
+            host_yaw=turn_target_deg();host_tick+=20u;wire_poll();CHECK(s_round==R_BRAKE);
+            host_tick+=699u;wire_poll();CHECK(s_round==R_BRAKE);
+            ++host_tick;wire_poll();CHECK(s_round!=R_BRAKE);run_cmd("0");
+        }
+    reset_fixture();run_cmd("31");
+    s_seq_state=SQ_OFF; /* Retain owner31 without an active route session. */
+    CHECK(s_seq_mode==31u && s_seq_state==SQ_OFF);
+    CHECK(turn_tolerance_deg()==0.3f && !turn_error_accepted(0.4f) &&
+          !turn_error_accepted(0.300005f) && turn_settle_ms()==700u);
+    puts("31 real +90/-90/first180/return180/hostage93:goal+/-0.4 inclusive arrival with float-subtraction epsilon, +/-0.401 signed correction; BRAKE excursion re-corrects and restarts full399/400ms hold;43/manual20/22/30/retained31 OFF keep exact0.3 without epsilon and700ms passed");
     return 0;
 }
 
@@ -223,7 +299,17 @@ static int fast_vat_yaw(unsigned owner, unsigned stage)
                 CHECK(fast_status.state == VAT_ALIGN && fast_status.good == fresh && !host_timer_active);
         }
         CHECK(fast_status.state == (stage == ROUTE31_PAIR_STAGE ?
-              VAT_WAIT_BALL_ACTION : VAT_WAIT_HOSTAGE_ACTION) && host_timer_active);
+              VAT_WAIT_BALL_ACTION : VAT_WAIT_HOSTAGE_ACTION));
+        if (stage == ROUTE31_HOSTAGE_STAGE) {
+            /* First stopped alignment schedules LEFT30, not the rack/grip.
+             * The separate full-chain case checks corrected fresh-X recheck
+             * before the eventual arm job. Never mistake this pause for grab. */
+            CHECK(s_seq_state == SQ_STILL && s_seq_hostage_offset &&
+                  s_route31_hostage_offset_done && !host_timer_active &&
+                  s_route31_lift_phase == R31_LIFT_OFF &&
+                  route_seq_leg()->mode == 17u && route_seq_leg()->distance_mm == 30u &&
+                  route_seq_leg()->heading_hold && fast_stopped());
+        } else CHECK(host_timer_active);
         run_cmd("0"); CHECK(fast_stopped());
         continue;
     }
@@ -323,7 +409,7 @@ static int check_fast_target_and_legacy(void)
         ++host_tick; wire_poll();
     }
     CHECK(s_seq_state == SQ_STILL && s_seq_stage == ROUTE31_TARGET_CORNER_STAGE && fast_stopped());
-    CHECK(route_seq_leg()->distance_mm == 430u && s_d == 430.0f);
+    CHECK(route_seq_leg()->distance_mm == 420u && s_d == 420.0f);
     const unsigned owners[] = {35u,43u};
     for (unsigned k = 0u; k < 2u; ++k) {
         CHECK(fast_target_seek(owners[k]) == 0);
@@ -339,8 +425,8 @@ static int check_fast_target_and_legacy(void)
         run_cmd("0"); CHECK(!laser_state && !s_receiving);
     }
     puts(ROUTE31_TARGET_STOP_YAW_ENABLE
-         ? "historical enabled31 target:four fresh nofire,fifth samepoll laser/brake/RXclose,1999 on2000 off,original-yaw399 wait400 then green430;35/43 stillwait999/1000 passed (not default behavior)"
-         : "default31 target:four fresh nofire,fifth samepoll laser/brake/RXclose,1999 on2000 off directly prepares green430 without SQ_TASK_YAW;35/43 stillwait999/1000 passed");
+         ? "historical enabled31 target:four fresh nofire,fifth samepoll laser/brake/RXclose,1999 on2000 off,original-yaw399 wait400 then green420;35/43 stillwait999/1000 passed (not default behavior)"
+         : "default31 target:four fresh nofire,fifth samepoll laser/brake/RXclose,1999 on2000 off directly prepares green420 without SQ_TASK_YAW;35/43 stillwait999/1000 passed");
     return 0;
 }
 
@@ -423,6 +509,7 @@ int ROUTE31_FAST_TIMING_FIXTURE_MAIN(void)
     CHECK(check_fast_road_holds() == 0);
     CHECK(check_fast_contact_zero_wait() == 0);
     CHECK(check_fast_turn_strength_preserves_holds() == 0);
+    CHECK(check_fast_turn_tolerance_boundaries_and_scope() == 0);
     CHECK(check_fast_vat_scope() == 0);
     CHECK(check_fast_target_and_legacy() == 0);
     CHECK(check_fast_target_stale_and_stop() == 0);

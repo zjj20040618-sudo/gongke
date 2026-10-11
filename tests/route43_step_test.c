@@ -152,7 +152,7 @@ static int r43_motion_finish(unsigned next_unit)
             CHECK(s_board_contact.active && !heading_hold);
             host_fore = s_dist_odo0 + 10000.0f; wire_poll(); /* Distance cannot claim contact. */
             CHECK(s_round == R_RUN && s_seq_state == SQ_RUN && !s_board_contact.hits);
-            host_pitch = s_board_contact.pitch0 + ROUTE31_BOARD_CONTACT_TILT_DEG + 0.1f;
+            host_pitch = s_board_contact.pitch0 + ROUTE43_BOARD_CONTACT_TILT_DEG + 0.1f;
             /* A startup inclination cannot claim contact during the guard.
              * Once the guard expires, two frames are necessary but still not
              * sufficient: the same inclination must persist for 100ms. */

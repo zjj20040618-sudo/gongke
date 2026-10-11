@@ -18,6 +18,8 @@ static unsigned s_binary_len;
 static uint32_t s_binary_tick;
 static uint16_t s_binary_seq;
 static uint8_t s_binary_have_seq;
+static uint8_t s_target_sequence_guard;
+static uint16_t s_target_sequence_request;
 static volatile uint16_t s_request;
 static volatile uint8_t s_controlled, s_mode, s_ack, s_fresh, s_failed, s_due;
 static volatile uint8_t s_receiving;
@@ -73,6 +75,7 @@ void proto_init(void)
     __disable_irq();
     blen = dropping = 0;
     s_binary = 0u; s_binary_len = 0u; s_binary_have_seq = 0u;
+    s_target_sequence_guard = 0u; s_target_sequence_request = 0u;
     s_request = 0u; s_controlled = s_mode = s_ack = s_fresh = s_failed = s_due = 0u;
     s_receiving = 0u;
     s_task = s_selection = 0u; s_target_cls = s_target_label = -1;
@@ -91,6 +94,7 @@ static void session_clear_authority(void)
 {
     s_ack = s_fresh = s_qr_valid = s_qr_notice_pending = 0u;
     s_binary_have_seq = 0u;
+    s_target_sequence_guard = 0u;
     memset(s_qr_tuple, 0, sizeof s_qr_tuple);
     memset(s_qr_notice_tuple, 0, sizeof s_qr_notice_tuple);
     rank_reset();
@@ -139,6 +143,7 @@ void proto_set_binary_mode(int enabled)
     s_binary = enabled ? 1u : 0u;
     s_receiving = 0u;
     blen = dropping = 0; s_binary_len = 0u; s_binary_have_seq = 0u;
+    s_target_sequence_guard = 0u;
     s_qr_valid = s_qr_notice_pending = 0u; memset(s_qr_tuple, 0, sizeof s_qr_tuple);
     rank_reset();
     __set_PRIMASK(pm);
@@ -397,6 +402,15 @@ static int binary_dispatch(const uint8_t *p)
                 || w == 0u || h == 0u || w > f.img_w || h > f.img_h) return 0;
         }
     }
+    /* The selected-target callback cannot see empty/wrong-target images.
+     * Therefore the request-wide barrier must precede obj++ and callbacks,
+     * after full validation. Never let an old empty image clear a fresh aim,
+     * or a delayed coordinate revive aim invalidated by a newer empty image. */
+    if (type == 0x01u && s_target_sequence_guard &&
+        s_target_sequence_request == s_request && s_binary_have_seq) {
+        uint16_t delta = (uint16_t)(sequence - s_binary_seq);
+        if (!delta || delta >= 0x8000u) { s_stats.duplicate++; return 2; }
+    }
     if (s_binary_have_seq && sequence == s_binary_seq) { s_stats.duplicate++; return 1; }
     s_binary_seq = sequence; s_binary_have_seq = 1u;
     s_stats.accepted++;
@@ -491,7 +505,11 @@ static int control_dispatch(const uint8_t *p, unsigned length)
         } else if (s_mode == 2u && body[0] == 0x01u) {
             if (body[3] > PROTO_BINARY_MAX_OBJECTS || n != 14u + 11u * body[3]) return 0;
         } else return 0;
-        if (!binary_dispatch(body)) return 0;
+        {
+            int result = binary_dispatch(body);
+            if (!result) return 0;
+            if (result == 2) return 1; /* Consumed replay is not fresh evidence. */
+        }
         s_fresh = 1u;
         return 1;
     }
@@ -710,6 +728,7 @@ void proto_send_scene(ProtoScene sc)
         s_mode = sc == SCENE_IDLE ? 0u : sc == SCENE_QR ? 1u : 2u;
         s_task = s_selection = 0u; s_target_cls = s_target_label = -1;
         s_ack = s_fresh = 0u; s_binary_have_seq = 0u;
+        s_target_sequence_guard = 0u;
         rank_reset();
         s_qr_valid = 0u; memset(s_qr_tuple, 0, sizeof s_qr_tuple);
         /* A fresh QR round cancels any previous notice. Automatic IDLE/OBJECT
@@ -772,12 +791,28 @@ int proto_send_target(ProtoTask task, uint8_t digit)
     s_target_cls = cls; s_target_label = label;
     s_request++; s_ack = s_fresh = s_failed = 0u; s_due = 1u;
     s_binary_have_seq = 0u;
+    s_target_sequence_guard = 0u;
     rank_reset();
     /* The mission owns its locked QR tuple. Clear only parser readiness;
      * preserve the DefaultTask's pending one-shot QR success notice. */
     s_qr_valid = 0u; memset(s_qr_tuple, 0, sizeof s_qr_tuple);
     __set_PRIMASK(pm);
     return 1;
+}
+
+int proto_target_sequence_guard_enable(void)
+{
+    uint32_t pm = __get_PRIMASK();
+    int ready;
+    __disable_irq();
+    ready = s_binary && s_controlled && s_receiving && !s_failed &&
+            s_mode == 2u && s_task == PROTO_TASK_TARGET;
+    if (ready) {
+        s_target_sequence_request = s_request;
+        s_target_sequence_guard = 1u;
+    }
+    __set_PRIMASK(pm);
+    return ready;
 }
 
 /* Startup, READY and R1 all share one QR request. Starting R1 must not erase
@@ -796,6 +831,7 @@ void proto_receive_end(void)
     uint32_t pm = __get_PRIMASK();
     __disable_irq();
     s_receiving = 0u;
+    s_target_sequence_guard = 0u;
     s_due = s_ack = s_fresh = 0u;
     s_qr_valid = 0u;
     memset(s_qr_tuple, 0, sizeof s_qr_tuple);

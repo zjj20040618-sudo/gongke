@@ -289,10 +289,14 @@ static int check_route31_fine_gate_is_not_an_aim_gate(void)
         host_tick += NAV_SETTLE_MS; test_poll();
     CHECK(s_target35_phase == TA_SEEK && last_x == 200.0f && last_y == 9.0f && !s_target31_fine);
         target_packet(CLS_TARGET, LAB_G, 400, 10u);
-        target_packet(CLS_TARGET, LAB_G, 360, 10u); /* Duplicate. */
-        CHECK(last_x == 200.0f && last_y == 9.0f && !s_target31_fine);
-        target_packet(CLS_TARGET, LAB_G, 359, 9u); /* Backwards. */
-        CHECK(last_x == 200.0f && last_y == 9.0f && !s_target31_fine);
+        /* These direct callbacks bypass the real parser's pre-cache sequence
+         * guard. The poll defense must brake on the corrupted cache without
+         * latching fine or firing; real-parser replay tests separately prove
+         * that rejected wire duplicates leave the accepted drive unchanged. */
+        target_packet(CLS_TARGET, LAB_G, 360, 10u); /* Duplicate injection. */
+        CHECK(last_x == 0.0f && last_y == 0.0f && !s_target31_fine && !laser_state);
+        target_packet(CLS_TARGET, LAB_G, 359, 9u); /* Backwards injection. */
+        CHECK(last_x == 0.0f && last_y == 0.0f && !s_target31_fine && !laser_state);
         target_packet(CLS_TARGET, LAB_G, 361, 11u);
         CHECK(last_x == 200.0f && last_y == 9.0f && !s_target31_fine);
         target_cache_packet(CLS_TARGET, LAB_G, 360, 12u);
@@ -304,7 +308,7 @@ static int check_route31_fine_gate_is_not_an_aim_gate(void)
         CHECK(last_x == 30.0f && last_y == 0.0f && s_target31_fine && !laser_state);
         run_cmd("0"); CHECK(s_seq_state == SQ_STOPPED && target_stopped() && !laser_state);
     }
-    puts("31-only direct RX:far400 then duplicate/backward360 cannot latch; fresh360->empty/far400 samepoll permanentlyfine30/noFF, never fakegood/laser;35 isolated passed");
+    puts("31-only parser-bypass injection:duplicate/backward cache brakes without fine/laser; fresh11 resumes coarse; fresh360->empty/far400 samepoll permanentlyfine30/noFF;35 isolated passed");
     return 0;
 }
 

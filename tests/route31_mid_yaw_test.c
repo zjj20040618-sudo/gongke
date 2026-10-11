@@ -79,7 +79,7 @@ static int mid_brake_and_coast(int direction, int yaw_sign)
     unsigned record = s_active_test;
     host_fore = (float)direction * 40.0f; host_lateral = 3.0f;
     for (int i = 0; i < 4; ++i) host_counts[i] = direction * 100;
-    host_yaw = s_dist_heading0 + (float)yaw_sign * 2.0f;
+    host_yaw = s_dist_heading0 + (float)yaw_sign * 3.0f;
     mid_elapsed(20u);
     CHECK(s_round == R_BRAKE && s_dist_mid_pause == 1u && mid_stopped());
     CHECK(s_seq_state == SQ_RUN && s_seq_stage == stage && s_active_test == record);
@@ -112,19 +112,19 @@ static int check_threshold_and_wrapping(void)
                             direction < 0 ? 16u : 15u, 0.0f) == 0);
             unsigned stage = s_seq_stage, zeros = (unsigned)zero_calls;
             host_fore = (float)direction * 40.0f;
-            host_yaw = (float)side * 1.5f; mid_elapsed(20u);
+            host_yaw = (float)side * 2.5f; mid_elapsed(20u);
             CHECK(s_round == R_RUN && !s_dist_mid_pause && s_seq_stage == stage);
             CHECK(last_x * (float)direction > 0.0f && (unsigned)zero_calls == zeros);
-            host_yaw = (float)side * 1.501f; mid_elapsed(20u);
+            host_yaw = (float)side * 2.501f; mid_elapsed(20u);
             CHECK(s_round == R_BRAKE && s_dist_mid_pause == 1u && mid_stopped());
             CHECK((unsigned)zero_calls == zeros && s_seq_stage == stage);
         }
     CHECK(mid_start(31u, 7u, 16u, 179.0f) == 0);
-    host_fore = -40.0f; host_yaw = -179.0f; mid_elapsed(20u);
+    host_fore = -40.0f; host_yaw = -178.0f; mid_elapsed(20u);
     CHECK(s_dist_mid_pause == 1u && s_round == R_BRAKE);
     mid_elapsed(T_DIST_STILL_MS); mid_elapsed(20u);
-    CHECK(s_round == R_ALIGN && last_w < 0.0f && mid_near(dist_yaw_error(host_yaw), -2.0f));
-    puts("mid-yaw: strict +/-1.5 boundary, both signed directions and wrapped shortest error passed");
+    CHECK(s_round == R_ALIGN && last_w < 0.0f && mid_near(dist_yaw_error(host_yaw), -3.0f));
+    puts("mid-yaw: strict +/-2.5 no-trigger / +/-2.501 trigger boundary, both signed directions and wrapped shortest error passed");
     return 0;
 }
 
@@ -188,7 +188,7 @@ static int check_timeout_residual_is_not_fake_alignment(void)
             CHECK(mid_start(31u, 7u, 16u, 0.0f) == 0);
             CHECK(mid_brake_and_coast(-1, side) == 0);
             unsigned stage = s_seq_stage, zeros = (unsigned)zero_calls;
-            host_yaw = (float)side * (accepted ? 1.5f : 1.501f);
+            host_yaw = (float)side * (accepted ? 2.5f : 2.501f);
             host_tick = s_dist_align_t0 + 1999u; test_poll();
             CHECK(s_round == R_ALIGN && s_dist_mid_pause == 2u && s_seq_stage == stage);
             ++host_tick; test_poll();
@@ -204,18 +204,18 @@ static int check_timeout_residual_is_not_fake_alignment(void)
                 CHECK(!strstr(host_messages, "result=RESUME") && (unsigned)zero_calls == zeros);
                 mid_elapsed(1u);
                 CHECK(s_seq_state == SQ_RUN && s_round == R_RUN && !s_dist_mid_pause);
-                CHECK(s_dist_heading0 == 0.0f && host_yaw == (float)side * 1.5f);
+                CHECK(s_dist_heading0 == 0.0f && host_yaw == (float)side * 2.5f);
                 CHECK(mid_near(dist_travel_mm(), -47.0f));
                 CHECK(strstr(host_messages, "result=RESUME") && strstr(host_messages, "timeout_accept=1"));
                 CHECK(!strstr(host_messages, "status=DONE"));
             } else {
                 CHECK(s_seq_state == SQ_STOPPED && !s_dist_mid_pause && s_dist_reason == 3u);
                 CHECK(!s_dist_align_timeout_accepted);
-                CHECK(strstr(host_messages, "timeout_residual_gt1.5") &&
+                CHECK(strstr(host_messages, "timeout_residual_gt2.5") &&
                       strstr(host_messages, "status=YAW_TIMEOUT") && !strstr(host_messages, "result=RESUME"));
             }
         }
-    puts("mid-yaw:1999ms no resume;2000ms +/-1.5 residual accepted after wheel-still250 without zero,larger residual fails stopped without false success passed");
+    puts("mid-yaw:1999ms no resume;2000ms +/-2.5 residual accepted after wheel-still250 without zero,+/-2.501 fails stopped without false success passed");
     return 0;
 }
 
@@ -226,7 +226,7 @@ static int check_cancellation_and_fault_priority(void)
         for (unsigned key = 0u; key < 3u; ++key) {
             CHECK(mid_start(31u, 7u, 16u, 0.0f) == 0);
             if (!phase) {
-                host_fore = -40.0f; host_yaw = 2.0f; mid_elapsed(20u);
+                host_fore = -40.0f; host_yaw = 3.0f; mid_elapsed(20u);
                 CHECK(s_round == R_BRAKE && s_dist_mid_pause == 1u);
             } else {
                 CHECK(mid_brake_and_coast(-1, 1) == 0);
@@ -276,19 +276,19 @@ static int check_owner_and_crossing_scope(void)
     for (int side = -1; side <= 1; side += 2) {
         CHECK(mid_start(31u, 1u, 16u, 0.0f) == 0);
         CHECK(dist_mid_yaw_enabled() && dist_ordinary_leg());
-        host_fore = -40.0f; host_yaw = (float)side * 1.5f; mid_elapsed(20u);
+        host_fore = -40.0f; host_yaw = (float)side * 2.5f; mid_elapsed(20u);
         CHECK(s_round == R_RUN && !s_dist_mid_pause && last_x < 0.0f);
         CHECK(last_w * (float)side < 0.0f);
-        host_yaw = (float)side * 1.501f; mid_elapsed(20u);
+        host_yaw = (float)side * 2.501f; mid_elapsed(20u);
         CHECK(s_round == R_BRAKE && s_dist_mid_pause == 1u && mid_stopped());
     }
     /* The post-contact road leg remains eligible, with the same strict limit. */
     for (int side = -1; side <= 1; side += 2) {
         CHECK(mid_start(31u, 5u, 16u, 0.0f) == 0);
         CHECK(dist_mid_yaw_enabled());
-        host_fore = -40.0f; host_yaw = (float)side * 1.5f; mid_elapsed(20u);
+        host_fore = -40.0f; host_yaw = (float)side * 2.5f; mid_elapsed(20u);
         CHECK(s_round == R_RUN && !s_dist_mid_pause && last_x < 0.0f);
-        host_yaw = (float)side * 1.501f; mid_elapsed(20u);
+        host_yaw = (float)side * 2.501f; mid_elapsed(20u);
         CHECK(s_round == R_BRAKE && s_dist_mid_pause == 1u && mid_stopped());
     }
     const unsigned owners[] = {0u, 34u, 36u, 37u, 43u};
@@ -379,16 +379,18 @@ static int check_real_qr_wait_then_r2_pause_resume(void)
 static int check_current_parameter_isolation(void)
 {
     reset_fixture();
-    CHECK(ROUTE31_ENTRY_BACK_MM == 810u && ROUTE31_EXIT_RIGHT_MM == 780u);
-    CHECK(ROUTE31_RED_TO_CORNER_MM == 510u && ROUTE31_GREEN_TO_CORNER_MM == 430u && ROUTE31_BLUE_TO_CORNER_MM == 350u);
+    CHECK(ROUTE31_ENTRY_BACK_MM == 790u && ROUTE31_EXIT_RIGHT_MM == 780u);
+    CHECK(ROUTE31_MID_YAW_LIMIT_DEG == 2.5f && ROUTE31_POST_YAW_TOL_DEG == 0.4f);
+    CHECK(ROUTE31_RED_TO_CORNER_MM == 515u && ROUTE31_GREEN_TO_CORNER_MM == 420u && ROUTE31_BLUE_TO_CORNER_MM == 355u);
     CHECK(ROUTE31_RIGHT_TARGET_DEG == 90.0f && ROUTE31_HOSTAGE_RIGHT_TARGET_DEG == 93.0f &&
           ROUTE43_RIGHT_TARGET_DEG == 90.0f);
-    CHECK(ROUTE31_LEFT_TARGET_DEG == -90.0f && ROUTE31_RETURN_TARGET_DEG == 182.0f);
+    CHECK(ROUTE31_LEFT_TARGET_DEG == -90.0f && ROUTE31_RETURN_TARGET_DEG == 180.0f);
     CHECK(mid_near(ROUTE31_TARGET_SEARCH_RIGHT_FF_RATIO, 0.045f));
     CHECK(mid_near(ROUTE43_TARGET_SEARCH_RIGHT_FF_RATIO, 0.065f));
     CHECK(s_route43_tune.road_mm[7] == 760u && s_route43_tune.corner_mm[0] == 520u &&
           s_route43_tune.corner_mm[1] == 420u && s_route43_tune.corner_mm[2] == 320u);
-    CHECK(ROUTE31_BALL_TO_BUCKET_LEFT_MM == 15u && ROUTE31_RETURN_RIGHT_MM == 0u);
+    CHECK(ROUTE31_BALL_TO_BUCKET_LEFT_MM == 15u && ROUTE31_RETURN_RIGHT_MM == 0u &&
+          ROUTE31_HOSTAGE_PREGRAB_LEFT_MM == 30u);
     CHECK(s_route31_ball_to_bucket_offset_leg.mode == 17u && s_route31_ball_to_bucket_offset_leg.distance_mm == 15u &&
           s_route31_return_right_offset_leg.mode == 18u && s_route31_return_right_offset_leg.distance_mm == 0u);
     CHECK(s_route43_tune.pair_left_mm == 40u && s_route43_tune.return_left_mm == 20u);
@@ -397,7 +399,7 @@ static int check_current_parameter_isolation(void)
     s_route31_lateral_v = 40.0f; CHECK(route_seq_speed_mms() == 40.0f);
     s_seq_mode = 43u; s_route43_tune.lateral_v = 250.0f;
     CHECK(route_seq_speed_mms() == 250.0f);
-    puts("mid-yaw: current31 ENTRY810/cross-right90/hostage-right93/colors510430350/targetFF4.5%,firstLEFT15cap80/no-return-offset and deferred43 isolation passed");
+    puts("mid-yaw: current31 ENTRY790/cross-right90/hostage-right93/colors515420355/targetFF4.5%/strictmid2.5/endpointtol.4,firstLEFT15cap80/no-return-offset and deferred43 isolation passed");
     return 0;
 }
 

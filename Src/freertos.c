@@ -53,7 +53,9 @@
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size = 512 * 4,
+  /* Route43 UTF-8/float diagnostics: known call depth already exceeds2KB.
+   * Keep headroom for indirect printf/RTOS frames; match CubeMX below. */
+  .stack_size = 1024 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* Definitions for ControlTask */

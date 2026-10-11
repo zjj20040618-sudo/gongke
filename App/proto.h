@@ -133,6 +133,11 @@ int proto_target_filter(ProtoTask task, uint8_t digit, int *cls, int *label);
  * this call. Returns 0 on invalid selection/unavailable request number. Camera
  * needs matching 0x63 support; never fall back to generic OBJECT confirmation. */
 int proto_send_target(ProtoTask task, uint8_t digit);
+/* Opt in for the CURRENT task2 request only. All valid OBJECT packets (also
+ * empty/wrong-target images) share a monotonic u16 sequence barrier. Replays
+ * cannot invalidate/refresh a sample or add arrival frames. New request,
+ * reception end or transport reset disables it; no wire-format change. */
+int proto_target_sequence_guard_enable(void);
 /* Reuse the current nonfailed controlled QR request; otherwise queue a new
  * one. No transmission, blocking wait or chassis motion in this entry. */
 void proto_qr_begin(void);

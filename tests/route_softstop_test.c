@@ -91,7 +91,7 @@ static int start_stage(unsigned stage, const MotionProfileTune *global)
     CHECK(s_seq_state == SQ_RUN && s_dist_precise == 1u);
     CHECK(s_dist_ramp.acc == 700.0f && s_dist_ramp.dec == 350.0f);
     CHECK(s_dist_heading_profile == 0u &&
-          s_dist_heading_kp == (stage == 3u || stage == 4u ? 0.0f : stage == 6u ? 3.0f : 0.3f) && host_heading_kp == 0.3f);
+          s_dist_heading_kp == (stage == 3u || stage == 4u ? 0.0f : stage == 0u || stage == 6u ? 3.0f : 0.3f) && host_heading_kp == 0.3f);
     CHECK(s_route_heading_kp == 0.3f);
     CHECK(global_matches(global));
     CHECK(strstr(host_messages, "ROUTE_PROFILE mode=31 source=LOCAL acc=700 dec=350") != NULL);
@@ -104,7 +104,7 @@ static int check_local_profile_and_distance(void)
     /* Contact has no encoder endpoint. Its v40 ramp and sensor-triggered
      * braking are checked separately by route31_board_tilt_test. */
     static const unsigned stages[] = { 0u, 1u, 3u, 5u, 7u, ROUTE31_HOSTAGE_EXIT_STAGE };
-    static const float targets[] = { -575.0f, -610.0f, -620.0f, -190.0f, -810.0f, 1315.0f };
+    static const float targets[] = { -575.0f, -610.0f, -620.0f, -190.0f, -790.0f, 1315.0f };
     static const float speeds[] = { 250.0f, 200.0f, 300.0f, 200.0f, 200.0f, 200.0f };
     for (unsigned p = 0; p < sizeof globals / sizeof globals[0]; ++p) {
         for (unsigned s = 0; s < sizeof stages / sizeof stages[0]; ++s) {
@@ -142,9 +142,10 @@ static int check_local_profile_and_distance(void)
             CHECK(global_matches(&globals[p]));
 
             /* Only reverse crossing/forward board contact ignore yaw while slowing down.
-             * Check holding gain inside the new1.5deg mid-brake threshold;
+             * Check holding gain inside the new2.5deg mid-brake threshold;
              * the separate mid-yaw fixture tests larger deviation and resume. */
-            const float expected_kp = stages[s] == 3u || stages[s] == 4u ? 0.0f : 0.3f;
+            const float expected_kp = stages[s] == 3u || stages[s] == 4u ? 0.0f :
+                                      stages[s] == 0u || stages[s] == 6u ? 3.0f : 0.3f;
             host_yaw = 1.0f; poll_20ms();
             CHECK(close_to(last_w, -expected_kp * 1.0f * 0.0174533f));
             host_yaw = -1.0f; poll_20ms();
@@ -228,14 +229,17 @@ static int check_lateral_reverse_and_ff_wheel_dispatch(void)
     float baseline[4];
     CHECK(start_stage(0u, &global) == 0);
     CHECK(s_msel == 17 && s_dist_target == -575.0f && s_v == 250.0f);
-    CHECK(last_x == 0.0f && last_y < 0.0f && last_w == 0.0f && s_dist_ff_ratio == 0.0f);
+    CHECK(last_x < 0.0f && last_y < 0.0f && last_w == 0.0f && s_dist_ff_ratio == 0.010f);
+    CHECK(close_to(last_x, s_dist_ff_ratio * last_y));
+    real_motion_ik_precise(0.0f, last_y, 0.0f, baseline);
     delivered_mask = 0u;
     real_motion_vel_set_precise(last_x, last_y, last_w);
     CHECK(delivered_mask == 15u);
     CHECK(delivered_rpm[0] > 0.0f && delivered_rpm[1] < 0.0f &&
           delivered_rpm[2] > 0.0f && delivered_rpm[3] < 0.0f);
     CHECK(close_to(delivered_rpm[0], delivered_rpm[2]) && close_to(delivered_rpm[1], delivered_rpm[3]));
-    CHECK(close_to(delivered_rpm[0], -delivered_rpm[1]));
+    for (int motor = 0; motor < 4; ++motor) CHECK(delivered_rpm[motor] < baseline[motor]);
+    CHECK(close_to(delivered_rpm[0] - baseline[0], delivered_rpm[1] - baseline[1]));
     run_cmd("g");
     /* Right35 was removed from the route; preserve its signed IK coverage
      * as an unchanged manual mode18 command rather than inventing a node. */
@@ -261,7 +265,7 @@ static int check_lateral_reverse_and_ff_wheel_dispatch(void)
     for (int motor = 0; motor < 4; ++motor) CHECK(delivered_rpm[motor] < 0.0f);
     run_cmd("g");
     CHECK(start_stage(ROUTE31_TARGET_CORNER_STAGE, &global) == 0);
-    CHECK(s_dist_target == 430.0f);
+    CHECK(s_dist_target == 420.0f);
     CHECK(s_dist_ff_ratio == -ROUTE31_CORNER_RIGHT_FF_RATIO && last_x > 0.0f && last_y > 0.0f && last_w == 0.0f);
     CHECK(close_to(last_y, last_x * ROUTE31_CORNER_RIGHT_FF_RATIO));
     real_motion_ik_precise(last_x, 0.0f, 0.0f, baseline);
@@ -273,7 +277,7 @@ static int check_lateral_reverse_and_ff_wheel_dispatch(void)
     CHECK(delivered_rpm[1] > baseline[1] && delivered_rpm[3] > baseline[3]);
     CHECK(close_to(delivered_rpm[0], delivered_rpm[2]) && close_to(delivered_rpm[1], delivered_rpm[3]));
     run_cmd("g");
-    puts("real precise IK: route31 left575/manual right35 signed lateral targets; reverse190 negative axis with separateleftBFF; stage12 green430 privateCORNER_RIGHT_FF ->positive lateral and four changed forwardRPM targets passed");
+    puts("real precise IK: route31 left575/manual right35 signed lateral targets; reverse190 negative axis with separateleftBFF; stage12 green420 privateCORNER_RIGHT_FF ->positive lateral and four changed forwardRPM targets passed");
     return 0;
 }
 
