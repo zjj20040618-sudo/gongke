@@ -7,9 +7,11 @@
 
 static int diagonal31_near(float actual, float expected)
 { return fabsf(actual - expected) < 0.002f; }
+static float diagonal31_default_speed(void)
+{ return fminf(ROUTE31_STRAIGHT_V_MMS, ROUTE31_CORNER_DIAG_V_MMS); }
 
-/* Enter through the actual first LEFT565 and legal QR gate, then complete
- * BACK490. No direct stage jump or extra g authorizes the internal diagonal. */
+/* Enter through the actual first LEFT585 and legal QR gate, then complete
+ * Configured BACK. No direct stage jump or extra g authorizes the internal diagonal. */
 static int diagonal31_begin(void)
 {
     CHECK(wire_boot() == 0);
@@ -23,14 +25,14 @@ static int diagonal31_begin(void)
         wire_sync(); wire_ack(wire_request, 1u, 0u); xy_qr(wire_request, "123");
     }
     CHECK(r44_start_road() == 0 && s_seq_stage == 1u && !s_route31_corner_diag);
-    CHECK(s_msel == 16 && s_dist_target == -490.0f && !route31_diagonal_active());
+    CHECK(s_msel == 16 && s_dist_target == -(float)ROUTE31_CORNER_BACK_MM && !route31_diagonal_active());
     CHECK(r44_finish_road() == 0);
     CHECK(s_seq_stage == 1u && s_route31_corner_diag && s_seq_state == SQ_STILL);
     CHECK(strstr(host_messages, "same_stage=1 no_extra_g=1") != NULL);
     CHECK(r44_start_road() == 0);
     CHECK(s_seq_mode == 31u && s_seq_stage == 1u && s_msel == 16 &&
           s_round == R_RUN && route31_diagonal_active() && !turn_closed_loop_mode());
-    CHECK(diagonal31_near(s_dist_target, -sqrtf(20000.0f)) && s_v == 50.0f &&
+    CHECK(diagonal31_near(s_dist_target, -sqrtf(20000.0f)) && s_v == diagonal31_default_speed() &&
           s_dist_ff_ratio == 0.0f && s_dist_heading_kp > 0.0f);
     CHECK(!pulse_calls && !host_timer_active && !s_route31_rack_deployed);
     host_messages[0] = '\0';
@@ -60,11 +62,25 @@ static int diagonal31_stopped_error(const char *reason)
     return 0;
 }
 
+static int diagonal31_timeout_continued(void)
+{
+    CHECK(r44_service(600u) == 0);
+    CHECK(s_seq_state != SQ_STOPPED && s_seq_stage == 2u && !s_route31_corner_diag &&
+          !route31_diagonal_active() && !laser_state && !host_timer_active);
+    CHECK(strstr(host_messages, "status=DIAGONAL_TIMEOUT action=NEXT reached=0") &&
+          strstr(host_messages, "DIAGONAL31 result=TIMEOUT_CONTINUE") &&
+          !strstr(host_messages, "DIAGONAL31 result=DONE"));
+    run_cmd("0"); CHECK(s_seq_state == SQ_STOPPED && r44_stopped());
+    return 0;
+}
+
 static int check_diagonal31_defaults_direction_speed_and_sequence(void)
 {
-    CHECK(ROUTE31_CORNER_BACK_MM == 490u && ROUTE31_CORNER_DIAG_BACK_MM == 100u &&
-          ROUTE31_CORNER_DIAG_LEFT_MM == 100u && ROUTE31_CORNER_CROSS_MM == 520u &&
-          ROUTE31_CORNER_DIAG_V_MMS == 50.0f && ROUTE31_CORNER_DIAG_ORTH_KP == 0.5f &&
+    CHECK(ROUTE31_CORNER_BACK_MM > 0u && ROUTE31_CORNER_DIAG_BACK_MM == 100u &&
+          ROUTE31_CORNER_DIAG_LEFT_MM == 100u && ROUTE31_CORNER_CROSS_MM > 0u &&
+          ROUTE31_CORNER_CROSS_MM <= 65535u &&
+          ROUTE31_CORNER_DIAG_V_MMS > 0.0f && ROUTE31_CORNER_DIAG_V_MMS <= 600.0f &&
+          ROUTE31_CORNER_DIAG_ORTH_KP == 0.5f &&
           ROUTE31_CORNER_DIAG_ORTH_TOL_MM == 12.0f && ROUTE31_CORNER_DIAG_MAX_MS == 6000u);
     CHECK(diagonal31_begin() == 0);
     float heading = s_dist_heading0;
@@ -72,7 +88,7 @@ static int check_diagonal31_defaults_direction_speed_and_sequence(void)
     for (unsigned tick = 0u; tick < 15u; ++tick) {
         CHECK(r44_service(20u) == 0);
         CHECK(last_x < 0.0f && last_y < 0.0f && last_w == 0.0f);
-        CHECK(sqrtf(last_x * last_x + last_y * last_y) <= 50.001f &&
+        CHECK(sqrtf(last_x * last_x + last_y * last_y) <= diagonal31_default_speed() + 0.001f &&
               diagonal31_near(last_x, last_y) && s_dist_heading0 == heading &&
               (unsigned)zero_calls == zeros && s_active_test == test);
     }
@@ -82,20 +98,21 @@ static int check_diagonal31_defaults_direction_speed_and_sequence(void)
         host_yaw = heading + (float)side * 0.2f;
         CHECK(r44_service(20u) == 0 && s_round == R_RUN && !s_dist_mid_pause);
         CHECK((-s_route31_diag_uy * last_x + s_route31_diag_ux * last_y) * side < 0.0f);
-        CHECK(last_w * side < 0.0f && sqrtf(last_x * last_x + last_y * last_y) <= 50.001f);
+        CHECK(last_w * side < 0.0f && sqrtf(last_x * last_x + last_y * last_y) <= diagonal31_default_speed() + 0.001f);
     }
     host_yaw = heading;
     diagonal31_position(s_dist_target - 0.1f, 0.0f);
     CHECK(r44_service(20u) == 0 && s_round == R_BRAKE && s_dist_reason == 1u);
     CHECK(r44_service(1200u) == 0 && s_seq_stage == 2u && !s_route31_corner_diag &&
-          s_msel == 20 && turn_target_deg() == 90.0f && !route31_diagonal_active());
+          s_msel == 20 && turn_target_deg() == ROUTE31_RIGHT_TARGET_DEG && !route31_diagonal_active());
     CHECK(strstr(host_messages, "DIAGONAL31 result=DONE") != NULL &&
           strstr(host_messages, "next_original_RIGHT90=1") != NULL);
     CHECK(r44_start_road() == 0 && r44_finish_road() == 0 && r44_start_road() == 0);
-    CHECK(s_seq_stage == 3u && s_msel == 16 && s_dist_target == -520.0f &&
-          route_seq_leg()->distance_mm == 520u && !route31_diagonal_active());
+    CHECK(s_seq_stage == 3u && s_msel == 16 &&
+          s_dist_target == -(float)ROUTE31_CORNER_CROSS_MM &&
+          route_seq_leg()->distance_mm == ROUTE31_CORNER_CROSS_MM && !route31_diagonal_active());
     run_cmd("0"); CHECK(r44_stopped());
-    puts("31 actualLEFT565/QR/BACK490 -> same-stage BACK100+LEFT100 noextraG/no45turn -> originalRIGHT90 -> privateCROSS520;negativevxvy/yawhold/qhold/vectorcap50 passed");
+    printf("31 actualLEFT585/QR/configuredBACK -> same-stage BACK100+LEFT100 noextraG/no45turn -> originalRIGHT90 -> privateCROSS%u;negativevxvy/yawhold/qhold/vectorcap%.0f passed\n", (unsigned)ROUTE31_CORNER_CROSS_MM, diagonal31_default_speed());
     return 0;
 }
 
@@ -135,8 +152,8 @@ static int check_diagonal31_timeout_sensor_failures_and_stops(void)
 {
     CHECK(diagonal31_begin() == 0);
     CHECK(r44_service(5999u) == 0 && s_round == R_RUN && s_seq_state == SQ_RUN);
-    CHECK(r44_service(1u) == 0 && s_round == R_BRAKE && s_dist_reason == 6u);
-    CHECK(diagonal31_stopped_error("DIAGONAL_ERROR") == 0);
+    CHECK(r44_service(1u) == 0 && s_round == R_BRAKE && s_dist_reason == 7u);
+    CHECK(diagonal31_timeout_continued() == 0);
     for (unsigned pause = 0u; pause < 2u; ++pause) {
         CHECK(diagonal31_begin() == 0);
         diagonal31_position(-30.0f, 2.0f); host_yaw = s_dist_heading0 + 3.0f;
@@ -146,9 +163,9 @@ static int check_diagonal31_timeout_sensor_failures_and_stops(void)
          * The whole-leg deadline must precede either pause's normal executor. */
         host_tick = s_meas_t0 + ROUTE31_CORNER_DIAG_MAX_MS;
         wire_poll();
-        CHECK(s_round == R_BRAKE && s_dist_reason == 6u && !s_dist_mid_pause &&
+        CHECK(s_round == R_BRAKE && s_dist_reason == 7u && !s_dist_mid_pause &&
               !last_x && !last_y && !last_w);
-        CHECK(diagonal31_stopped_error("DIAGONAL_ERROR") == 0);
+        CHECK(diagonal31_timeout_continued() == 0);
     }
     for (unsigned phase = 0u; phase < 2u; ++phase) {
         CHECK(diagonal31_begin() == 0);
@@ -163,9 +180,9 @@ static int check_diagonal31_timeout_sensor_failures_and_stops(void)
             CHECK(r44_service(20u) == 0 && s_dist_align_hold && !s_dist_mid_pause);
         }
         host_tick = s_meas_t0 + ROUTE31_CORNER_DIAG_MAX_MS; wire_poll();
-        CHECK(s_round == R_BRAKE && s_dist_reason == 6u &&
+        CHECK(s_round == R_BRAKE && s_dist_reason == 7u &&
               !last_x && !last_y && !last_w && !s_dist_align_enabled);
-        CHECK(diagonal31_stopped_error("DIAGONAL_ERROR") == 0);
+        CHECK(diagonal31_timeout_continued() == 0);
         CHECK(strstr(host_messages, "DIAGONAL31 result=DONE") == NULL);
     }
     CHECK(diagonal31_begin() == 0);
@@ -176,8 +193,8 @@ static int check_diagonal31_timeout_sensor_failures_and_stops(void)
      * running tick's deadline first. Its final success gate must also reject. */
     host_tick = s_meas_t0 + ROUTE31_CORNER_DIAG_MAX_MS + T_DIST_STILL_MS;
     dist_finish_report();
-    CHECK(s_seq_state == SQ_STOPPED && s_dist_reason == 6u && r44_stopped());
-    CHECK(diagonal31_stopped_error("DIAGONAL_ERROR") == 0 &&
+    CHECK(s_seq_state != SQ_STOPPED && s_seq_stage == 2u && s_dist_reason == 7u && r44_stopped());
+    CHECK(diagonal31_timeout_continued() == 0 &&
           strstr(host_messages, "DIAGONAL31 result=DONE") == NULL);
     for (unsigned fault = 0u; fault < 4u; ++fault) {
         CHECK(diagonal31_begin() == 0);
@@ -211,7 +228,7 @@ static int check_diagonal31_timeout_sensor_failures_and_stops(void)
             CHECK(r44_service(7000u) == 0 && s_seq_state == SQ_STOPPED && r44_stopped());
             run_cmd("g"); CHECK(s_seq_state == SQ_STOPPED && r44_stopped());
         }
-    puts("31 diagonal 5999/6000ms wholelegdeadline inRUN/midBRAKE/midALIGN/endBRAKE/endALIGN;5990endpoint and delayedfinish cannotDONE late;invalidIMU/nonfiniteyaw/fore/lat stop;g/a/0 atRUN,midBRAKE,midALIGN,endBRAKE neverresume passed");
+    puts("31 diagonal5999/6000ms RUN/midBRAKE/midALIGN/endBRAKE/endALIGN/latefinish: puretimeout->brake->NEXT reached0 neverDONE;invalidIMU/nonfiniteyaw/fore/lat andg/a/0 stillstop passed");
     return 0;
 }
 

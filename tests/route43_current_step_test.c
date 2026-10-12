@@ -237,6 +237,7 @@ static int c43_finish_road(void)
 
 static int c43_aim(int model,int goal)
 {
+    CHECK(s_vat.x_goal==(model==9?105:model==4?135:215));
     wire_sync(); wire_ack(wire_request,2u,0u); CHECK(c43_service(1100u)==0);
     for(unsigned k=0;k<120u && !host_timer_active && s_seq_state==SQ_TASK;++k) {
         host_tick+=20u; xy_obj(wire_request,model,goal,220);
@@ -324,7 +325,8 @@ static int check_full_current_route(void)
     CHECK(host_jog_pulses[0][0]==7u && host_jog_pulses[0][1]==7u);
     CHECK(c43_start_road()==0 && c43_finish_road()==0 && s_seq_stage==11u && !s_seq_return_offset);
     run_cmd("g"); wire_sync(); wire_ack(wire_request,2u,0u); CHECK(c43_service(1100u)==0);
-    for(unsigned k=0;k<80u && !laser_state;++k) { host_tick+=20u; xy_obj(wire_request,8,ROUTE31_TARGET_CX,100); }
+    CHECK(target35_point()==250 && target35_low()==247 && target35_high()==253 && target35_fine_enter()==360);
+    for(unsigned k=0;k<80u && !laser_state;++k) { host_tick+=20u; xy_obj(wire_request,8,target35_point(),100); }
     CHECK(laser_state && c43_service(2000u)==0 && s_seq_stage==12u && c43_wait()==0);
     CHECK(c43_start_road()==0 && c43_finish_road()==0 && s_seq_stage==13u);
     CHECK(c43_start_road()==0 && c43_finish_road()==0 && s_seq_stage==14u);

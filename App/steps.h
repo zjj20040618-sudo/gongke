@@ -80,7 +80,7 @@ const char *steps_config_missing(void); /* 主流程启动前检查仍为占位�
 #define NAV_SETTLE_MS  750u    /* 清本段航向零点后等待 0.75s，再启动下一段 */
 int  step_prepare_leg(void);      /* 刹车→四轮编码器连续静止→航向软件清零→等待；失败/中止回 0 */
 float step_heading_hold_w(float heading0_deg); /* 当前 IMU 相对航向→yaw 保持角速度(rad/s) */
-float step_heading_hold_w_kp(float heading0_deg, float kp); /* 显式0..5增益，不修改全局；单段调试用 */
+float step_heading_hold_w_kp(float heading0_deg, float kp); /* 显式0..10增益；31可用10，不修改全局0..5槽 */
 float step_heading_kp_deg(void);                /* 当前 RAM 航向增益 */
 int   step_heading_kp_set(float kp);            /* 0..5，RAM-only；成功回 1 */
 float step_orth_kp(void);                       /* 当前局部正交串动增益 */

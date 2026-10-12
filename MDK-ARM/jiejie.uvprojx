@@ -446,6 +446,11 @@
               <FilePath>../App/motion.c</FilePath>
             </File>
             <File>
+              <FileName>arc_turn_trial.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/arc_turn_trial.c</FilePath>
+            </File>
+            <File>
               <FileName>imu.c</FileName>
               <FileType>1</FileType>
               <FilePath>../App/imu.c</FilePath>

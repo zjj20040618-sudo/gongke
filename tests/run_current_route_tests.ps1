@@ -18,15 +18,22 @@ try {
         throw 'Current route stack contract: DefaultTask needs at least 4 KB and matching IOC words'
     }
     foreach ($taskCase in @('route31_diagonal_corner_test', 'route31_slow_clearance_test', 'route43_current_step_test',
-            'route31_revised_tail_test', 'route44_current_test')) {
+            'route31_revised_tail_test', 'route44_current_test', 'route31_timeout_continue_test',
+            'speed_yaw_heading_test', 'route31_vision_timeout_continue_test', 'proto_rank_test',
+            'route31_target_rank_test', 'route31_fine_yaw_guard_test', 'route31_target_fine_yaw_guard_test',
+            'route31_global_straight_speed_test', 'route31_hostage_loss2s_test', 'route31_restored_corner_test')) {
         foreach ($taskVariant in @('default', 'optimized')) {
             $taskOutput = Join-Path ([IO.Path]::GetTempPath()) "$taskCase-$taskVariant-$taskBuildId.exe"
             $taskArguments = @('-std=c11', '-Wall', '-Wextra', '-Werror', '-Wno-error=unused-variable',
                 '-Itests/stubs', '-IApp', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections')
             if ($taskVariant -eq 'optimized') { $taskArguments += '-O2' }
-            $taskArguments += "tests/$taskCase.c"
-            if ($taskCase -in @('route31_slow_clearance_test', 'route43_current_step_test')) {
+            $taskArguments += @("tests/$taskCase.c", 'App/arc_turn_trial.c')
+            if ($taskCase -in @('route31_slow_clearance_test', 'route43_current_step_test', 'route31_timeout_continue_test',
+                    'route31_target_fine_yaw_guard_test', 'route31_global_straight_speed_test', 'route31_hostage_loss2s_test')) {
                 $taskArguments += 'tests/stubs/motion_left_scaled_compat.c'
+            }
+            if ($taskCase -eq 'speed_yaw_heading_test') {
+                $taskArguments += @('App/steps.c', 'App/motion.c')
             }
             $taskArguments += @('-lm', '-o', $taskOutput)
             & $taskCompiler @taskArguments

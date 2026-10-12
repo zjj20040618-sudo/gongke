@@ -8,41 +8,56 @@
 /* Bench candidates reused by31; never write mission/32 workpoints. Image
  * coordinates and signs still require physical validation after installation. */
 #define VAT_X_PX               190
+/* Preserve historical43/44 workpoints; active31 uses the private values below. */
 #define VAT_ROUTE_BALL_X_PX     135 /*125..145 inclusive. */
-#define VAT_ROUTE_BUCKET_X_PX   105 /*31:95..115 inclusive; strict fine gate abs(error)<15. */
-#define VAT_ROUTE43_BUCKET_X_PX VAT_ROUTE_BUCKET_X_PX /*43 stepped copy of current31. */
+#define VAT_ROUTE_BUCKET_X_PX   105 /*43/44:95..115 inclusive; strict fine gate abs(error)<15. */
+#define VAT_ROUTE43_BUCKET_X_PX VAT_ROUTE_BUCKET_X_PX /*43 historical workpoint. */
 #define VAT_ROUTE_HOSTAGE_X_PX  215 /*205..225 inclusive. */
+#define VAT_ROUTE31_BALL_X_PX   165 /*31小球目标X像素；正负10到位范围自动跟随，当前155..175。 */
+#define VAT_ROUTE31_BUCKET_X_PX 165 /*31黑桶目标X像素；当前155..175，距目标严格小于15才进入精调。 */
+#define VAT_ROUTE31_HOSTAGE_X_PX 210 /*31人质X目标；私有正负15到位范围195..225，43/44旧值不变。 */
+#define VAT_ROUTE31_HOSTAGE_TOL_PX 15 /*31人质：原正负10两侧各放宽5像素。 */
+#define VAT_ROUTE31_HOSTAGE_FINE_ERROR_PX 20 /* 同步保留到位带外5像素微调区，严格小于20进入。 */
 #define VAT_BALL_Y_PX          390
 #define VAT_BUCKET_Y_PX        420
 #define VAT_HOSTAGE_Y_PX       220
-#define VAT_TOL_PX             10
+#define VAT_TOL_PX             10 /* 共享到位容差正负10；31人质私有正负15，靶子另设正负3。 */
 /* Temporary X-only trial for the shared31/38..41 engine. Set1 to restore Y
  * microsteps and joint XY arrival; cy is still received, recorded and checked
  * against the actual image bounds. No effect on35/32/formal alignment. */
 #ifndef VAT_Y_ALIGN_ENABLE
-#define VAT_Y_ALIGN_ENABLE      0
+#define VAT_Y_ALIGN_ENABLE      0 /* 当前不调Y，只调X；Y仍接收和记录。设1会改变对位流程，不是普通数值微调。 */
 #endif
-/* Fine X and standalone search retain v20; lateral Y uses v30.
+/* Shared fine X and standalone search retain v20; active31 uses privatev30.
+ * Lateral Y usesv30.
  * Y is dormant while VAT_Y_ALIGN_ENABLE=0. Restored Y stops, fixes the original
  * heading and revalidates NEW joint X/Y frames.
  * This local correction floor does not change route/90/180 turn tuning. */
-#define VAT_SPEED_MMS          20.0f
+#define VAT_SPEED_MMS          20.0f /* 共享/独立视觉精调；31私有连续精调v30，粗搜全局v默认150。 */
 #define VAT_X_SPEED_MMS        VAT_SPEED_MMS
+/*31 only: missing coordinates keep the last direction slowly; no fake frames. */
+#define VAT_ROUTE31_SMOOTH_SPEED_MMS 30.0f
+#define VAT_ROUTE31_SMOOTH_KP_DEG 3.0f
+#define VAT_ROUTE31_SMOOTH_MAX_W 0.10f
+#define VAT_ROUTE31_SMOOTH_ACC_MMS2 500.0f
+#define VAT_ROUTE31_SMOOTH_DEC_MMS2 1000.0f
 #define VAT_Y_SPEED_MMS        30.0f
 #define VAT_ROUTE_SEARCH_SPEED_MMS 100.0f /* Route API fallback;31/43 owner supplies its RAM cruise. */
 #define VAT_ROUTE_SEARCH_ACC_MMS2 700.0f /*31/43 coarse approach only; no instant cruise step. */
-#define VAT_ROUTE_FINE_ERROR_PX  15 /*31 ball/bucket/hostage: abs(cx-goal)<15 latches fine v20. */
+#define VAT_ROUTE_FINE_ERROR_PX  15 /*31球/桶与共享43阈值；31人质私有20。严格小于门槛进入后不退回粗搜。 */
 #define VAT_ROUTE43_FINE_ERROR_PX VAT_ROUTE_FINE_ERROR_PX
 #define VAT_ROUTE_BUCKET_FINE_ERROR_PX VAT_ROUTE_FINE_ERROR_PX /* Existing bucket API name. */
 #define VAT_ROUTE_BUCKET_MISSING_MS 2000u /*31 paired bucket only, AFTER turn+newACK. */
-#define VAT_ROUTE_HOSTAGE_LOST_MS 2000u /* Legacy non-current-route branch;31/43 use ROUTE31_LOST_MS. */
+#define VAT_ROUTE_HOSTAGE_LOST_MS 2000u /* Legacy non-current-route branch;31 uses its HOSTAGE_LOST_MS,43/44 keep ROUTE31_LOST_MS. */
 #define VAT_ROUTE_BUCKET_LOST_MS 2000u /* Legacy non-current-route branch;31/43 use ROUTE31_LOST_MS. */
-#define VAT_ROUTE31_LOST_MS     300u /*31/43: strictly greater than300 since last NEW selected01. */
+#define VAT_ROUTE31_LOST_MS     300u /*31球/桶：先接近进入微调，超过300ms无新坐标才抓/放；43/44保持旧行为。 */
+#define VAT_ROUTE31_HOSTAGE_LOST_MS 2000u /* 仅31人质：先进入微调，之后距最后新坐标至少2秒才允许丢失抓；远处闪现继续搜索。 */
 #define VAT_ROUTE_BUCKET_SEARCH_SPEED_MMS (-VAT_X_SPEED_MMS) /* Legacy fine-step constant; coarse bucket uses owner RAM cruise. */
 #define VAT_YAW_MIN_W          TURN_HOLD_MIN_W_RADS
 /*31 BALL/HOSTAGE: no stopped in-place yaw correction or heading-arrival gate.
  * Still brake, wait for stationary wheels and use NEW matching image frames;
- * moving heading hold and bucket/standalone yaw rules stay unchanged.
+ * Shared bucket/standalone rules remain; active31's continuous X client also
+ * skips parked bucket yaw repair while retaining moving heading hold.
  * Set1 only for the historical correction candidate's host tests. */
 #ifndef VAT_ROUTE31_BALL_HOSTAGE_STOP_YAW_ENABLE
 #define VAT_ROUTE31_BALL_HOSTAGE_STOP_YAW_ENABLE 0
@@ -83,14 +98,15 @@ typedef struct {
     VisionAlignTestState state;
     uint8_t mode, task, digit, good, axis, latest;
     int cls, label, cx, cy;
-    int x_goal; /*31/43:ball135/bucket105/hostage215; standalone190. */
+    int x_goal; /*31:ball/bucket165,hostage210;43/44:135/105/215;standalone190. */
     uint8_t alignment_confirmed; /*31 hostage only: latched fresh/still enabled-axis alignment, even while rank0 waits. */
     uint8_t target_rank; /* Current task's validated54 rank, never QR color/shape. */
     uint8_t ball_rank; /* Route-only: preserve ball position across new bucket requests/180. */
     uint8_t ball_seen, ball_fallback; /*31: first NEW selected01 / explicit seen-lost300 action source. */
     uint32_t ball_age_ms; /* Last NEW selected01; never refreshed by54/empty/replay/old request. */
     uint8_t hostage_seen; /* Sticky current-request NEW selected01 evidence; not alignment. */
-    uint8_t hostage_fallback; /* HOSTAGE source:31/43 lost>300ms. Never pixel alignment. */
+    uint8_t hostage_fallback; /*31: last NEW hostage lost>=2s;43/44 retain>300ms. Not pixel alignment. */
+    uint8_t hostage_loss_armed; /*31 only: accepted fine-entry gate, NOT alignment or present visibility. */
     uint32_t hostage_age_ms; /* Since last NEW valid selected01; empty/54/replay cannot refresh. */
     uint8_t bucket_seen; /* Sticky NEW post-turn selected01 evidence, distinct from the owner fine gate. */
     uint8_t bucket_fallback; /*31/43 lost>300ms release; never pixel alignment. */
@@ -150,13 +166,15 @@ int vision_align_test_start(uint8_t mode, const int32_t qr[3]);
  * Cruise holds the post-turn heading without lateral feedforward. Only
  * abs(cx-goal)<15 (31/43) brakes/rechecks NEW images and permanently latches fine v20.
  * No coarse-search restart after the fine gate, even if cx rises again or frames are lost.
- * For31/43 (including a Y-enabled test build), any ball/bucket/hostage task first
- * seen as a NEW legal current-request selected01 may expose its real action
- * when that NEW-coordinate age is strictly>300ms and four wheels are stopped
- *250ms. This does not require fine entry and never claims pixel alignment.
+ * For31/43/44 (including a Y-enabled test build), a NEW legal current-request
+ * selected01 is required before any seen-loss action.31 HOSTAGE additionally
+ * requires the accepted abs(cx-goal)<15 fine gate, then at least2s since the
+ * last NEW valid coordinate; far-only loss continues coarse search.31 ball/bucket
+ * and43/44 keep>300ms.
+ * All require stopped wheels250ms. This is not fine entry or pixel alignment.
  * New coordinates before owner take cancel pending loss; never-seen/54/empty/
  * replay/unACKed/old-request frames cannot start or refresh the timer.
- * Deferred43 retains the following legacy loss policy. Routehostage exposes HOSTAGE action after stopped fresh-frame alignment, or
+ * Other route owners retain the following legacy policy. Routehostage exposes HOSTAGE action after stopped fresh-frame alignment, or
  * after seeing its selected01 at least once then losing NEW valid coordinates
  * for2s and confirming stopped wheels250ms. The latter is an explicit blind
  * grab trial, not alignment proof. A new selected01 before the owner takes
@@ -190,7 +208,8 @@ int vision_align_test_route44_approach_resume(void);
  * a request. The subsequent approach_resume still discards old pixels. */
 int vision_align_test_route44_wait_rebase(float manual_heading_delta);
 /* Success only for a stopped, initial route ball/hostage BRAKE before search;
- * accept finite0..5, including0. Does not change fine XY/yaw-fix/standalone gain
+ * accept finite0..10 for owner31,0..5 for other owners, including0. Does not
+ * change fine XY/yaw-fix/standalone gain
  * or existing start signatures. Call immediately after start_route succeeds. */
 int vision_align_test_route_search_kp_set(float kp);
 /* Same initial route ball/hostage BRAKE-only window; finite1..600 mm/s. The

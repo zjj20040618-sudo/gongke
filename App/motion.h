@@ -45,6 +45,13 @@ void     motion_vel_set_precise(float vx, float vy, float w);    /* 仅显式选
 /* One command only: physical left wheels m0/m3, no stored gain. This can
  * introduce yaw; it is not the normal lateral feedforward compensation. */
 void     motion_vel_set_left_scaled(float vx, float vy, float w, float left_scale);
+/* One contact command only: rear m0/m1 push forward, front m2/m3 get
+ * zero RPM (existing short brake, no powered drive). No persistent mask;
+ * the next ordinary four-wheel command restores the normal drive path. */
+void     motion_vel_set_board_push(float vx);
+/* Explicit arc caller: left/right nonnegative wheel-rim speeds in mm/s,
+ * m0/m3 left,m1/m2 right;0 uses existing short brake (rollers can still roll). */
+void     motion_vel_set_arc_pair(float left_mms, float right_mms);
 void     motion_vel_set_creep(float vx, float vy, float w); /* Opt-in fine translation; atomic four-wheel command publication. */
 void     motion_brake(void);
 void     motion_pose_update(void);          /* 1ms 更新 IMU 航向；x/y 积分待轮位/符号台校后启用 */

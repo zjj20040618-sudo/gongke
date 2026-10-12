@@ -36,6 +36,7 @@ void r44_real_motion_ik_precise(float vx,float vy,float w,float rpm[4]);
 #define motion_vel_set_precise r44_real_motion_vel_set_precise
 #define motion_vel_set_creep r44_real_motion_vel_set_creep
 #define motion_vel_set_left_scaled r44_real_motion_vel_set_left_scaled
+#define motion_vel_set_board_push r44_real_motion_vel_set_board_push
 #define motion_brake r44_real_motion_brake
 #define motion_ramp_init r44_real_motion_ramp_init
 #define motion_ramp_step r44_real_motion_ramp_step
@@ -64,6 +65,7 @@ void r44_real_motion_ik_precise(float vx,float vy,float w,float rpm[4]);
 #undef motion_vel_set_precise
 #undef motion_vel_set_creep
 #undef motion_vel_set_left_scaled
+#undef motion_vel_set_board_push
 #undef motion_brake
 #undef motion_ramp_init
 #undef motion_ramp_step
@@ -87,6 +89,7 @@ void r44_real_motion_ik_precise(float vx,float vy,float w,float rpm[4]);
 
 static unsigned r44_scaled_calls, r44_scaled_contract_errors;
 static float r44_scaled_value;
+static unsigned r31_board_calls, r31_board_contract_errors;
 #ifndef ROUTE44_SCALED_FIXTURE_CONTRACT
 #define ROUTE44_SCALED_FIXTURE_CONTRACT(vx,vy,w,scale) \
     (route44_owner() && s_seq_state==SQ_RUN && s_route44_index==4u && \
@@ -100,6 +103,15 @@ void motion_vel_set_left_scaled(float vx,float vy,float w,float left_scale)
         ++r44_scaled_contract_errors;
     r44_real_motion_vel_set_left_scaled(vx,vy,w,left_scale);
     motion_vel_set(vx,vy,w); /* Existing route fixture's observed chassis command. */
+}
+void motion_vel_set_board_push(float vx)
+{
+    ++r31_board_calls;
+    if(s_seq_mode!=ROUTE_TEST_MODE || !route31_contact_active() || !s_board_contact.active ||
+       vx<0.0f || !isfinite(vx) || s_dist_heading_kp!=0.0f || s_dist_ff_ratio!=0.0f)
+        ++r31_board_contract_errors;
+    r44_real_motion_vel_set_board_push(vx);
+    motion_vel_set(vx,0.0f,0.0f); /* Observe chassis intent; real wheel targets captured above. */
 }
 
 static int r44_stopped(void)
@@ -122,7 +134,7 @@ static int r44_service(unsigned ms)
 static void r44_rank(uint8_t model,uint8_t rank)
 {
     uint8_t p[14]={0x62u,(uint8_t)wire_request,(uint8_t)(wire_request>>8),9u,0u,0x54u,0u,0u,model,rank,3u,255u,255u,255u};
-    uint8_t first=model>=3u?3u:0u,next=0u;
+    uint8_t first=model>=6u?6u:model>=3u?3u:0u,next=0u;
     p[10u+rank]=model;
     for(uint8_t i=0u;i<3u;++i) {
         if(i==rank-1u) continue;
@@ -136,6 +148,7 @@ static int r44_boot(void)
 {
     CHECK(wire_boot()==0); host_wire_diag_hook=real_proto_wire_diag_get; xy_seq=1u;
     r44_scaled_calls=r44_scaled_contract_errors=0u; r44_scaled_value=0.0f;
+    r31_board_calls=r31_board_contract_errors=0u;
     run_cmd("yfix0"); CHECK(!s_dist_align_on);
     run_cmd("31"); run_cmd("v219"); run_cmd("pv321");
     run_cmd("43"); run_cmd("v125"); run_cmd("pv135");
@@ -799,7 +812,7 @@ static int check_r44_complete_physical_plan(void)
                                 ++postgrab_right;
                             }
                         }
-                        if(index==20u && s_msel==17) { CHECK(s_dist_target==-(float)ROUTE31_HOSTAGE_PREGRAB_LEFT_MM); ++hostage_left; }
+                        if(index==20u && s_msel==17) { CHECK(s_dist_target==-(float)ROUTE43_HOSTAGE_PREGRAB_LEFT_MM); ++hostage_left; }
                         /* Observe the actual motion command before supplying an
                          * endpoint: FF0 removes orthogonal translation, while
                          * an injected small yaw deviation still drives hold. */
@@ -825,9 +838,10 @@ static int check_r44_complete_physical_plan(void)
             wire_sync();
             if(s_receiving && !s_ack) wire_ack(wire_request,2u,0u);
             if(index==17u) {
-                CHECK(s_target35_route && target35_search_ff()==0.0f && s_target35_kp>0.0f);
+                CHECK(s_target35_route && target35_search_ff()==0.0f && s_target35_kp>0.0f &&
+                      target35_point()==250 && target35_low()==247 && target35_high()==253 && target35_fine_enter()==360);
                 if(laser_state) saw_laser=1;
-                if(s_receiving) xy_obj_poll(wire_request,8,ROUTE31_TARGET_CX,100,0);
+                if(s_receiving) xy_obj_poll(wire_request,8,target35_point(),100,0);
             } else {
                 CHECK(index==15u || index==20u);
                 CHECK(s_route_search_ff==0.0f);
@@ -835,15 +849,18 @@ static int check_r44_complete_physical_plan(void)
                 else CHECK(index==20u && s_vat.state==VAT_DONE && s_route31_hostage_hold);
                 if(wire_task==1u) {
                     CHECK(index==15u && wire_request==ball_request);
+                    CHECK(s_vat.x_goal==135);
                     if(ranked_request!=wire_request) { ranked_request=wire_request; r44_rank(4u,2u); }
                     if(s_receiving) xy_obj_poll(wire_request,4,VAT_ROUTE_BALL_X_PX,VAT_BALL_Y_PX,0);
                 } else if(wire_task==4u) {
                     CHECK(index==15u && pair_turns==1u && wire_request!=ball_request &&
                           !s_seq_pair_offset && !s_route44_grab_return && !s_route44_ball_offset);
+                    CHECK(s_vat.x_goal==105);
                     bucket_request=wire_request;
                     if(s_receiving) xy_obj_poll(wire_request,9,VAT_ROUTE_BUCKET_X_PX,VAT_BUCKET_Y_PX,0);
                 } else {
                     CHECK(wire_task==3u);
+                    CHECK(s_vat.x_goal==215);
                     if(ranked_request!=wire_request) { ranked_request=wire_request; r44_rank(0u,1u); }
                     if(s_receiving) xy_obj_poll(wire_request,0,VAT_ROUTE_HOSTAGE_X_PX,VAT_HOSTAGE_Y_PX,0);
                 }
@@ -851,6 +868,7 @@ static int check_r44_complete_physical_plan(void)
         }
         CHECK(r44_service(20u)==0);
         CHECK(!r44_scaled_contract_errors && (index==4u || r44_scaled_calls==scaled_before));
+        CHECK(!r31_board_calls && !r31_board_contract_errors);
     }
     if(s_seq_state!=SQ_DONE || visits!=22u || last_index!=21u || qr_sent!=1u || gated_steps!=21u)
         fprintf(stderr,"44 chain state=%u visits=%u index=%u QR=%u gates=%u drain=%u\n",

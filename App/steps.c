@@ -680,7 +680,9 @@ float step_heading_hold_w(float heading0_deg)
 
 float step_heading_hold_w_kp(float heading0_deg, float kp)
 {
-    if (!(kp >= 0.0f && kp <= 5.0f)) return 0.0f;
+    /*31 passes an explicit0..10 snapshot. The public/global setter below
+     * retains0..5; output still obeys the same angular-speed saturation. */
+    if (!(kp >= 0.0f && kp <= 10.0f)) return 0.0f;
     float e = wrap180f(heading0_deg - imu_leg_heading_deg());
     if (!isfinite(e)) return 0.0f;
     float w = kp * e * 0.0174533f;

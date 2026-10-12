@@ -76,9 +76,11 @@ typedef struct {
 
 /* Request-bound historical first-seen order (62 inner54), NOT coordinates,
  * visibility, alignment or a grab-complete signal. rank0 means unknown.
- * Only BALL task1 and HOSTAGE task3. Slots are detector model IDs, never QR
- * digits or ranks. BALL54 uses3/4/5, HOSTAGE54 uses0/1/2; groups cannot mix.
- * TARGET/BUCKET54 is rejected; rank54 never authorizes coordinate freshness. */
+ * BALL task1, TARGET task2, HOSTAGE task3. Slots are detector model IDs,
+ * never QR digits or ranks. BALL54 uses3/4/5, TARGET54 uses6/7/8,
+ * HOSTAGE54 uses0/1/2; groups cannot mix. BUCKET54 is rejected.
+ * Route31 copies TARGET54 before closing RX to select its corner distance;
+ * QR digit still means colour. Rank54 never authorizes coordinate freshness. */
 typedef struct {
     uint8_t task, digit, target_model, rank, seen_count, slots[3];
     uint16_t request, sequence;
@@ -118,7 +120,7 @@ void proto_set_on_frame(void (*cb)(const ProtoFrame *f));
 void proto_feed_byte(uint8_t ch);                       /* 每收到 1 字节调一次 */
 void proto_stats_get(ProtoStats *out);
 void proto_wire_diag_get(ProtoWireDiag *out);
-/* Non-consuming IRQ-safe snapshot of the current selected BALL/HOSTAGE54.
+/* Non-consuming IRQ-safe snapshot of the current selected BALL/TARGET/HOSTAGE54.
  * Return1 for a legal received status, INCLUDING rank0 unknown; return0 and
  * zero out when none/current request notACKed/closed/failed. Lifetime is only
  * this RX phase: copy before local receive_end/new task/cancel/reset/NACK.

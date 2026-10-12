@@ -21,8 +21,9 @@ static void host_frame(const ProtoFrame *f)
 }
 static void host_send(const uint8_t *p, uint16_t n)
 {
-    assert(n == 8u || n == 9u);
+    assert(n == 8u || n == 9u || n == 14u || n == 22u || n == 28u || n == 29u);
     assert(p[0] == 0xAAu && p[1] == 0x55u);
+    assert(binary_crc(p + 2u, n - 4u) == read_le16(p + n - 2u));
     host_tx++;
 }
 static void put16(uint8_t *p, uint16_t x) { p[0] = (uint8_t)x; p[1] = (uint8_t)(x >> 8); }
@@ -219,7 +220,7 @@ static void test_ack_domain_and_lifecycle(void)
     assert(s_wire.outside_phase > 0u); proto_send_scene(SCENE_RESCUE); ack(s_request, 2, 0);
     rank_now(1, 2, 1, 1, 2, 255, 255); no_rank(); /* Generic60 not selected63. */
     proto_qr_begin(); ack(s_request, 1, 0); rank_now(1, 2, 1, 1, 2, 255, 255); no_rank();
-    start(PROTO_TASK_TARGET, 2, 1); rank_now(1, 8, 1, 1, 8, 255, 255); no_rank();
+    start(PROTO_TASK_TARGET, 2, 1); rank_now(1, 8, 1, 1, 8, 255, 255); get_rank(1, 1);
     start(PROTO_TASK_BUCKET, 0, 1); rank_now(1, 9, 1, 1, 9, 255, 255); no_rank();
     start(PROTO_TASK_HOSTAGE, 2, 1); ack(s_request, 1, 0); assert(proto_scene_status() == -1); no_rank();
     start(PROTO_TASK_HOSTAGE, 2, 1); rank_now(1, 2, 1, 1, 2, 255, 255); get_rank(1, 1);
@@ -283,6 +284,254 @@ static void test_snapshot_mask(void)
     get_rank(1, 1); assert(host_primask == 0u);
 }
 
+/* TARGET task2 extends the same historical54 contract. QR digit mapping is
+ * 1=red6, 2=green8, 3=blue7; these tests never enable rank-based route travel. */
+static void test_target_all_digits_permutations(void)
+{
+    const uint8_t target[3] = {6u, 8u, 7u};
+    const uint8_t perm[6][3] = {{6,7,8},{6,8,7},{7,6,8},{7,8,6},{8,6,7},{8,7,6}};
+    for (uint8_t digit = 1u; digit <= 3u; ++digit)
+        for (unsigned p = 0u; p < 6u; ++p) {
+            uint8_t model = target[digit - 1u];
+            uint8_t position = model == perm[p][0] ? 1u : model == perm[p][1] ? 2u : 3u;
+            start(PROTO_TASK_TARGET, digit, 1);
+            rank_now(42u, model, position, 3u, perm[p][0], perm[p][1], perm[p][2]);
+            ProtoTargetRank r = get_rank(position, 3u);
+            assert(r.target_model == model && r.sequence == 42u);
+            assert(memcmp(r.slots, perm[p], sizeof r.slots) == 0);
+            assert(!s_wire.invalid_payload && s_wire.rank_packets == 1u);
+            assert(!s_fresh && !s_binary_have_seq && !host_callbacks && proto_scene_status() == 0);
+        }
+}
+static void test_target_unknown_prefix_wrap_conflicts(void)
+{
+    const uint8_t target[3] = {6u, 8u, 7u};
+    for (uint8_t digit = 1u; digit <= 3u; ++digit) {
+        uint8_t model = target[digit - 1u], first = target[digit % 3u], last = target[(digit + 1u) % 3u];
+        start(PROTO_TASK_TARGET, digit, 1);
+        rank_now(65532u, model, 0u, 0u, 255u, 255u, 255u); get_rank(0u, 0u);
+        rank_now(65533u, model, 0u, 1u, first, 255u, 255u); get_rank(0u, 1u);
+        rank_now(65534u, model, 2u, 2u, first, model, 255u); get_rank(2u, 2u);
+        rank_now(65535u, model, 2u, 3u, first, model, last); get_rank(2u, 3u);
+        rank_now(0u, model, 2u, 3u, first, model, last); assert(get_rank(2u, 3u).sequence == 0u);
+        rank_now(0u, model, 2u, 3u, first, model, last); assert(s_wire.rank_duplicate == 1u);
+        rank_now(0u, model, 2u, 2u, first, model, 255u); assert(s_wire.rank_conflict == 1u);
+        rank_now(65535u, model, 2u, 3u, first, model, last); assert(s_wire.rank_stale == 1u);
+        rank_now(32768u, model, 2u, 3u, first, model, last); assert(s_wire.rank_stale == 2u);
+        rank_now(1u, model, 2u, 2u, first, model, 255u); assert(s_wire.rank_conflict == 2u);
+        rank_now(2u, model, 1u, 3u, model, first, last); assert(s_wire.rank_conflict == 3u);
+        rank_now(3u, model, 2u, 3u, last, model, first); assert(s_wire.rank_conflict == 4u);
+        assert(get_rank(2u, 3u).sequence == 0u);
+        rank_now(4u, model, 2u, 3u, first, model, last); assert(get_rank(2u, 3u).sequence == 4u);
+        host_tick += 10000u; get_rank(2u, 3u);
+        assert(!s_fresh && !host_callbacks && !s_binary_have_seq);
+        start(PROTO_TASK_TARGET, digit, 1);
+        rank_now(1u, model, 0u, 1u, first, 255u, 255u); get_rank(0u, 1u);
+        rank_now(2u, model, 0u, 1u, last, 255u, 255u); assert(s_wire.rank_conflict == 1u);
+        rank_now(3u, model, 1u, 2u, model, first, 255u); assert(s_wire.rank_conflict == 2u);
+        get_rank(0u, 1u);
+        rank_now(4u, model, 2u, 2u, first, model, 255u); get_rank(2u, 2u);
+        rank_now(5u, model, 0u, 1u, first, 255u, 255u); assert(s_wire.rank_conflict == 3u);
+        get_rank(2u, 2u);
+    }
+}
+static void invalid_target(uint8_t model, uint8_t rank, uint8_t count,
+                           uint8_t a, uint8_t b, uint8_t c)
+{
+    start(PROTO_TASK_TARGET, 1u, 1);
+    rank_now(1u, model, rank, count, a, b, c); no_rank();
+    assert(s_wire.invalid_payload == 1u && s_stats.binary_bad == 1u);
+    assert(!s_wire.rank_packets && !s_fresh && !s_binary_have_seq && !host_callbacks);
+}
+static void test_target_payload_validation(void)
+{
+    invalid_target(8u, 1u, 1u, 8u, 255u, 255u); /* Wrong QR-selected target. */
+    invalid_target(7u, 1u, 1u, 7u, 255u, 255u);
+    invalid_target(0u, 1u, 1u, 0u, 255u, 255u);
+    invalid_target(4u, 1u, 1u, 4u, 255u, 255u);
+    invalid_target(9u, 1u, 1u, 9u, 255u, 255u);
+    invalid_target(255u, 1u, 1u, 255u, 255u, 255u);
+    invalid_target(6u, 4u, 1u, 6u, 255u, 255u);
+    invalid_target(6u, 1u, 4u, 6u, 7u, 8u);
+    invalid_target(6u, 2u, 1u, 6u, 255u, 255u);
+    invalid_target(6u, 1u, 2u, 7u, 6u, 255u);
+    invalid_target(6u, 0u, 1u, 6u, 255u, 255u);
+    invalid_target(6u, 1u, 0u, 255u, 255u, 255u);
+    invalid_target(6u, 1u, 2u, 6u, 6u, 255u);
+    invalid_target(6u, 1u, 2u, 6u, 0u, 255u);
+    invalid_target(6u, 1u, 2u, 6u, 3u, 255u);
+    invalid_target(6u, 1u, 2u, 6u, 9u, 255u);
+    invalid_target(6u, 0u, 1u, 255u, 255u, 255u);
+    invalid_target(6u, 1u, 1u, 6u, 7u, 255u);
+    invalid_target(6u, 1u, 1u, 6u, 255u, 8u);
+    invalid_target(6u, 1u, 2u, 6u, 255u, 255u);
+    invalid_target(6u, 1u, 1u, 7u, 255u, 255u);
+    start(PROTO_TASK_TARGET, 1u, 1);
+    uint8_t body[10] = {0x54u, 1u, 0u, 6u, 1u, 1u, 6u, 255u, 255u, 0u};
+    bound(s_request, body, 8u); no_rank(); bound(s_request, body, 10u); no_rank();
+    assert(s_wire.invalid_payload == 2u);
+    packet(body, 9u); no_rank(); /* Naked54 is never selected-task authority. */
+    rank_now(1u, 6u, 1u, 1u, 6u, 255u, 255u); get_rank(1u, 1u);
+}
+static void test_target_ack_request_lifecycle(void)
+{
+    const uint8_t target[3] = {6u, 8u, 7u};
+    for (uint8_t digit = 1u; digit <= 3u; ++digit) {
+        uint8_t model = target[digit - 1u];
+        start(PROTO_TASK_TARGET, digit, 0);
+        rank_now(1u, model, 1u, 1u, model, 255u, 255u); no_rank();
+        assert(s_wire.result_preack == 1u);
+        ack(99u, 2u, 0u); no_rank(); assert(s_wire.ack_mismatch == 1u);
+        ack(s_request, 2u, 0u);
+        rank_at(99u, 1u, model, 1u, 1u, model, 255u, 255u); no_rank();
+        assert(s_wire.result_mismatch == 1u);
+        rank_now(1u, model, 1u, 1u, model, 255u, 255u); get_rank(1u, 1u);
+        assert(!proto_send_target(PROTO_TASK_TARGET, 0u)); get_rank(1u, 1u);
+        assert(!proto_send_target(PROTO_TASK_TARGET, 4u)); get_rank(1u, 1u);
+        ack(99u, 0u, 1u); get_rank(1u, 1u);
+        ack(s_request, 2u, 1u); no_rank(); assert(proto_scene_status() == -1);
+        ack(s_request, 2u, 0u); rank_now(2u, model, 1u, 1u, model, 255u, 255u); no_rank();
+        uint16_t old = s_request;
+        assert(proto_send_target(PROTO_TASK_TARGET, digit)); no_rank();
+        rank_now(1u, model, 1u, 1u, model, 255u, 255u); no_rank();
+        ack(s_request, 2u, 0u);
+        rank_at(old, 2u, model, 1u, 1u, model, 255u, 255u); no_rank();
+        rank_now(1u, model, 1u, 1u, model, 255u, 255u); get_rank(1u, 1u);
+        proto_qr_cancel(); get_rank(1u, 1u); /* Unrelated QR cancel keeps selected rank. */
+        proto_receive_end(); no_rank();
+        rank_now(2u, model, 1u, 1u, model, 255u, 255u); no_rank(); assert(s_wire.outside_phase > 0u);
+        assert(proto_send_target(PROTO_TASK_BALL, 1u)); ack(s_request, 2u, 0u);
+        rank_now(1u, model, 1u, 1u, model, 255u, 255u); no_rank();
+        assert(proto_send_target(PROTO_TASK_HOSTAGE, 1u)); ack(s_request, 2u, 0u);
+        rank_now(1u, model, 1u, 1u, model, 255u, 255u); no_rank();
+        proto_send_scene(SCENE_ANTI); ack(s_request, 2u, 0u);
+        rank_now(1u, model, 1u, 1u, model, 255u, 255u); no_rank();
+        proto_qr_begin(); ack(s_request, 1u, 0u);
+        rank_now(1u, model, 1u, 1u, model, 255u, 255u); no_rank();
+        start(PROTO_TASK_TARGET, digit, 1); ack(s_request, 1u, 0u);
+        rank_now(1u, model, 1u, 1u, model, 255u, 255u); no_rank(); assert(proto_scene_status() == -1);
+        start(PROTO_TASK_TARGET, digit, 1);
+        rank_now(1u, model, 1u, 1u, model, 255u, 255u); get_rank(1u, 1u);
+        proto_set_binary_mode(0); no_rank(); proto_set_binary_mode(1); no_rank();
+    }
+    start(PROTO_TASK_TARGET, 2u, 1); rank_now(1u, 8u, 1u, 1u, 8u, 255u, 255u);
+    s_request = 65535u; assert(!proto_send_target(PROTO_TASK_TARGET, 2u)); no_rank();
+    assert(!s_rank_valid && proto_scene_status() == -1); proto_init(); no_rank();
+}
+static void test_target01_same_sequence_no_rank_freshness(void)
+{
+    const uint8_t target[3] = {6u, 8u, 7u};
+    for (uint8_t digit = 1u; digit <= 3u; ++digit)
+        for (unsigned reverse = 0u; reverse < 2u; ++reverse) {
+            uint8_t model = target[digit - 1u];
+            start(PROTO_TASK_TARGET, digit, 1); assert(proto_target_sequence_guard_enable());
+            if (!reverse) {
+                rank_now(44u, model, 1u, 1u, model, 255u, 255u);
+                assert(!s_fresh && !s_binary_have_seq && proto_scene_status() == 0);
+            }
+            obj_at(s_request, 44u, model, 0);
+            if (reverse) rank_now(44u, model, 1u, 1u, model, 255u, 255u);
+            get_rank(1u, 1u); assert(host_callbacks == 1u && host_obj_callbacks == 1u);
+            assert(s_stats.accepted == 1u && s_stats.obj == 1u && !s_stats.duplicate);
+            obj_at(s_request, 44u, model, 0);
+            rank_now(44u, model, 1u, 1u, model, 255u, 255u);
+            assert(host_callbacks == 1u && s_stats.duplicate == 1u && s_wire.rank_duplicate == 1u);
+            s_fresh = 0u; /* Test-only clearing makes another rank-only update observable. */
+            rank_now(45u, model, 1u, 1u, model, 255u, 255u); get_rank(1u, 1u);
+            assert(!s_fresh && s_binary_seq == 44u && proto_scene_status() == 0);
+            obj_at(s_request, 43u, model, 0); assert(!s_fresh && host_callbacks == 1u);
+            obj_at(s_request, 45u, model, 0);
+            assert(s_fresh && host_callbacks == 2u && s_binary_seq == 45u);
+            obj_at(s_request, 46u, model, 1); get_rank(1u, 1u);
+            assert(s_stats.accepted == 3u && host_callbacks == 2u);
+        }
+}
+static void test_target_fixed_wire_goldens(void)
+{
+    /* Request7, seq0x1234, task2/digit2 (green model8), CRC16-CCITT-FALSE.
+     * These independently fixed bytes are handshake examples, not travel order. */
+    const uint8_t wire[4][18] = {
+        {0xAA,0x55,0x62,7,0,9,0,0x54,0x34,0x12,8,0,0,255,255,255,0xD8,0x08},
+        {0xAA,0x55,0x62,7,0,9,0,0x54,0x34,0x12,8,1,3,8,6,7,0xD9,0x98},
+        {0xAA,0x55,0x62,7,0,9,0,0x54,0x34,0x12,8,2,3,6,8,7,0x05,0x4E},
+        {0xAA,0x55,0x62,7,0,9,0,0x54,0x34,0x12,8,3,3,6,7,8,0x85,0x05}
+    };
+    for (uint8_t rank = 0u; rank <= 3u; ++rank) {
+        start(PROTO_TASK_TARGET, 2u, 0);
+        for (unsigned i = 1u; i < 7u; ++i) assert(proto_send_target(PROTO_TASK_TARGET, 2u));
+        assert(s_request == 7u); ack(s_request, 2u, 0u);
+        assert(binary_crc(wire[rank] + 2u, 14u) == read_le16(wire[rank] + 16u));
+        host_feed(wire[rank], sizeof wire[rank]);
+        ProtoTargetRank r = get_rank(rank, rank ? 3u : 0u);
+        assert(r.target_model == 8u && r.sequence == 0x1234u && !s_fresh && !host_callbacks);
+    }
+    /* Control-to-vision page examples: request7, task2/digit1 red model6,
+     * seq1. Each is an alternative first report, not three updates to one
+     * locked rank (nor conflicting packets to send with the same sequence). */
+    const uint8_t red[3][18] = {
+        {0xAA,0x55,0x62,7,0,9,0,0x54,1,0,6,1,1,6,255,255,0xA7,0x70},
+        {0xAA,0x55,0x62,7,0,9,0,0x54,1,0,6,2,2,8,6,255,0xF1,0xB7},
+        {0xAA,0x55,0x62,7,0,9,0,0x54,1,0,6,3,3,8,7,6,0x13,0x26}
+    };
+    for (uint8_t i = 0u; i < 3u; ++i) {
+        start(PROTO_TASK_TARGET, 1u, 0);
+        for (unsigned request = 1u; request < 7u; ++request)
+            assert(proto_send_target(PROTO_TASK_TARGET, 1u));
+        assert(s_request == 7u); ack(s_request, 2u, 0u);
+        assert(binary_crc(red[i] + 2u, 14u) == read_le16(red[i] + 16u));
+        host_feed(red[i], sizeof red[i]);
+        ProtoTargetRank r = get_rank((uint8_t)(i + 1u), (uint8_t)(i + 1u));
+        assert(r.target_model == 6u && r.sequence == 1u && !s_fresh && !host_callbacks);
+    }
+}
+static const uint8_t boot_client[8] = {1u,2u,3u,4u,5u,6u,7u,8u};
+static const uint8_t boot_server[8] = {0x10u,0x20u,0x30u,0x40u,0x50u,0x60u,0x70u,0x80u};
+static void boot_reply(uint8_t type)
+{
+    uint8_t body[19] = {0u}; body[0] = type; body[1] = PROTO_SESSION_VERSION;
+    memcpy(body + 2u, boot_client, 8u); memcpy(body + 10u, boot_server, 8u);
+    packet(body, type == 0x65u ? 18u : 19u);
+}
+static void boot_business(const uint8_t *inner, unsigned n, int wrong_nonce)
+{
+    uint8_t body[100]; assert(n + 19u <= sizeof body); body[0] = 0x66u;
+    memcpy(body + 1u, boot_client, 8u); memcpy(body + 9u, boot_server, 8u);
+    if (wrong_nonce) body[1] ^= 0x80u;
+    put16(body + 17u, (uint16_t)n); memcpy(body + 19u, inner, n); packet(body, n + 19u);
+}
+static void test_target_boot66_nonce_and_ack_gates(void)
+{
+    uint8_t selected[5] = {0x61u,1u,0u,2u,0u};
+    uint8_t result[14] = {0x62u,1u,0u,9u,0u,0x54u,1u,0u,8u,2u,2u,6u,8u,255u};
+    reset_host(); assert(proto_session_begin(boot_client));
+    assert(proto_send_target(PROTO_TASK_TARGET, 2u)); proto_service();
+    assert(s_session.state == PROTO_SESSION_HELLO);
+    boot_business(result, sizeof result, 0); no_rank(); assert(s_session.pre_ready == 1u);
+    boot_reply(0x65u); proto_service(); boot_reply(0x68u);
+    assert(s_session.state == PROTO_SESSION_READY); proto_service();
+    ack(s_request, 2u, 0u); rank_now(1u, 8u, 2u, 2u, 6u, 8u, 255u); no_rank();
+    assert(s_session.bare == 2u && !s_ack);
+    boot_business(result, sizeof result, 0); no_rank(); assert(s_wire.result_preack == 1u);
+    boot_business(selected, sizeof selected, 1); no_rank(); assert(s_session.mismatch == 1u && !s_ack);
+    boot_business(selected, sizeof selected, 0); assert(s_ack); no_rank();
+    boot_business(result, sizeof result, 1); no_rank(); assert(s_session.mismatch == 2u);
+    boot_business(result, sizeof result, 0); get_rank(2u, 2u);
+    assert(!s_fresh && !host_callbacks && !s_binary_have_seq);
+    boot_business(result, sizeof result, 0); assert(s_wire.rank_duplicate == 1u); get_rank(2u, 2u);
+    boot_reply(0x68u); get_rank(2u, 2u); /* Duplicate READY cannot erase task rank. */
+    proto_receive_end(); no_rank(); boot_business(result, sizeof result, 0); no_rank();
+    assert(s_wire.outside_phase == 1u);
+    assert(proto_send_target(PROTO_TASK_TARGET, 2u)); selected[1] = (uint8_t)s_request;
+    boot_business(selected, sizeof selected, 0); boot_business(result, sizeof result, 0); no_rank();
+    assert(s_wire.result_mismatch == 1u);
+    result[1] = (uint8_t)s_request; boot_business(result, sizeof result, 0); get_rank(2u, 2u);
+    selected[4] = 1u; boot_business(selected, sizeof selected, 0); no_rank();
+    assert(proto_scene_status() == -1);
+    boot_business(result, sizeof result, 0); no_rank();
+    proto_session_fail(); no_rank(); boot_business(result, sizeof result, 0); no_rank();
+    assert(s_session.state == PROTO_SESSION_FAILED && s_session.pre_ready == 2u);
+}
+
 /* Owned Python producer replay uses this executable without a second parser.
  * Lines: tick !taskdigit / tick hex / tick ? / tick #. All data host-synthetic. */
 static int replay_main(void)
@@ -323,6 +572,10 @@ int main(int argc, char **argv)
     test_ball54_and_ball01_independent_sequences(); test_ball_permutations_unknown_wrap_and_lifecycle();
     test_conflicts_and_wrap(); test_ack_domain_and_lifecycle();
     test_01_coexistence_no_fresh_side_effect(); test_crc_lengths_fragment_recovery(); test_snapshot_mask();
-    puts("request-bound54 rank: validation/latch/prefix/wrap/01 coexistence/lifecycle/IRQ snapshot passed");
+    test_target_all_digits_permutations(); test_target_unknown_prefix_wrap_conflicts();
+    test_target_payload_validation(); test_target_ack_request_lifecycle();
+    test_target01_same_sequence_no_rank_freshness(); test_target_fixed_wire_goldens();
+    test_target_boot66_nonce_and_ack_gates();
+    puts("request-bound54 rank: BALL/TARGET/HOSTAGE validation/latch/prefix/wrap/01 coexistence/lifecycle/IRQ snapshot/boot66/goldens passed");
     return 0;
 }

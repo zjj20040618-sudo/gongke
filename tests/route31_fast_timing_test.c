@@ -163,7 +163,7 @@ static int check_fast_turn_strength_preserves_holds(void)
             host_yaw=goal+(side?0.5f:-0.5f);
             host_tick+=20u;wire_poll();
             CHECK(s_round==R_RUN && !last_x && !last_y &&
-                  fabsf(last_w-direction*(owner?0.18f:0.30f))<0.000001f &&
+                  fabsf(last_w-direction*(owner?0.30f:0.40f))<0.000001f &&
                   wire_commands==commands && (unsigned)zero_calls==zeros);
             host_yaw=goal;host_tick+=20u;wire_poll();
             CHECK(s_round==R_BRAKE && fast_stopped() && turn_settle_ms()==hold);
@@ -195,8 +195,8 @@ static int fast_tolerance_turn(unsigned stage)
     s_seq_pair_turn = stage == ROUTE31_PAIR_STAGE;
     route_seq_prepare();
     CHECK(sequence_start_stage() == 0 && s_round == R_RUN && turn_closed_loop_mode());
-    CHECK(turn_tolerance_deg() == 0.4f && turn_settle_ms() == 400u &&
-          strstr(host_messages,"hold_tol=0.4deg") != NULL);
+    CHECK(turn_tolerance_deg() == 0.3f && turn_settle_ms() == 400u &&
+          strstr(host_messages,"hold_tol=0.3deg") != NULL);
     return 0;
 }
 
@@ -204,8 +204,8 @@ static int check_fast_turn_tolerance_boundaries_and_scope(void)
 {
     const unsigned stages[] = {2u,8u,ROUTE31_PAIR_STAGE,ROUTE31_RETURN180_STAGE,ROUTE31_HOSTAGE_TURN_STAGE};
     const float goals[] = {90.0f,-90.0f,180.0f,180.0f,93.0f};
-    CHECK(ROUTE31_TURN_TOL_DEG == 0.4f && T_TURN_TOL_DEG == 0.3f &&
-          ROUTE31_STABLE_MS == 400u && ROUTE31_TURN_MIN_W == 0.30f);
+    CHECK(ROUTE31_TURN_TOL_DEG == 0.3f && T_TURN_TOL_DEG == 0.3f &&
+          ROUTE31_STABLE_MS == 400u && ROUTE31_TURN_MIN_W == 0.40f);
     for (unsigned leg=0u;leg<sizeof stages/sizeof stages[0];++leg)
         for (int side=-1;side<=1;side+=2) {
             CHECK(fast_tolerance_turn(stages[leg]) == 0);
@@ -216,7 +216,7 @@ static int check_fast_turn_tolerance_boundaries_and_scope(void)
              * only a direct helper call that would miss its rounding edge. */
             host_yaw=goal+sign*0.401f;host_tick+=20u;wire_poll();
             CHECK(s_round==R_RUN && last_w*sign<0.0f && !last_x && !last_y &&
-                  fabsf(fabsf(last_w)-0.30f)<0.000001f && !turn_error_accepted(goal-host_yaw));
+                  fabsf(fabsf(last_w)-0.40f)<0.000001f && !turn_error_accepted(goal-host_yaw));
             host_yaw=goal+sign*0.4f;host_tick+=20u;wire_poll();
             CHECK(turn_error_accepted(goal-host_yaw) && s_round==R_BRAKE && fast_stopped());
             uint32_t began=s_turn_settle_t0;
@@ -263,15 +263,70 @@ static int check_fast_turn_tolerance_boundaries_and_scope(void)
     return 0;
 }
 
+static int fast_hostage_emit(unsigned count)
+{
+    int goal = pulse_calls + (int)count;
+    unsigned budget = count + 50u;
+    while (pulse_calls < goal && budget--) CHECK(jog_host_timer_event() == 0);
+    CHECK(pulse_calls == goal && !host_timer_active && s_jog_clock.remaining == 0u);
+    return 0;
+}
+
+static int fast_hostage_direct_grab(void)
+{
+    /* The current31 alignment consumes its action immediately: never start
+     * distance0, never require an extra image/offset before the real arm job. */
+    CHECK(ROUTE31_HOSTAGE_PREGRAB_LEFT_MM == 0u &&
+          ROUTE43_HOSTAGE_PREGRAB_LEFT_MM == 30u);
+    CHECK(s_seq_state == SQ_TASK && !s_seq_hostage_offset &&
+          !s_route31_hostage_offset_done && s_route31_lift_phase == R31_HOSTAGE_RACK_EXTEND &&
+          host_timer_active && host_jog_axis == 0 && host_jog_dir == 0 &&
+          host_timer_pps == 5000u && s_jog_clock.remaining == 3400u &&
+          host_servo == 1150u && s_route31_hostage_opened &&
+          !last_x && !last_y && !last_w && !laser_state);
+    CHECK(fast_hostage_emit(3400u) == 0);
+    wire_poll();
+    CHECK(s_route31_lift_phase == R31_HOSTAGE_RACK_EXTEND_WAIT && fast_stopped());
+    host_tick += 249u; wire_poll();
+    CHECK(s_route31_lift_phase == R31_HOSTAGE_RACK_EXTEND_WAIT && host_servo == 1150u);
+    ++host_tick; wire_poll();
+    CHECK(s_route31_lift_phase == R31_HOSTAGE_GRIP_WAIT && host_servo == 2100u && fast_stopped());
+    host_tick += 249u; wire_poll();
+    CHECK(s_route31_lift_phase == R31_HOSTAGE_GRIP_WAIT && fast_stopped());
+    ++host_tick; wire_poll();
+    CHECK(s_route31_lift_phase == R31_HOSTAGE_RACK_RETRACT && host_timer_active &&
+          host_jog_axis == 0 && host_jog_dir == 1 && host_timer_pps == 5000u &&
+          s_jog_clock.remaining == 3000u && host_servo == 2100u);
+    CHECK(fast_hostage_emit(3000u) == 0);
+    wire_poll();
+    CHECK(s_route31_lift_phase == R31_HOSTAGE_RACK_RETRACT_WAIT && fast_stopped());
+    host_tick += 249u; wire_poll();
+    CHECK(s_route31_lift_phase == R31_HOSTAGE_RACK_RETRACT_WAIT && fast_stopped());
+    ++host_tick; wire_poll(); fast_snapshot();
+    CHECK(s_seq_state == SQ_TASK && s_route31_lift_phase == R31_LIFT_OFF &&
+          fast_status.state == VAT_WAIT_HOSTAGE_RANK && !s_route31_hostage_hold &&
+          !s_seq_hostage_offset && !s_route31_hostage_offset_done && fast_stopped());
+    CHECK(host_jog_pulses[0][0] == 3400u && host_jog_pulses[0][1] == 3000u &&
+          !host_jog_pulses[1][0] && !host_jog_pulses[1][1] && host_servo == 2100u);
+    return 0;
+}
+
 static int fast_vat_yaw(unsigned owner, unsigned stage)
 {
+    const int work_x = stage == ROUTE31_PAIR_STAGE ?
+        (owner == 31u ? VAT_ROUTE31_BALL_X_PX : VAT_ROUTE_BALL_X_PX) :
+        (owner == 31u ? VAT_ROUTE31_HOSTAGE_X_PX : VAT_ROUTE_HOSTAGE_X_PX);
     /* Independent equal-origin runs test the exact deadline without a1ms
      * second call being skipped by VAT's real20ms processing cadence. */
     for (unsigned boundary = 0u; boundary < 2u; ++boundary) {
     CHECK(fast_prepare(owner,stage) == 0 && s_seq_state == SQ_TASK);
     /* The synthetic task entry skips the separately tested rack deployment.
      * Supply that completed prerequisite, not an invented physical result. */
-    if (owner == 31u && stage == ROUTE31_PAIR_STAGE) s_route31_rack_deployed = 1u;
+    if (owner == 31u && stage == ROUTE31_PAIR_STAGE) {
+        s_route31_rack_deployed = s_route44_rack_started = 1u;
+        /* Synthetic completed prerequisite only; the revised-tail replay
+         * separately exercises the actual parallel rack/timer completion. */
+    }
     CHECK(s_route_yaw_settle_ms == (owner == 31u ? 400u : 700u));
     wire_ack(wire_request,2u,0u);
     host_tick += 260u; wire_poll(); host_tick += 20u; wire_poll(); fast_snapshot();
@@ -279,7 +334,7 @@ static int fast_vat_yaw(unsigned owner, unsigned stage)
     host_absolute_yaw += 1.0f; host_yaw = 1.0f;
     host_tick += 20u; wire_poll();
     xy_obj(wire_request,stage == ROUTE31_PAIR_STAGE ? 4 : 0,
-           stage == ROUTE31_PAIR_STAGE ? 135 : 215,
+           work_x,
            stage == ROUTE31_PAIR_STAGE ? VAT_BALL_Y_PX : VAT_HOSTAGE_Y_PX);
     host_tick += T_DIST_STILL_MS; wire_poll(); fast_snapshot();
     if (owner == 31u && !VAT_ROUTE31_BALL_HOSTAGE_STOP_YAW_ENABLE) {
@@ -291,7 +346,7 @@ static int fast_vat_yaw(unsigned owner, unsigned stage)
         for (unsigned fresh = 1u; fresh <= VAT_GOOD_FRAMES; ++fresh) {
             host_tick += 20u;
             xy_obj(wire_request,stage == ROUTE31_PAIR_STAGE ? 4 : 0,
-                   stage == ROUTE31_PAIR_STAGE ? 135 : 215,
+                   work_x,
                    stage == ROUTE31_PAIR_STAGE ? VAT_BALL_Y_PX : VAT_HOSTAGE_Y_PX);
             fast_snapshot();
             CHECK(!fast_status.yaw_dirty && !last_x && !last_y && !last_w && !laser_state);
@@ -301,14 +356,7 @@ static int fast_vat_yaw(unsigned owner, unsigned stage)
         CHECK(fast_status.state == (stage == ROUTE31_PAIR_STAGE ?
               VAT_WAIT_BALL_ACTION : VAT_WAIT_HOSTAGE_ACTION));
         if (stage == ROUTE31_HOSTAGE_STAGE) {
-            /* First stopped alignment schedules LEFT30, not the rack/grip.
-             * The separate full-chain case checks corrected fresh-X recheck
-             * before the eventual arm job. Never mistake this pause for grab. */
-            CHECK(s_seq_state == SQ_STILL && s_seq_hostage_offset &&
-                  s_route31_hostage_offset_done && !host_timer_active &&
-                  s_route31_lift_phase == R31_LIFT_OFF &&
-                  route_seq_leg()->mode == 17u && route_seq_leg()->distance_mm == 30u &&
-                  route_seq_leg()->heading_hold && fast_stopped());
+            CHECK(fast_hostage_direct_grab() == 0);
         } else CHECK(host_timer_active);
         run_cmd("0"); CHECK(fast_stopped());
         continue;
@@ -324,7 +372,7 @@ static int fast_vat_yaw(unsigned owner, unsigned stage)
     for (unsigned refresh = 100u; refresh < hold; refresh += 100u) {
         host_tick = origin + refresh;
         xy_obj(wire_request,stage == ROUTE31_PAIR_STAGE ? 4 : 0,
-               stage == ROUTE31_PAIR_STAGE ? 135 : 215,
+               work_x,
                stage == ROUTE31_PAIR_STAGE ? VAT_BALL_Y_PX : VAT_HOSTAGE_Y_PX);
     }
     host_tick = origin + hold - (boundary ? 0u : 1u); wire_poll(); fast_snapshot();
@@ -336,11 +384,38 @@ static int fast_vat_yaw(unsigned owner, unsigned stage)
     return 0;
 }
 
+static int fast_legacy_hostage_offset_scope(void)
+{
+    CHECK(fast_prepare(43u,ROUTE31_HOSTAGE_STAGE) == 0);
+    CHECK(s_route43_tune.hostage_left_mm == 30u);
+    wire_ack(wire_request,2u,0u);
+    for (unsigned i = 0u; i < 80u && !s_seq_hostage_offset; ++i) {
+        host_tick += 20u;
+        xy_obj(wire_request,0,VAT_ROUTE_HOSTAGE_X_PX,VAT_HOSTAGE_Y_PX);
+    }
+    CHECK(s_seq_mode == 43u && s_seq_state == SQ_STEP_WAIT &&
+          s_seq_hostage_offset && s_route31_hostage_offset_done &&
+          s_route31_lift_phase == R31_LIFT_OFF && !host_timer_active &&
+          route_seq_leg()->mode == 17u && route_seq_leg()->distance_mm == 30u &&
+          route_seq_leg()->heading_hold && fast_stopped());
+    CHECK(s_vat.x_goal == 215 && !servo_calls && !pulse_calls);
+    run_cmd("0"); CHECK(fast_stopped());
+    /* Stopped44 slot/leg isolation, not a physically traversed44 task. Its
+     * complete alignment-to-offset transition is replayed in current44. */
+    reset_fixture(); s_seq_mode = 44u; s_seq_state = SQ_STILL;
+    s_seq_stage = ROUTE31_HOSTAGE_STAGE; s_seq_hostage_offset = 1u;
+    CHECK(route_seq_leg()->mode == 17u && route_seq_leg()->distance_mm == 30u &&
+          route_seq_leg()->heading_hold && ROUTE43_HOSTAGE_PREGRAB_LEFT_MM == 30u);
+    run_cmd("0"); CHECK(fast_stopped());
+    return 0;
+}
+
 static int check_fast_vat_scope(void)
 {
     CHECK(fast_vat_yaw(31u,ROUTE31_PAIR_STAGE) == 0);
     CHECK(fast_vat_yaw(31u,ROUTE31_HOSTAGE_STAGE) == 0);
     CHECK(fast_vat_yaw(43u,ROUTE31_HOSTAGE_STAGE) == 0);
+    CHECK(fast_legacy_hostage_offset_scope() == 0);
     CHECK(fast_prepare(31u,ROUTE31_PAIR_STAGE) == 0 && s_route_yaw_settle_ms == 400u);
     CHECK(!vision_align_test_route_yaw_settle_ms_set(0u) &&
           !vision_align_test_route_yaw_settle_ms_set(399u) &&
@@ -357,7 +432,7 @@ static int check_fast_vat_scope(void)
     run_cmd("0");
     puts(VAT_ROUTE31_BALL_HOSTAGE_STOP_YAW_ENABLE
          ? "historical enabled31 VAT:ball/hostage yaw399/400;43 699/700;real bucket/new standalone profile isolation passed (not default behavior)"
-         : "default31 VAT:ball/hostage residual1deg still250 then fiveNEW without stopped rotation;43 yaw699/700 retained;real bucket request preserves400,new standalone resets700 passed");
+         : "default31 VAT:ball/hostage residual1deg still250 then fiveNEW without stopped rotation;31 hostage noLEFT/open1150/extend3400/grip2100/retract3000 waits real rank;43 yaw699/700 retained;real bucket request preserves400,new standalone resets700 passed");
     return 0;
 }
 
@@ -375,9 +450,15 @@ static int fast_target_seek(unsigned owner)
     }
     CHECK(s_target35_phase == TA_SEEK && !laser_state &&
           s_target35_route == (owner != 35u));
-    CHECK(target35_point() == (owner == 35u ? 255 : owner == 31u ? 250 : 240) &&
-          target35_low() == (owner == 35u ? 250 : owner == 31u ? 247 : 237) &&
-          target35_high() == (owner == 35u ? 260 : owner == 31u ? 253 : 243));
+    CHECK(target35_point() == (owner == 35u ? 255 : owner == 31u ? 265 : 250) &&
+          target35_low() == (owner == 35u ? 250 : owner == 31u ? 262 : 247) &&
+          target35_high() == (owner == 35u ? 260 : owner == 31u ? 268 : 253));
+    /* Initial task entry has no selected coordinate or explicit global v:
+     * test its actual coarse command against the current31 default, not an
+     * old50mm/s tuning snapshot. Retained35/43 speed assertions stay separate. */
+    if (owner == 31u)
+        CHECK(!s_route31_straight_v_set && !s_target31_fine &&
+              last_x == ROUTE31_TASK_V_MMS && !last_y && !last_w);
     return 0;
 }
 
@@ -459,7 +540,7 @@ static void fast_atomic_interrupt(int wheel)
     host_counts_hook = NULL;
     if (fast_fault == 0u) xy_obj_poll(wire_request,-1,0,0,0);
     else if (fast_fault == 1u) xy_obj_poll(wire_request,7,250,160,0);
-    else if (fast_fault == 2u) xy_obj_poll(wire_request,8,246,160,0);
+    else if (fast_fault == 2u) xy_obj_poll(wire_request,8,target35_point(),160,0);
     else if (fast_fault == 3u) xy_obj_poll(wire_request,8,250,160,0);
     else if (fast_fault == 4u) host_imu_valid = 0;
     else if (fast_fault == 5u) host_abort = 1;

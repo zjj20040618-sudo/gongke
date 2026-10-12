@@ -64,7 +64,9 @@ static int check_helper(void)
     CHECK(step_heading_kp_deg() == 0.3f); /* injection never overwrites global */
     CHECK(!step_heading_kp_set(NAN) && !step_heading_kp_set(INFINITY));
     CHECK(step_heading_hold_w_kp(0.0f, NAN) == 0.0f && step_heading_hold_w_kp(0.0f, INFINITY) == 0.0f);
-    CHECK(step_heading_hold_w_kp(0.0f, -0.1f) == 0.0f && step_heading_hold_w_kp(0.0f, 5.1f) == 0.0f);
+    CHECK(step_heading_hold_w_kp(0.0f, -0.1f) == 0.0f && step_heading_hold_w_kp(0.0f, 10.1f) == 0.0f);
+    CHECK(fabsf(step_heading_hold_w_kp(0.0f, 10.0f) + 30.0f * 0.0174533f) < 0.000001f);
+    CHECK(!step_heading_kp_set(10.0f)); /* Only explicit31 snapshots allow10; global/manual range stays5. */
     CHECK(step_heading_kp_deg() == 0.3f);
     host_yaw = -3.0f; CHECK(step_heading_hold_w_kp(0.0f, 2.0f) > 0.0f);
     CHECK(step_heading_hold_w_kp(0.0f, 0.0f) == 0.0f);
@@ -83,13 +85,14 @@ static int check_actual_wheel_correction(void)
     static const int yaw_sign[4] = { 1, -1, -1, 1 };
     for (int mode = 15; mode <= 18; ++mode) {
         for (int k = 0; k < 3; ++k) {
-            float base[4], low_gain[4], corrected[4];
+            float base[4], low_gain[4], corrected[4], route10[4];
             float vx = mode == 15 ? speeds[k] : mode == 16 ? -speeds[k] : 0.0f;
             float vy = mode == 17 ? -speeds[k] : mode == 18 ? speeds[k] : 0.0f;
             host_yaw = 3.0f;
             motion_ik_precise(vx, vy, 0.0f, base);
             motion_ik_precise(vx, vy, step_heading_hold_w_kp(0.0f, 0.3f), low_gain);
             motion_ik_precise(vx, vy, step_heading_hold_w_kp(0.0f, 2.0f), corrected);
+            motion_ik_precise(vx, vy, step_heading_hold_w_kp(0.0f, 10.0f), route10);
             delivered_mask = precise_calls = integer_calls = 0u;
             motion_vel_set_precise(vx, vy, step_heading_hold_w_kp(0.0f, 2.0f));
             CHECK(delivered_mask == 15u && precise_calls == 4u && integer_calls == 0u);
@@ -97,6 +100,14 @@ static int check_actual_wheel_correction(void)
                 CHECK(delivered[m] == corrected[m]);
                 CHECK((corrected[m] - base[m]) * (float)yaw_sign[m] < 0.0f);
                 CHECK(fabsf(corrected[m] - base[m]) > fabsf(low_gain[m] - base[m]));
+            }
+            delivered_mask = precise_calls = integer_calls = 0u;
+            motion_vel_set_precise(vx, vy, step_heading_hold_w_kp(0.0f, 10.0f));
+            CHECK(delivered_mask == 15u && precise_calls == 4u && integer_calls == 0u);
+            for (int m = 0; m < 4; ++m) {
+                CHECK(delivered[m] == route10[m] &&
+                      (route10[m] - base[m]) * (float)yaw_sign[m] < 0.0f);
+                CHECK(fabsf(route10[m] - base[m]) > fabsf(corrected[m] - base[m]));
             }
         }
     }

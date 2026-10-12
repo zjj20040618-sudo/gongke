@@ -271,7 +271,8 @@ int proto_target_rank_get(ProtoTargetRank *out)
     ready = s_binary && session_ready() && s_controlled && s_receiving && s_ack && !s_failed &&
             s_mode == 2u && s_rank_valid && s_rank.request == s_request &&
             s_rank.task == s_task && s_rank.digit == s_selection &&
-            (s_task == PROTO_TASK_HOSTAGE || s_task == PROTO_TASK_BALL);
+            (s_task == PROTO_TASK_HOSTAGE || s_task == PROTO_TASK_BALL ||
+             s_task == PROTO_TASK_TARGET);
     if (out) {
         if (ready) *out = s_rank;
         else memset(out, 0, sizeof *out);
@@ -335,7 +336,8 @@ static int rank_dispatch(const uint8_t *p, unsigned length)
 {
     ProtoTargetRank next;
     int cls, label, selected_cls, selected_label;
-    if (length != 9u || (s_task != PROTO_TASK_HOSTAGE && s_task != PROTO_TASK_BALL) ||
+    if (length != 9u || (s_task != PROTO_TASK_HOSTAGE && s_task != PROTO_TASK_BALL &&
+                        s_task != PROTO_TASK_TARGET) ||
         !proto_target_filter((ProtoTask)s_task, s_selection, &selected_cls, &selected_label)) return 0;
     memset(&next, 0, sizeof next);
     next.task = s_task; next.digit = s_selection; next.request = s_request;

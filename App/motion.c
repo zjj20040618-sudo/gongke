@@ -181,6 +181,42 @@ void motion_vel_set_left_scaled(float vx, float vy, float w, float left_scale)
     __set_PRIMASK(pm);
 }
 
+void motion_vel_set_board_push(float vx)
+{
+    float rpm[4];
+    uint32_t pm;
+    if (!isfinite(vx) || vx < 0.0f) { motion_brake(); return; }
+    motion_ik_precise(vx, 0.0f, 0.0f, rpm);
+    rpm[2] = rpm[3] = 0.0f; /* RF/LF near the board: no powered drive. */
+    for (int i = 0; i < MOTOR_NUM; ++i) {
+        if (!isfinite(rpm[i])) { motion_brake(); return; }
+    }
+    pm = __get_PRIMASK();
+    __disable_irq();
+    for (int i = 0; i < MOTOR_NUM; ++i) ctrl_set_speed_precise(i, rpm[i]);
+    __set_PRIMASK(pm);
+}
+
+void motion_vel_set_arc_pair(float left_mms, float right_mms)
+{
+    float left_rpm[4], right_rpm[4];
+    uint32_t pm;
+    if (!isfinite(left_mms) || !isfinite(right_mms) || left_mms < 0.0f || right_mms < 0.0f ||
+        left_mms > 600.0f || right_mms > 600.0f) { motion_brake(); return; }
+    /* Existing straight IK gives the wheel-radius/gearing conversion. No
+     * guessed rotation arm is used to claim a calibrated physical arc radius. */
+    motion_ik_precise(left_mms, 0.0f, 0.0f, left_rpm);
+    motion_ik_precise(right_mms, 0.0f, 0.0f, right_rpm);
+    pm = __get_PRIMASK(); __disable_irq();
+    /* Opt-in positive-speed PI resets the right wheel's zero/restore history
+     * without stopping left drive, and prevents an overspeed reverse kick. */
+    ctrl_set_speed_creep(0, left_rpm[0]);
+    ctrl_set_speed_creep(1, right_rpm[1]);
+    ctrl_set_speed_creep(2, right_rpm[2]);
+    ctrl_set_speed_creep(3, left_rpm[3]);
+    __set_PRIMASK(pm);
+}
+
 void motion_vel_set_creep(float vx, float vy, float w)
 {
     float rpm[4];

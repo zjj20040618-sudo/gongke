@@ -1254,8 +1254,8 @@ static int check_route31_workpoint_boundaries_and_standalone_isolation(void)
     CHECK(VAT_X_PX == 190 && VAT_ROUTE_BALL_X_PX == 135 &&
           VAT_ROUTE_BUCKET_X_PX == 105 && VAT_ROUTE43_BUCKET_X_PX == 125 &&
           VAT_ROUTE_HOSTAGE_X_PX == 215 && VAT_TOL_PX == 10);
-    CHECK(ROUTE31_TARGET_CX == 250 && ROUTE31_TARGET_LOW_CX == 247 && ROUTE31_TARGET_HIGH_CX == 253 &&
-          ROUTE31_FINE_ENTER_CX == 360);
+    CHECK(ROUTE31_TARGET_CX == 253 && ROUTE31_TARGET_LOW_CX == 250 && ROUTE31_TARGET_HIGH_CX == 256 &&
+          ROUTE31_FINE_ENTER_CX == 363);
     CHECK(goals[0] - 10 == 125 && goals[0] + 10 == 145 &&
           goals[0] - 11 == 124 && goals[0] + 11 == 146);
     CHECK(goals[1] - 10 == 95 && goals[1] + 10 == 115 &&
